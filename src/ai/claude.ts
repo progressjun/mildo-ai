@@ -106,7 +106,7 @@ export async function askJson<T>(settings: AiSettings, prompt: string, opts: Omi
     const sample = await getSample();
     if (!sample) throw new AiError('no_backend', 'Claude 사용 불가');
     try {
-      return await sample.json<T>(prompt, { modelTier: opts.tier ?? 'default', signal: opts.signal, onText: opts.onText ? ({ text }: { text: string }) => opts.onText!(text) : undefined });
+      return await sample.json<T>(prompt, { modelTier: opts.tier ?? 'default', signal: opts.signal, onText: opts.onText ? ({ text }: { text: string }) => opts.onText!(text) : undefined, ...(opts.cache === false ? { cache: false } : {}) });
     } catch (e) {
       throw toAiError(e);
     }

@@ -119,7 +119,7 @@ export function Shell() {
           <Button size="sm" icon="gear" onClick={() => setSettings(true)}>설정</Button>
         </header>
         <main className="content" ref={contentRef} id="main">
-          <ModuleErrorBoundary key={mod.id} title={mod.title}>
+          <ModuleErrorBoundary key={`${mod.id}:${state.resetSeq ?? 0}`} title={mod.title}>
             <Suspense fallback={<div className="page muted">불러오는 중…</div>}>
               <mod.Component />
             </Suspense>

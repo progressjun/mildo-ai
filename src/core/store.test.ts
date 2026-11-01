@@ -49,3 +49,17 @@ describe('시연 상태 초기화 알림 (mildo-os:reset)', () => {
     expect(() => broadcastReset()).not.toThrow();
   });
 });
+
+describe('초기화 시 화면 재마운트 키 (resetSeq)', () => {
+  it('reset마다 resetSeq가 1씩 늘고, 승인 이력 · 이슈 · 코멘트는 비워진다', async () => {
+    const { reducer } = await import('./store');
+    type S = Parameters<typeof reducer>[0];
+    const base = { changes: [{ id: 'c1' }], incidents: [{ id: 'i1' }], comments: [{ id: 'm1' }], tf: { a: {} }, resetSeq: undefined } as unknown as S;
+    const once = reducer(base, { type: 'reset' });
+    expect(once.resetSeq).toBe(1);
+    expect(once.changes).toEqual([]);
+    expect(once.incidents).toEqual([]);
+    expect(once.comments).toEqual([]);
+    expect(reducer(once, { type: 'reset' }).resetSeq).toBe(2);
+  });
+});

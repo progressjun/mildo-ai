@@ -28,6 +28,8 @@ export interface AppState {
   offHoursMode: boolean;
   tf: Record<string, TfMember>;
   demo: { running: boolean; startedAt: number | null; pausedAt: number | null; elapsedBeforePause: number };
+  /** '시연 상태 초기화' 횟수 — 셸이 열려 있는 화면을 다시 마운트해 화면 내부 상태(필터 · 입력 · AI 해석)도 초기화한다. 저장하지 않는다. */
+  resetSeq?: number;
 }
 
 export type Action =
@@ -134,7 +136,7 @@ function initialState(): AppState {
   return base;
 }
 
-function reducer(s: AppState, a: Action): AppState {
+export function reducer(s: AppState, a: Action): AppState {
   switch (a.type) {
     case 'change/add':
       return { ...s, changes: [a.change, ...s.changes] };
@@ -190,7 +192,7 @@ function reducer(s: AppState, a: Action): AppState {
     case 'demo/stop':
       return { ...s, demo: { running: false, startedAt: null, pausedAt: null, elapsedBeforePause: 0 } };
     case 'reset':
-      return { ...initialState(), changes: [], incidents: [], comments: [], tf: {} };
+      return { ...initialState(), changes: [], incidents: [], comments: [], tf: {}, resetSeq: (s.resetSeq ?? 0) + 1 };
     default:
       return s;
   }

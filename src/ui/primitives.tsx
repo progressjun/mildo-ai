@@ -147,11 +147,26 @@ export function Field({ label, children, id, hint }: { label: ReactNode; childre
   );
 }
 
+/**
+ * 숫자 입력 — 입력 중인 글자(draft)를 그대로 보여 준다. 부모가 범위를 보정해도 타이핑 도중 값이 튀지 않고
+ * ('20' 입력 중 '2'가 최솟값 5로 바뀌어 '50'이 되는 문제), 칸을 비워도 0으로 바뀌지 않는다.
+ * 유한한 숫자일 때만 onChange를 부르고, 포커스를 잃거나 Enter를 누르면 부모 값(보정 결과)으로 표시를 맞춘다.
+ */
 export function NumberInput({ id, value, onChange, step = 1, min, max, suffix, style }: { id: string; value: number; onChange: (v: number) => void; step?: number; min?: number; max?: number; suffix?: string; style?: CSSProperties }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (Number.isFinite(value) ? String(value) : '');
   return (
     <div className="row" style={{ gap: 6, flexWrap: 'nowrap', ...style }}>
-      <input id={id} className="input num" type="number" value={Number.isFinite(value) ? value : ''} step={step} min={min} max={max}
-        onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v)) onChange(v); }} />
+      <input id={id} className="input num" type="number" value={shown} step={step} min={min} max={max}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setDraft(raw);
+          if (raw.trim() === '') return;
+          const v = Number(raw);
+          if (Number.isFinite(v)) onChange(v);
+        }}
+        onBlur={() => setDraft(null)}
+        onKeyDown={(e) => { if (e.key === 'Enter') setDraft(null); }} />
       {suffix ? <span className="small muted nowrap">{suffix}</span> : null}
     </div>
   );
@@ -203,6 +218,8 @@ export function DataTable<T>({ rows, columns, rowKey, initialSort, maxHeight, on
               return (
                 <th key={c.key} className={cls} style={{ width: c.width }}
                   onClick={c.sort ? () => setSort({ key: c.key, dir: active && sort?.dir === 'desc' ? 'asc' : 'desc' }) : undefined}
+                  tabIndex={c.sort ? 0 : undefined}
+                  onKeyDown={c.sort ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSort({ key: c.key, dir: active && sort?.dir === 'desc' ? 'asc' : 'desc' }); } } : undefined}
                   aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : undefined}>
                   {c.label}{active ? (sort!.dir === 'asc' ? ' ↑' : ' ↓') : ''}
                 </th>
@@ -216,7 +233,9 @@ export function DataTable<T>({ rows, columns, rowKey, initialSort, maxHeight, on
           ) : sorted.map((r) => {
             const k = rowKey(r);
             return (
-              <tr key={k} className={selectedKey === k ? 'selected' : undefined} onClick={onRowClick ? () => onRowClick(r) : undefined} style={onRowClick ? { cursor: 'pointer' } : undefined}>
+              <tr key={k} className={selectedKey === k ? 'selected' : undefined} onClick={onRowClick ? () => onRowClick(r) : undefined} style={onRowClick ? { cursor: 'pointer' } : undefined}
+                tabIndex={onRowClick ? 0 : undefined}
+                onKeyDown={onRowClick ? (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); onRowClick(r); } } : undefined}>
                 {columns.map((c) => (
                   <td key={c.key} className={c.align === 'right' ? 'r' : c.align === 'center' ? 'c' : undefined}>
                     {c.render ? c.render(r) : String((r as Record<string, unknown>)[c.key] ?? '')}
