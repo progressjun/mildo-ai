@@ -4,7 +4,7 @@
  * 결과는 작은 plain JSON (숫자 반올림).
  */
 import type { AgentTool } from '@/ai/claude';
-import type { IntentId } from '@/core/types';
+import type { ChangeRequest, IntentId } from '@/core/types';
 import { INTENT_IDS, SA_CAMPAIGNS } from '@/data/constants';
 import type { ModuleAgentKit, ToolContext } from '../types';
 import { demoTestCards, HYP_IDS, PATTERN_SEEDS, SA_CHAR_LIMITS, SCORE_WEIGHTS, type HypId } from './data';
@@ -29,8 +29,35 @@ const isIntent = (v: unknown): v is IntentId => typeof v === 'string' && (INTENT
 const isHyp = (v: unknown): v is HypId => typeof v === 'string' && (HYP_IDS as string[]).includes(v);
 const SOURCES: CandidateSource[] = ['search_term', 'related', 'ai_query', 'sku48', 'ai_expand'];
 
+/**
+ * MILDO Agent는 화면을 그릴 때의 ctx로 도구 묶음을 만든다 — 한 번의 Claude 응답 안에서 ctx.state는 그 시점 스냅샷이라
+ * 같은 응답에서 방금 만든 승인 요청이 보이지 않는다(같은 대상을 두 번 요청하면 중복 생성).
+ * 이 도구 묶음이 만든 요청을 스냅샷에 더해 읽기 · 중복 확인이 최신 이력을 보게 한다.
+ */
+function liveCtx(ctx: ToolContext): ToolContext {
+  const made: ChangeRequest[] = [];
+  return {
+    ...ctx,
+    get state() {
+      const base = ctx.state;
+      const extra = made.filter((m) => !base.changes.some((c) => c.id === m.id));
+      return extra.length ? { ...base, changes: [...extra, ...base.changes] } : base;
+    },
+    actions: {
+      ...ctx.actions,
+      addChange: ((c: Parameters<ToolContext['actions']['addChange']>[0]) => {
+        const ch = ctx.actions.addChange(c);
+        if (ch && typeof ch === 'object' && 'id' in ch) made.push(ch as ChangeRequest);
+        return ch;
+      }) as ToolContext['actions']['addChange'],
+    },
+  };
+}
+
 export const agentKit: ModuleAgentKit = {
-  tools: (ctx: ToolContext): AgentTool[] => [
+  tools: (ctx0: ToolContext): AgentTool[] => {
+    const ctx = liveCtx(ctx0);
+    return [
     {
       name: 'lab_expand_keywords',
       description: 'MILDO Lab 롱테일 · 구문형 키워드 후보(검색어 보고서 미등록 · 연관 검색어 · AI 검색 질의 · SKU 확장 48 진입점)를 의도 분류 · 예상 검색량 · 랜딩 매칭 · 우선순위 점수와 함께 반환합니다.',
@@ -207,7 +234,8 @@ export const agentKit: ModuleAgentKit = {
         return { 결과: '승인 요청 생성 (pending)', id: ch.id, 승인: payload.approver, 대상: payload.target, 내용: payload.after, 사유: payload.reason };
       },
     },
-  ],
+  ];
+  },
   briefs: [
     {
       id: 'lab-overview',

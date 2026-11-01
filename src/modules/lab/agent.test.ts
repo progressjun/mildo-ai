@@ -42,7 +42,7 @@ describe('MILDO Lab agentKit', () => {
   it('읽기 도구는 32KB 이하 JSON · NaN 없음 · 상태를 바꾸지 않는다', async () => {
     const { ctx, created } = makeCtx();
     const inputs: Record<string, Record<string, unknown>[]> = {
-      lab_expand_keywords: [{}, { source: 'sku48', limit: 48 }, { source: 'search_term' }, { intent: 'life', minScore: 60 }, { source: 'nope', limit: -3 }],
+      lab_expand_keywords: [{}, { source: 'sku48', limit: 48 }, { source: 'all', limit: 100000 }, { source: 'search_term' }, { intent: 'life', minScore: 60 }, { source: 'nope', limit: -3 }],
       lab_judge: [{}, { keyword: '신혼' }, { cardId: 'TC-03' }, { cardId: 'none' }],
       lab_review_copy: [{}, { text: '허리 디스크 치료 매트리스 20% 할인' }, { text: '경도로 고르는 신혼집 매트리스 추천', limit: 15 }],
       lab_generate_copy: [{}, { campaign: 'life', hypothesis: 'C' }, { campaign: 'x' }],
@@ -52,7 +52,8 @@ describe('MILDO Lab agentKit', () => {
       for (const inp of list) {
         const r = await tool(ctx, name).execute(inp);
         const s = json(r);
-        expect(s.length, `${name} ${json(inp)}`).toBeLessThan(32_000);
+        // 계약 한도는 UTF-8 바이트 기준 32KB (한글은 글자당 3바이트)
+        expect(new TextEncoder().encode(s).length, `${name} ${json(inp)}`).toBeLessThanOrEqual(32_768);
         expect(s).not.toMatch(/NaN|undefined|Infinity/);
       }
     }
@@ -105,6 +106,26 @@ describe('MILDO Lab agentKit', () => {
     const r4 = (await tool(ctx, 'lab_register_candidate').execute({ phrase: ' ' })) as { 결과: string };
     expect(r4.결과).toBe('실패');
     expect(created).toHaveLength(1);
+  });
+
+  it('lab_register_candidate — 같은 응답 안(ctx.state는 호출 시점 스냅샷)에서 같은 구문을 두 번 요청해도 1건만 만든다', async () => {
+    // 실제 MILDO Agent처럼 addChange가 ctx.state.changes(스냅샷)를 바꾸지 않는 컨텍스트
+    const created: ChangeRequest[] = [];
+    const { ctx } = makeCtx([]);
+    (ctx.actions as { addChange: unknown }).addChange = (c: Partial<ChangeRequest>) => {
+      const ch = { id: `snap_${created.length}`, createdAt: '2026-10-31T06:30:00.000Z', history: [], status: 'pending', ...c } as ChangeRequest;
+      created.push(ch);
+      return ch;
+    };
+    const tools = agentKit.tools(ctx);
+    const reg = tools.find((t) => t.name === 'lab_register_candidate')!;
+    const phrase = searchTermCandidates(DEMO).find((c) => c.purchase)!.phrase;
+    expect(((await reg.execute({ phrase })) as { 결과: string }).결과).toMatch(/pending/);
+    expect(((await reg.execute({ phrase: ` ${phrase} ` })) as { 결과: string }).결과).toBe('생성 안 함');
+    expect(created).toHaveLength(1);
+    // 방금 만든 요청은 같은 응답의 읽기 도구에도 보인다 (등록 요청 상태)
+    const ov = (await tools.find((t) => t.name === 'lab_expand_keywords')!.execute({ source: 'search_term', limit: 48 })) as { 후보: { 구문: string; 상태: string }[] };
+    expect(ov.후보.find((c) => c.구문 === phrase)?.상태).toMatch(/등록 요청/);
   });
 
   it('오프라인 브리프 ≥ 2개 · 질문 매칭 · 구조 · 문구 원칙', () => {

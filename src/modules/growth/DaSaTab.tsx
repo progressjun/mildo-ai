@@ -4,13 +4,13 @@ import type { Dataset } from '@/core/types';
 import { SA_CAMPAIGNS } from '@/data/constants';
 import { fmt, fmtDate, mean } from '@/core/util';
 import { useActions, useStore } from '@/core/store';
-import { Button, Callout, Card, DataTable, Empty, Field, NumberInput, Pill, Segmented, Src, Stat, type Column } from '@/ui/primitives';
+import { Button, Callout, Card, DataTable, Empty, Field, Pill, Segmented, Src, Stat, type Column } from '@/ui/primitives';
 import { LineChart } from '@/ui/charts';
 import { AiInsight } from '@/ui/AiInsight';
 import { DA_SA_METHODS, DA_SA_PATH, HOLDOUT_UNITS, type HoldoutUnitId } from './data';
 import { activeDuplicate, f2, growthPrompt, holdoutChange, holdoutDesign, type DaSaResult, type LagRow, type Method3Row } from './engine';
 import { daSaBrief } from './briefs';
-import { Kv, Verdict } from './parts';
+import { Kv, NumField as NumberInput, Verdict } from './parts';
 
 export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; onApplyCredit: () => void }) {
   const { state } = useStore();

@@ -5,8 +5,9 @@ import { fmt } from '@/core/util';
 import { Callout, Card, Pill, Src } from '@/ui/primitives';
 import { CALENDAR_NOTE, MEDIA_PARTNERSHIPS, NAVER_TRIPARTITE, PARTNERSHIP_NOTE, TIME_REINVEST } from './data';
 import { automationSavings, calendarView } from './engine';
+import type { TabId } from './parts';
 
-export function PartnerTab({ d }: { d: Dataset }) {
+export function PartnerTab({ d, onGo }: { d: Dataset; onGo?: (t: TabId) => void }) {
   const cal = calendarView(d);
   const next = cal.find((q) => q.status === 'current') ?? cal.find((q) => q.status === 'upcoming');
   const sv = automationSavings();
@@ -97,7 +98,9 @@ export function PartnerTab({ d }: { d: Dataset }) {
               <div className="growth-cal-row"><span>네이버 연계</span><span>{q.naver}</span></div>
               <div className="growth-cal-row"><span>신규 매체 · 코프로모션</span><span>{q.newMedia}</span></div>
               <div className="row" style={{ gap: 4, marginTop: 'auto' }}>
-                {q.links.map((l) => <a key={l.label} className="growth-chip" href={`#${l.route}`}>{l.label}</a>)}
+                {q.links.map((l) => (l.route === 'growth' && l.tab && onGo
+                  ? <a key={l.label} className="growth-chip" href="#growth" onClick={(e) => { e.preventDefault(); onGo(l.tab as TabId); }}>{l.label}</a>
+                  : <a key={l.label} className="growth-chip" href={`#${l.route}`}>{l.label}</a>))}
               </div>
             </div>
           ))}

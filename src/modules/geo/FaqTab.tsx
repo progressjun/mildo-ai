@@ -40,13 +40,16 @@ export function FaqTab({ d, onItems, reviewed, cov, vis }: {
   };
   const add = () => onItems((cur) => [...cur, { id: uid('faq'), topic: topic === 'all' ? 'criteria' : topic, q: '', a: '', source: 'edited', queries: [] }]);
 
+  const running = useRef(false);
   const generate = async () => {
-    if (!usable) return;
+    if (!usable || running.current) return;
+    running.current = true;
     setBusy(true);
     setNote('');
     ctl.current = new AbortController();
     try {
-      const raw = await ai.askJson<unknown>(faqAiPrompt(d, vis), { signal: ctl.current.signal });
+      // 같은 질의 · 상품 정보면 프롬프트가 같다 — 기본 캐시(5분)면 '다시 시도'가 같은 (형식 오류) 응답을 돌려받으므로 끈다
+      const raw = await ai.askJson<unknown>(faqAiPrompt(d, vis), { signal: ctl.current.signal, cache: false });
       const got = sanitizeAiFaq(raw);
       if (!got.length) setNote('AI 응답에서 FAQ 문항을 읽지 못했습니다. 다시 시도하세요.');
       else {
@@ -58,6 +61,7 @@ export function FaqTab({ d, onItems, reviewed, cov, vis }: {
       if (DENIED_CODES.has(err.code)) { setBlocked(true); setNote(''); }
       else if (err.code !== 'cancelled') setNote(AI_ERROR_COPY[err.code] ?? err.message);
     } finally {
+      running.current = false;
       setBusy(false);
     }
   };
@@ -128,12 +132,12 @@ export function FaqTab({ d, onItems, reviewed, cov, vis }: {
 
           <Card title={<span className="row" style={{ gap: 6 }}>AI로 FAQ 초안 추가<Src kind="AI" /></span>} sub="규칙 초안과 같은 검수(REVIEW_RULES)를 거칩니다">
             <div className="small ink2">약한 질의 {cov.weak.length}개와 확인된 상품 정보(사이즈 · 정가 · 재고)만 전달합니다. 확인되지 않은 사양은 [입력]으로 남기도록 지시합니다.</div>
-            {busy ? (
-              <Button size="sm" icon="stop" onClick={() => ctl.current?.abort()}>중지</Button>
-            ) : (
-              <Button size="sm" variant="accent" icon="sparkle" disabled={!usable} onClick={generate}
+            {/* 생성 중에도 시작 버튼은 제자리에서 비활성 — 빠른 두 번 클릭의 두 번째가 '중지'에 떨어져 방금 시작한 생성을 취소하지 않도록 */}
+            <div className="row" style={{ gap: 6 }}>
+              <Button size="sm" variant="accent" icon="sparkle" disabled={!usable || busy} onClick={generate}
                 title={usable ? undefined : blocked ? 'Claude 사용이 허용되지 않음 — 규칙 초안으로 계속' : 'AI 미연결 — 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 실행'}>AI 초안 생성</Button>
-            )}
+              {busy ? <Button size="sm" icon="stop" onClick={() => ctl.current?.abort()}>중지</Button> : null}
+            </div>
             {blocked ? <div className="xs muted">Claude 사용이 허용되지 않아 AI 초안을 만들 수 없습니다. 규칙 초안과 직접 편집으로 계속합니다.</div>
               : !ai.connected ? <div className="xs muted">{ai.backend === 'checking' ? 'AI 연결 상태 확인 중' : 'AI 미연결 — 규칙 초안만 사용합니다. 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.'}</div> : null}
             {busy ? <div className="xs muted">Claude가 FAQ 초안을 작성 중입니다.</div> : null}

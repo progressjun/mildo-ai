@@ -1,5 +1,5 @@
 /* 매출 성장 모듈 공용 하위 컴포넌트 · 포맷 */
-import type { ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { IntentId, MediaId } from '@/core/types';
 import { MEDIA, MEDIA_IDS } from '@/data/constants';
 import { fmt } from '@/core/util';
@@ -8,6 +8,39 @@ import { Legend } from '@/ui/charts';
 import type { BindReason, GroupMetric, Shares } from './engine';
 
 export type TabId = 'overview' | 'target' | 'alloc' | 'dasa' | 'funnel' | 'demand' | 'partner';
+
+/**
+ * 범위가 있는 숫자 입력 — 공용 NumberInput과 같은 마크업 · props.
+ * 키 입력마다 onChange에서 범위로 맞추면 '20'을 치는 중간값 '2'가 최소 5로 바뀌어 '50'이 되는 문제(연 예산 · 재배분 폭 · 검정력 · 곡선 b 등)가 있어,
+ * 입력 중에는 친 글자를 그대로 두고 범위 안 값만 즉시 반영한다. 포커스를 벗어나거나 Enter를 누르면 범위로 맞춰 반영한다.
+ */
+export function NumField({ id, value, onChange, step = 1, min, max, suffix, style }: {
+  id: string; value: number; onChange: (v: number) => void; step?: number; min?: number; max?: number; suffix?: string; style?: CSSProperties;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const inRange = (v: number) => (min === undefined || v >= min) && (max === undefined || v <= max);
+  const fit = (v: number) => Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v));
+  const commit = () => {
+    if (draft === null) return;
+    const v = Number(draft);
+    if (draft.trim() !== '' && Number.isFinite(v) && fit(v) !== value) onChange(fit(v));
+    setDraft(null);
+  };
+  return (
+    <div className="row" style={{ gap: 6, flexWrap: 'nowrap', ...style }}>
+      <input id={id} className="input num" type="number" value={draft ?? (Number.isFinite(value) ? value : '')} step={step} min={min} max={max}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setDraft(raw);
+          const v = Number(raw);
+          if (raw.trim() !== '' && Number.isFinite(v) && inRange(v)) onChange(v);
+        }}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} />
+      {suffix ? <span className="small muted nowrap">{suffix}</span> : null}
+    </div>
+  );
+}
 
 /** 판정 배지 + 기준값 (SPEC §0: 배지 옆에 기준을 보여준다) */
 export function Verdict({ tone, label, basis, icon }: { tone: Tone; label: string; basis?: ReactNode; icon?: string }) {

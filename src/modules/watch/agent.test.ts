@@ -47,7 +47,8 @@ describe('MILDO Watch agent kit', () => {
       if (t.inputSchema?.required?.length) continue;
       const r = await t.execute({});
       const s = JSON.stringify(r);
-      expect(s.length, t.name).toBeLessThan(32_000);
+      // 계약 한도는 UTF-8 바이트 기준 32KB (한글은 글자당 3바이트)
+      expect(new TextEncoder().encode(s).length, t.name).toBeLessThanOrEqual(32_768);
       expect(s, t.name).not.toMatch(/NaN|Infinity/);
     }
   });
@@ -97,6 +98,29 @@ describe('MILDO Watch agent kit', () => {
     again.ctx.state.data = data;
     const dup = (await tool(again.ctx, 'watch_request_test').execute({ eventId: 'ev_kakao_bizboard' })) as { ok: boolean };
     expect(dup.ok).toBe(false);
+  });
+
+  it('watch_request_test — 같은 응답 안(ctx.state는 호출 시점 스냅샷)에서 같은 이벤트를 두 번 요청해도 1건만 만든다', async () => {
+    const data = JSON.parse(JSON.stringify(DEMO));
+    for (const r of data.mediaHourly) if (r.date === data.today && r.media === 'kakao' && r.hour >= 13) r.conversions = 0.3;
+    const { ctx } = makeCtx([]);
+    ctx.state.data = data;
+    const created: ChangeRequest[] = [];
+    (ctx.actions as { addChange: unknown }).addChange = (c: Partial<ChangeRequest>) => {
+      const ch = { id: `snap_${created.length}`, createdAt: '2026-10-31T15:30:00+09:00', history: [], status: 'pending', ...c } as ChangeRequest;
+      created.push(ch);
+      return ch;
+    };
+    const tools = agentKit.tools(ctx);
+    const t = tools.find((x) => x.name === 'watch_request_test')!;
+    expect(((await t.execute({ eventId: 'ev_kakao_bizboard' })) as { ok: boolean }).ok).toBe(true);
+    const dup = (await t.execute({ eventId: 'ev_kakao_bizboard' })) as { ok: boolean; reason: string };
+    expect(dup.ok).toBe(false);
+    expect(dup.reason).toContain('이미 등록 요청됨');
+    expect(created).toHaveLength(1);
+    // 같은 응답의 조회 도구도 테스트 단계로 본다
+    const ch = (await tools.find((x) => x.name === 'watch_changes')!.execute({})) as { events: { id: string; stage: string }[] };
+    expect(ch.events.find((e) => e.id === 'ev_kakao_bizboard')?.stage).toMatch(/테스트|test/);
   });
 
   it('오프라인 브리프: 질문 매칭 · 영역 구조 · 번호 매기기 · NaN 없음', () => {

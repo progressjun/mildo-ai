@@ -420,6 +420,20 @@ export function skuFormula() {
 }
 
 /** AI 확장 응답 파싱 (askJson 결과) — 형식이 틀려도 예외 없이 걸러낸다 */
+/** AI 응답 문자열에서 마크업 제거 — HTML 태그 · 마크다운 강조(** __ `) · 앞머리 목록 기호(1. · - · •) */
+export function stripMarkup(s: unknown): string {
+  return String(s ?? '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/^\s*(?:\d+\s*[.)]|[-*•·])\s+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+/** 검색 키워드로 쓸 구문 — 마크업 제거 후 글자 · 숫자 · 공백만 남긴다 (네이버 SA 키워드에는 기호 · 태그를 쓸 수 없음) */
+export function cleanPhrase(s: unknown): string {
+  return stripMarkup(s).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export function parseAiCandidates(raw: unknown, data: Dataset, changes: readonly ChangeRequest[] = []): Candidate[] {
   const arr: unknown[] = Array.isArray(raw) ? raw : raw && typeof raw === 'object' && Array.isArray((raw as { candidates?: unknown[] }).candidates) ? (raw as { candidates: unknown[] }).candidates : [];
   const seen = new Set<string>();
@@ -427,12 +441,12 @@ export function parseAiCandidates(raw: unknown, data: Dataset, changes: readonly
   for (const it of arr.slice(0, 40)) {
     const o = (typeof it === 'string' ? { phrase: it } : it) as Record<string, unknown> | null;
     if (!o || typeof o !== 'object') continue;
-    const phrase = String(o.phrase ?? o.keyword ?? o.term ?? '').replace(/\s+/g, ' ').trim();
+    const phrase = cleanPhrase(o.phrase ?? o.keyword ?? o.term ?? '');
     if (phrase.length < 3 || phrase.length > 40 || !/[가-힣]/.test(phrase) || seen.has(norm(phrase))) continue;
     seen.add(norm(phrase));
     const monthly = Number(o.monthly ?? o.volume);
     const est = estimatePhraseVolume(data, phrase);
-    const rationale = typeof o.rationale === 'string' ? o.rationale.slice(0, 120) : '';
+    const rationale = typeof o.rationale === 'string' ? stripMarkup(o.rationale).slice(0, 120) : '';
     out.push(buildCandidate(data, changes, {
       phrase, source: 'ai_expand', origin: rationale ? `AI: ${rationale}` : 'AI 구문형 확장',
       volume: finite(monthly) && monthly > 0 ? monthly : est.volume, volumeKind: 'monthly_est',
@@ -516,14 +530,18 @@ export interface LabCriteria { targetRoas: number; expandAtPct: number; keepFrom
 
 export function resolveCriteria(c?: Partial<LabCriteria> | null): LabCriteria {
   const d = LAB_DEFAULT_CRITERIA;
-  const pos = (v: unknown, def: number) => (finite(v) && v > 0 ? v : def);
+  // 입력 칸 최솟값(1)과 같은 기준 — 1 미만 · 숫자가 아닌 값은 초기값.
+  // 일수 · 클릭은 반올림한 뒤 판정한다: 화면(parts)과 엔진이 두 번 정규화해도 같은 값이 나와야
+  // 입력 칸 · 칸반 머리글에 보이는 기준과 실제 판정 기준이 어긋나지 않는다 (예: 0.4일 → 0 표시 · 판정은 14일).
+  const pos = (v: unknown, def: number) => (finite(v) && v >= 1 ? v : def);
+  const posInt = (v: unknown, def: number) => (finite(v) && Math.round(v) >= 1 ? Math.round(v) : def);
   const out: LabCriteria = {
     targetRoas: pos(c?.targetRoas, d.targetRoas),
     expandAtPct: pos(c?.expandAtPct, d.expandAtPct),
     keepFromPct: pos(c?.keepFromPct, d.keepFromPct),
-    minDays: Math.round(pos(c?.minDays, d.minDays)),
-    minClicks: Math.round(pos(c?.minClicks, d.minClicks)),
-    minJudgeClicks: Math.round(pos(c?.minJudgeClicks, d.minJudgeClicks)),
+    minDays: posInt(c?.minDays, d.minDays),
+    minClicks: posInt(c?.minClicks, d.minClicks),
+    minJudgeClicks: posInt(c?.minJudgeClicks, d.minJudgeClicks),
   };
   if (out.keepFromPct >= out.expandAtPct) out.keepFromPct = Math.max(1, out.expandAtPct - 1);
   if (out.minJudgeClicks > out.minClicks) out.minJudgeClicks = out.minClicks;
@@ -1105,8 +1123,8 @@ export function parseAiCopies(raw: unknown, campaign: IntentId, hyp: HypId): AdC
   arr.slice(0, 12).forEach((it, i) => {
     const o = it as Record<string, unknown> | null;
     if (!o || typeof o !== 'object') return;
-    const title = String(o.title ?? o.headline ?? '').trim();
-    const description = String(o.description ?? o.desc ?? '').trim();
+    const title = stripMarkup(o.title ?? o.headline ?? '');
+    const description = stripMarkup(o.description ?? o.desc ?? '');
     if (!title || !description) return;
     const h = (['A', 'B', 'C'] as HypId[]).includes(o.hypothesis as HypId) ? (o.hypothesis as HypId) : hyp;
     out.push(makeCopy(campaign, h, title.slice(0, 40), description.slice(0, 90), 'ai', i));
@@ -1621,10 +1639,10 @@ export function parseAiRewrites(raw: unknown, original = ''): AiRewrite[] {
   for (const it of arr) {
     const o = (typeof it === 'string' ? { text: it } : it) as Record<string, unknown> | null;
     if (!o || typeof o !== 'object') continue;
-    const text = String(o.text ?? o.copy ?? o.rewrite ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    const text = stripMarkup(o.text ?? o.copy ?? o.rewrite ?? '').slice(0, 200);
     if (!text || seen.has(norm(text))) continue;
     seen.add(norm(text));
-    out.push({ text, why: String(o.why ?? o.reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 160) });
+    out.push({ text, why: stripMarkup(o.why ?? o.reason ?? '').slice(0, 160) });
     if (out.length >= 3) break;
   }
   return out;

@@ -15,7 +15,7 @@ import {
   paidSurfaceRows, reviewFaq, sampleProductHtml, visibilitySummary, type CaseInput, type FaqItem, type LiveRecord,
 } from './engine';
 import { extractPageFactsDom } from './dom';
-import { latestByQuery, loadCase, loadLive, saveCase, saveLive } from './persist';
+import { clearGeoLocal, EMPTY_CASE, latestByQuery, loadCase, loadLive, onGeoReset, saveCase, saveLive } from './persist';
 import { VerdictBadge } from './parts';
 import { MonitorTab } from './MonitorTab';
 import { AuditTab } from './AuditTab';
@@ -60,6 +60,18 @@ export default function View() {
   useEffect(() => saveLive(live), [live]);
   const [caseInput, setCaseInput] = useState<CaseInput>(() => loadCase());
   useEffect(() => saveCase(caseInput), [caseInput]);
+
+  /* '시연 상태 초기화' — 라이브 기록 · 진단 전후 입력 · FAQ 편집 · 붙여넣은 HTML을 처음 상태로.
+     전역 초기화 직후에는 승인 이력 · 이슈가 잠깐 모두 비므로(이후 시연 이력 재적재) 그 순간도 초기화 신호로 본다 */
+  useEffect(() => onGeoReset(() => {
+    setLive([]);
+    setCaseInput({ ...EMPTY_CASE });
+    setFaqItems(buildFaqDraft(d));
+    setHtml(sampleProductHtml(d, 'defect'));
+    setSampleKind('defect');
+  }), [d]);
+  const emptyGlobal = state.changes.length === 0 && state.incidents.length === 0;
+  useEffect(() => { if (emptyGlobal) clearGeoLocal(); }, [emptyGlobal]);
 
   const axes = axisStates(vis, audit, cov, paid);
   const ls = liveSummary(Object.values(latest));

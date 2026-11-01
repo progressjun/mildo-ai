@@ -61,3 +61,28 @@ export function saveCase(c: CaseInput): void {
   write(CASE_KEY, c);
 }
 export { EMPTY_CASE };
+
+/**
+ * 앱 전역 '시연 상태 초기화' — 'mildo-os:reset' 이벤트(Lab · Watch · Ops와 같은 규약)를 받으면 Claude 라이브 기록 · 진단 전후 입력을 지운다.
+ * agent.ts가 이 파일을 앱 시작 시 불러오므로 GEO 화면이 열려 있지 않아도 동작한다. 열려 있는 화면은 onGeoReset으로 상태를 비운다.
+ */
+export const GEO_RESET_EVENT = 'mildo-os:reset';
+const resetSubs = new Set<() => void>();
+export function clearGeoLocal(): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(LIVE_KEY);
+      localStorage.removeItem(CASE_KEY);
+    }
+  } catch {
+    /* 저장 불가 — 무시 */
+  }
+  resetSubs.forEach((f) => f());
+}
+export function onGeoReset(f: () => void): () => void {
+  resetSubs.add(f);
+  return () => {
+    resetSubs.delete(f);
+  };
+}
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') window.addEventListener(GEO_RESET_EVENT, () => clearGeoLocal());

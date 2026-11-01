@@ -15,7 +15,7 @@ import {
   applyFixes, bulkCheck, buildPipeline, canApprove, candidateStatus, charLen, classifyIntent, collectCopies, creativeBrief, cumulativeSeries,
   decisionPayload, discoverCandidates, discoveryBrief, estimatePhraseVolume, generateSaCopies, groupPools, incomingTests, incomingToDraft,
   inferTestStart, isRegistration, judgeKeywordTest, judgeTestCard, labBrief, labOverview, labPrompt, landingFor, loopCalendar, makeCopy,
-  nextBusinessDay, nextUserCardId, normInv, nthBusinessDay, parseAiCandidates, parseAiCopies, pipelineBrief, pipelineSummary, priceReferences,
+  nextBusinessDay, nextUserCardId, normInv, nthBusinessDay, parseAiCandidates, parseAiCopies, parseAiRewrites, pipelineBrief, pipelineSummary, priceReferences,
   registrationPayload, relatedCandidatesFor, requiredSamplePerArm, resolveCriteria, ruleLabel, reviewAll, reviewBrief, reviewCopy, roasOf, scoreCandidate,
   searchTermCandidates, sg, skuEntries, skuFormula, testBidCap, tokenVolume, validateCardInput, weeklyDraft, wrapupDue,
   type Candidate, type CardDay, type TestCard,
@@ -281,6 +281,16 @@ describe('롱테일 · 구문형 발굴', () => {
     expect(parseAiCandidates('garbage', D)).toEqual([]);
     expect(parseAiCandidates(undefined, D)).toEqual([]);
   });
+  it('AI 응답의 마크업 · 목록 기호 · 기호는 키워드 구문에 남기지 않는다 (태그가 든 구문을 등록 요청하지 않게)', () => {
+    const got = parseAiCandidates(['<b>신혼</b> 침대 매트리스 경도', '1. 자취방 매트리스 사이즈 추천', '**아이방** 매트리스 "추천"', '- 부모님 선물 매트리스 #경도'], D);
+    expect(got.map((c) => c.phrase)).toEqual(['신혼 침대 매트리스 경도', '자취방 매트리스 사이즈 추천', '아이방 매트리스 추천', '부모님 선물 매트리스 경도']);
+    for (const c of got) expect(c.phrase).not.toMatch(/[<>*#"`]/);
+    // 문안 · 수정안은 문장부호는 두고 태그 · 강조 기호만 뺀다
+    const copies = parseAiCopies([{ title: '<b>경도로 고르는</b> 매트리스', description: '**무료배송** · 전문 기사 설치!' }], 'life', 'A');
+    expect(copies[0].title).toBe('경도로 고르는 매트리스');
+    expect(copies[0].description).toBe('무료배송 · 전문 기사 설치!');
+    expect(parseAiRewrites(['<i>체압 분산</i> 구조로 고르는 매트리스'])[0].text).toBe('체압 분산 구조로 고르는 매트리스');
+  });
 });
 
 /* ---------------------------------------------------------------- */
@@ -354,6 +364,26 @@ describe('키워드 테스트 판정 · 경계값', () => {
     expect(c.minDays).toBe(14);
     expect(c.minJudgeClicks).toBe(50);
     expect(resolveCriteria(undefined)).toEqual(LAB_DEFAULT_CRITERIA);
+  });
+  it('기준값 정규화는 멱등 — 화면에 보이는 기준(1회 정규화)과 엔진 판정 기준(2회 정규화)이 같다', () => {
+    const inputs = [
+      { minDays: 0.4, minClicks: 0.3, minJudgeClicks: 0.2 },
+      { targetRoas: 0.001, expandAtPct: 0.5, keepFromPct: 0.2 },
+      { minDays: 7.6, minClicks: 20.4, minJudgeClicks: 25 },
+      { expandAtPct: 1, keepFromPct: 1 },
+    ];
+    for (const i of inputs) {
+      const once = resolveCriteria(i);
+      expect(resolveCriteria(once), JSON.stringify(i)).toEqual(once);
+    }
+    // 1 미만은 초기값 (입력 칸 min=1과 같은 기준) · 정수 기준은 반올림
+    expect(resolveCriteria({ minDays: 0.4, minClicks: 0.3, minJudgeClicks: 0.2 })).toMatchObject({ minDays: 14, minClicks: 100, minJudgeClicks: 30 });
+    expect(resolveCriteria({ targetRoas: 0.001 }).targetRoas).toBe(AD_PILOT.targetRoas);
+    expect(resolveCriteria({ minDays: 7.6, minClicks: 20.4 })).toMatchObject({ minDays: 8, minClicks: 20, minJudgeClicks: 20 });
+    // 칸반 판정도 같은 기준 — 0.4일은 14일로 판정 (화면 표시와 같음)
+    const a = buildPipeline(D, [], resolveCriteria({ minDays: 0.4 }));
+    const b = buildPipeline(D, [], LAB_DEFAULT_CRITERIA);
+    expect(a.map((x) => x.step)).toEqual(b.map((x) => x.step));
   });
 });
 

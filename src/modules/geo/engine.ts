@@ -1639,12 +1639,13 @@ export function caseMetrics(c: CaseInput) {
   const rateDeltaPp = okRate(c.beforeRate) && okRate(c.afterRate) ? c.afterRate - c.beforeRate : null;
   const citeDelta = okCite(c.beforeCites) && okCite(c.afterCites) ? c.afterCites - c.beforeCites : null;
   const citeDeltaPct = citeDelta !== null && isNum(c.beforeCites) && c.beforeCites > 0 ? (citeDelta / c.beforeCites) * 100 : null;
-  const v = (n: number | null, suf: string, ok: boolean) => (!isNum(n) ? '[입력]' : !ok ? '[범위 확인]' : `${Number.isInteger(n) ? n : n.toFixed(1)}${suf}`);
+  // 정수는 천 단위 구분(1,200건) — 제안서에 그대로 붙여 넣는 문구
+  const v = (n: number | null, suf: string, ok: boolean) => (!isNum(n) ? '[입력]' : !ok ? '[범위 확인]' : `${Number.isInteger(n) ? fmt.int(n) : n.toFixed(1)}${suf}`);
   const sign = (n: number) => (n > 0 ? '+' : '');
   const text = [
     `${c.brand.trim() || '[브랜드]'}${c.beforeLabel || c.afterLabel ? ` · ${c.beforeLabel || '[진단 전]'} → ${c.afterLabel || '[진단 후]'}` : ''}${c.engines.trim() ? ` · ${c.engines.trim()}` : ''}`,
     `브랜드 언급률 ${v(c.beforeRate, '%', okRate(c.beforeRate))} → ${v(c.afterRate, '%', okRate(c.afterRate))}${rateDeltaPp !== null ? ` (${sign(rateDeltaPp)}${rateDeltaPp.toFixed(1)}pp)` : ''}`,
-    `인용 수 ${v(c.beforeCites, '건', okCite(c.beforeCites))} → ${v(c.afterCites, '건', okCite(c.afterCites))}${citeDelta !== null ? ` (${sign(citeDelta)}${citeDelta}건${citeDeltaPct !== null ? `, ${sign(citeDeltaPct)}${citeDeltaPct.toFixed(1)}%` : ''})` : ''}`,
+    `인용 수 ${v(c.beforeCites, '건', okCite(c.beforeCites))} → ${v(c.afterCites, '건', okCite(c.afterCites))}${citeDelta !== null ? ` (${sign(citeDelta)}${fmt.int(citeDelta)}건${citeDeltaPct !== null ? `, ${sign(citeDeltaPct)}${citeDeltaPct.toFixed(1)}%` : ''})` : ''}`,
     c.demo ? 'TEST DATA · 실제 사례 아님' : '',
   ].filter(Boolean).join(' · ');
   return { rateDeltaPp, citeDelta, citeDeltaPct, complete: missing.length === 0 && invalid.length === 0, missing, invalid, demo: !!c.demo, text };

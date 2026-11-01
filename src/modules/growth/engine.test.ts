@@ -779,6 +779,10 @@ describe('성장 공식 · 캘린더 · 신호 · 프롬프트 · 브리프', ()
     const mid = calendarView({ ...DEMO, today: '2027-05-15' });
     expect(mid.map((x) => x.status)).toEqual(['past', 'current', 'upcoming', 'upcoming']);
     expect(calendarView({ ...DEMO, today: '2027-12-31' })[3].status).toBe('current');
+    // 같은 화면(#growth)으로 가는 링크는 해시가 같아 눌러도 반응이 없다 — 반드시 열 탭을 지정
+    const self = c.flatMap((x) => x.links).filter((l) => l.route === 'growth');
+    expect(self.length).toBeGreaterThan(0);
+    expect(self.every((l) => !!l.tab)).toBe(true);
   });
 
   it('성장 공식 4축: 줄인 시간 주 635분 (1,070 → 435) 등', () => {

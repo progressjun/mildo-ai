@@ -582,6 +582,9 @@ describe('진단 전후 지표 (p.29 공란)', () => {
     const edge = caseMetrics({ brand: 'A', beforeLabel: '', afterLabel: '', engines: '', beforeRate: 0, afterRate: 100, beforeCites: 0, afterCites: 0 });
     expect(edge.text).toContain('0% → 100% (+100.0pp)');
     expect(edge.text).toContain('0건 → 0건 (0건)');
+    // 큰 인용 수는 천 단위 구분 (제안서 삽입 문구)
+    const big = caseMetrics({ brand: 'A', beforeLabel: '', afterLabel: '', engines: '', beforeRate: 10, afterRate: 20, beforeCites: 1000, afterCites: 12000 });
+    expect(big.text).toContain('인용 수 1,000건 → 12,000건 (+11,000건, +1100.0%)');
   });
 
   it('숫자 입력 파싱: 소수점 입력 중 · 콤마 · 단위 · 빈 값 · 비수치', () => {

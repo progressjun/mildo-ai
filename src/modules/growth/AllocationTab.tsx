@@ -4,7 +4,7 @@ import type { Dataset, MediaId } from '@/core/types';
 import { AD_PILOT, MEDIA, MEDIA_IDS, RFP } from '@/data/constants';
 import { clamp, fmt } from '@/core/util';
 import { useActions, useStore } from '@/core/store';
-import { Button, Callout, Card, DataTable, NumberInput, Pill, ProgressBar, Segmented, Src, Stat, Toggle, type Column, type Tone } from '@/ui/primitives';
+import { Button, Callout, Card, DataTable, Pill, ProgressBar, Segmented, Src, Stat, Toggle, type Column, type Tone } from '@/ui/primitives';
 import { LineChart } from '@/ui/charts';
 import { AiInsight } from '@/ui/AiInsight';
 import { ALLOCATION_GUARDRAILS, CURVE_PRIORS, PACE_RULES, REBALANCE_RULES } from './data';
@@ -14,7 +14,7 @@ import {
   marginalCurvePoints, maxShareMove, pctInt, rebalanceShares, reallocationChange, type BudgetConstraint, type ConstraintVerdict, type Guardrails, type Shares,
 } from './engine';
 import { allocationBrief } from './briefs';
-import { BIND_LABEL, MediaLabel, StackRows, Verdict } from './parts';
+import { BIND_LABEL, MediaLabel, NumField as NumberInput, StackRows, Verdict } from './parts';
 
 type BMode = 'prior' | 'data' | 'manual';
 const CONSTRAINT_TONE: Record<ConstraintVerdict, Tone> = { raise: 'good', hold: 'serious', bid: 'warning' };

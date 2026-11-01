@@ -41,8 +41,10 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
   const reason = ai.backend === 'checking' ? 'AI 연결 상태를 확인하는 중입니다.'
     : blocked ?? (ai.connected ? '' : 'AI 미연결 — 설정에서 Anthropic API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.');
 
+  const running = useRef(false);
   const runLive = async (ids: string[]) => {
-    if (!usable || !ids.length) return;
+    if (!usable || !ids.length || running.current) return;
+    running.current = true;
     setNote('');
     ctl.current = new AbortController();
     for (const id of ids) {
@@ -60,6 +62,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
         break;
       }
     }
+    running.current = false;
     setBusy(null);
     setChecked(new Set());
   };
@@ -173,14 +176,10 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
               <span className="xs muted">질의 문장을 지시문 없이 그대로 보내고, 답변에서 '수면밀도 · 밀도 매트리스' 언급 · 순서 · 경쟁사 · 인용 URL을 파싱합니다.</span>
             </div>
             <div className="row" style={{ gap: 6 }}>
-              {busy ? (
-                <Button size="sm" icon="stop" onClick={() => ctl.current?.abort()}>중지</Button>
-              ) : (
-                <>
-                  <Button size="sm" variant="accent" icon="sparkle" disabled={!usable || !selected} title={reason || undefined} onClick={() => selected && runLive([selected.query.id])}>선택 질의 진단</Button>
-                  <Button size="sm" icon="play" disabled={!usable || checked.size === 0} title={reason || (checked.size ? undefined : '매트릭스에서 체크한 질의가 없습니다')} onClick={() => runLive([...checked])}>체크한 {checked.size}개 일괄 진단</Button>
-                </>
-              )}
+              {/* 진단 중에도 시작 버튼은 제자리에서 비활성으로 둔다 — 빠른 두 번 클릭의 두 번째가 '중지'에 떨어져 방금 시작한 진단을 취소하지 않도록 */}
+              <Button size="sm" variant="accent" icon="sparkle" disabled={!usable || !selected || !!busy} title={reason || undefined} onClick={() => selected && runLive([selected.query.id])}>선택 질의 진단</Button>
+              <Button size="sm" icon="play" disabled={!usable || checked.size === 0 || !!busy} title={reason || (checked.size ? undefined : '매트릭스에서 체크한 질의가 없습니다')} onClick={() => runLive([...checked])}>체크한 {checked.size}개 일괄 진단</Button>
+              {busy ? <Button size="sm" icon="stop" onClick={() => ctl.current?.abort()}>중지</Button> : null}
             </div>
             {busy ? <div className="xs">'{snap.queries.find((q) => q.id === busy)?.text}' 진단 중…</div> : null}
             {reason ? <div className="xs muted">{reason}</div> : null}

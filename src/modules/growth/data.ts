@@ -166,10 +166,11 @@ export const CO_PROMO_KEYWORDS: Record<string, string> = {
 };
 
 /* ------------------------------ p.42 캘린더 연결 ------------------------------ */
-export const CALENDAR_LINKS: Record<string, { route: string; label: string }[]> = {
+/** route가 'growth'이면 tab으로 같은 화면의 탭을 연다 (같은 해시 링크는 눌러도 아무 일이 없으므로) */
+export const CALENDAR_LINKS: Record<string, { route: string; label: string; tab?: 'funnel' | 'dasa' | 'alloc' | 'demand' }[]> = {
   '2027 Q1': [{ route: 'ops', label: '온보딩' }, { route: 'board', label: '성과 기준선' }],
   '2027 Q2': [{ route: 'lab', label: '구문형 확장' }, { route: 'geo', label: '문제 해결형 랜딩' }],
-  '2027 Q3': [{ route: 'growth', label: '전환 · DA→SA' }],
+  '2027 Q3': [{ route: 'growth', tab: 'funnel', label: '전환 개선' }, { route: 'growth', tab: 'dasa', label: 'DA→SA' }],
   '2027 Q4': [{ route: 'flow', label: '연말 프로모션' }, { route: 'reports', label: '연간 리뷰' }],
 };
 export const QUARTER_START: Record<string, string> = { '2027 Q1': '2027-01-01', '2027 Q2': '2027-04-01', '2027 Q3': '2027-07-01', '2027 Q4': '2027-10-01' };

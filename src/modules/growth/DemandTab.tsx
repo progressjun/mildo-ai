@@ -4,13 +4,13 @@ import type { Dataset } from '@/core/types';
 import { CO_PROMOTIONS, NEW_MEDIA_PILOT } from '@/data/constants';
 import { clamp, fmt } from '@/core/util';
 import { useActions, useStore } from '@/core/store';
-import { Button, Callout, Card, NumberInput, Pill, ProgressBar, Src, Stat } from '@/ui/primitives';
+import { Button, Callout, Card, Pill, ProgressBar, Src, Stat } from '@/ui/primitives';
 import { HBarChart } from '@/ui/charts';
 import { AiInsight } from '@/ui/AiInsight';
 import { CO_PROMO_PRINCIPLES, NEW_MEDIA_CPA_MULT, NEW_MEDIA_SCORES, PILOT_DEFAULTS } from './data';
 import { DEFAULT_WEIGHTS, coPromoDemand, defaultPilots, growthPrompt, pilotChange, pilotCommitments, pilotPlan, scoreNewMedia, type CriterionId, type ScoreTable } from './engine';
 import { newMediaBrief } from './briefs';
-import { Kv, Verdict } from './parts';
+import { Kv, NumField as NumberInput, Verdict } from './parts';
 
 const STATUS: Record<'ok' | 'short' | 'off', { label: string; tone: 'good' | 'warning' | 'neutral' }> = {
   ok: { label: '판정 가능', tone: 'good' }, short: { label: '표본 부족', tone: 'warning' }, off: { label: '미배정', tone: 'neutral' },
@@ -121,7 +121,8 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
                   <td className="r">{fmt.dec1(r.breakEvenConv)}<div className="xs muted">증분 ROAS {fmt.roas(r.threshold)} · 객단가 기준</div></td>
                   <td><Verdict tone={STATUS[r.status].tone} label={STATUS[r.status].label} basis={r.status === 'off' ? '예산 미배정' : `예상 ${fmt.dec1(r.expectedConv)} vs 필요 ${fmt.int(r.minConv)}건`} /></td>
                   <td className="r">
-                    {r.requested ? <a className="xs" href="#flow">요청됨 · MILDO Flow</a> : (
+                    {/* 요청 후 같은 자리에 링크를 두면 '승인 요청' 두 번 클릭의 두 번째가 링크를 눌러 MILDO Flow로 이동한다 — 상태 배지만 두고 링크는 표 아래 안내에 둔다 */}
+                    {r.requested ? <Pill tone="neutral" icon="clock" title="MILDO Flow에서 수면밀도 승인 대기 · 진행 상태 확인">요청됨</Pill> : (
                       <Button size="sm" icon="send" disabled={r.budget <= 0 || plan.overCap} onClick={() => request(r.name)} title={plan.overCap ? '파일럿 한도 초과' : r.budget <= 0 ? '예산 미배정' : undefined}>승인 요청</Button>
                     )}
                   </td>
@@ -131,7 +132,7 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
           </table>
         </div>
         <div className="xs muted">
-          CPA 가정 = 최근 30일 DA 평균 CPA {fmt.won(plan.baseCpa)} (GFA · Meta · Google, TEST DATA) × 후보별 배수(데모 가정) · 객단가 {fmt.won(plan.aov)} · 표본 부족 후보는 예산을 늘리거나 기간을 연장하지 않으면 4주 안에 확대 · 중단 판정을 내릴 수 없습니다. 신규 캠페인은 수면밀도 승인 (GFA 위임 범위 기준).
+          CPA 가정 = 최근 30일 DA 평균 CPA {fmt.won(plan.baseCpa)} (GFA · Meta · Google, TEST DATA) × 후보별 배수(데모 가정) · 객단가 {fmt.won(plan.aov)} · 표본 부족 후보는 예산을 늘리거나 기간을 연장하지 않으면 4주 안에 확대 · 중단 판정을 내릴 수 없습니다. 신규 캠페인은 수면밀도 승인 (GFA 위임 범위 기준) · 요청한 파일럿은 <a href="#flow">MILDO Flow</a>에서 확인합니다.
         </div>
       </Card>
 

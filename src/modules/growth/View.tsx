@@ -87,7 +87,7 @@ export default function View({ initialTab = 'overview' }: { initialTab?: TabId }
       {tab === 'dasa' ? <DaSaTab d={d} ds={ds} onApplyCredit={() => { setCreditPref(true); setTab('alloc'); }} /> : null}
       {tab === 'funnel' ? <FunnelTab d={d} f={funnel} /> : null}
       {tab === 'demand' ? <DemandTab d={d} marginalRoas={model.equalize.marginalRoas} /> : null}
-      {tab === 'partner' ? <PartnerTab d={d} /> : null}
+      {tab === 'partner' ? <PartnerTab d={d} onGo={go} /> : null}
     </div>
   );
 }
