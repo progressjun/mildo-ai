@@ -155,6 +155,15 @@ export const COMPETITOR_ALIASES: Record<string, string[]> = {
   지누스: ['지누스', 'zinus'],
   휴도: ['휴도'],
 };
+/**
+ * 경쟁 6개사 차트 색 — 엔티티에 고정 (SPEC §2: 순위로 바꾸지 않음). 수면밀도는 --accent.
+ * --series-5(핑크)는 --accent와 구분이 어려워 쓰지 않는다.
+ */
+export const COMPETITOR_COLOR: Record<string, string> = {
+  베스트슬립: '--series-1', 웰퍼니처: '--series-2', 퀵슬립: '--series-3', 올라인매트리스: '--series-4', 지누스: '--series-7', 휴도: '--series-8',
+};
+export const COMPETITOR_COLOR_FALLBACK = '--line-strong';
+
 /** 참고: RFP 경쟁사 외 자주 함께 언급되는 브랜드 (점유 계산에서는 제외, 순서 계산에는 포함) */
 export const OTHER_BRANDS = ['시몬스', '에이스침대', '템퍼', '씰리', '삼분의일', '슬로우베드', '코웨이', '이케아'];
 
@@ -211,6 +220,13 @@ export const AUDIT_RULES = {
   /** 가격 일치 허용 오차(원) */
   priceTolerance: 1,
 } as const;
+
+/**
+ * 성과 급변 판정 (p.14 "최근 3일 CPC/전환 ±50% → 자동 조정 보류") — 임계값은 AD_PILOT.anomalyHoldPct.
+ * 표본 기준은 AD Pilot 초기값과 같게 둔다(같은 키워드가 두 화면에서 다르게 판정되지 않도록 · 온보딩 중 확정):
+ * 최근 3일 클릭 20회 이상일 때만 CPC 급변, 직전 일평균 기준 기대 전환 1건 이상일 때만 전환 급변을 판정한다.
+ */
+export const SHIFT_RULES = { windowDays: 3, minRecentClicks: 20, minExpectedConv: 1 } as const;
 
 /* ------------------------------ AEO 주제 ------------------------------ */
 

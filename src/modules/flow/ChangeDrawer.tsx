@@ -13,7 +13,7 @@ import type { FlowCtx } from './useFlow';
 import { Button } from '@/ui/primitives';
 
 export function ChangeDrawer({ ctx, id, onClose }: { ctx: FlowCtx; id: string; onClose: () => void }) {
-  const { changes, state, data, incidents, clock, act } = ctx;
+  const { changes, state, data, incidents, clock, act, bulkAlerts } = ctx;
   const c = changes.find((x) => x.id === id);
   const [note, setNote] = useState('');
   if (!c) return <Drawer title="요청 없음" onClose={onClose}><div className="small muted">요청을 찾지 못했습니다 (초기화되었을 수 있음).</div></Drawer>;
@@ -26,6 +26,7 @@ export function ChangeDrawer({ ctx, id, onClose }: { ctx: FlowCtx; id: string; o
   const delIdx = (c.kind === 'budget' || c.kind === 'bid') && pct !== undefined && Number.isFinite(pct) ? delegationIndexByPct(pct) : c.kind === 'status' ? 1 : c.kind === 'gfa' ? 2 : null;
   const media = mediaOfChange(data, c);
   const related = incidents.filter((i) => linkedChanges(data, i, [c], clock.toMs).length > 0);
+  const bulkHits = bulkAlerts.filter((b) => b.related.includes(c.id));
   const run = (a: FlowAction) => { if (act(c, a, note)) setNote(''); };
 
   return (
@@ -47,13 +48,20 @@ export function ChangeDrawer({ ctx, id, onClose }: { ctx: FlowCtx; id: string; o
 
       <div className="stack-sm">
         <div className="zone-label">승인 근거</div>
-        <KV k="결정 유형 (p.53)" v={<>{dec.row.type} · 결정자 {dec.row.decider} · 소요 {dec.row.lead} <Src kind="PROPOSAL" page="p.53" /></>} />
-        {delIdx !== null ? <KV k="위임 범위 (p.15)" v={<>{GFA_DELEGATION[delIdx].range} → {GFA_DELEGATION[delIdx].label} <span className="muted">· 예시 · 계약 시 확정</span></>} /> : null}
+        <KV k="결정 유형 (p.53)" v={<>{dec.row.type} · 결정자 {dec.row.decider} · 소요 {dec.row.lead} <Src kind="PROPOSAL" page="p.53" />{dec.delegated ? <span className="xs muted" style={{ display: 'block' }}>{dec.delegated}</span> : null}</>} />
+        {delIdx !== null ? <KV k="위임 범위 (p.15)" v={<>{GFA_DELEGATION[delIdx].range} → {GFA_DELEGATION[delIdx].label} <span className="muted">· {c.kind === 'bid' ? `입찰은 변경 폭 기준 준용 · 일 조정 폭 상한 ${ctx.apCfg.dailyChangeCapPct}% 별도 (p.14) · ` : ''}예시 · 계약 시 확정</span></>} /> : null}
         <KV k="판정 시한" v={<>{dec.rule.label} <span className="muted">· {dec.rule.note}</span></>} />
         <KV k="대상 매체" v={mediaName(media)} />
         <KV k="현재 역할" v={<>{state.role} · 승인 범위 {roleScopeLabel(state.role)} {perm.ok ? <Pill tone="good" icon="check">처리 가능</Pill> : <Pill tone="neutral" icon="x">권한 밖</Pill>}</>} />
         {!perm.ok ? <div className="xs muted">{perm.reason}. 상단 역할 선택에서 {APPROVER_LABEL[c.approver]}(으)로 바꾸면 처리할 수 있습니다.</div> : null}
       </div>
+
+      {bulkHits.length ? (
+        <Callout tone="critical" title="대량 변경 실수 감지 대상 (MILDO Alert · p.45)">
+          {bulkHits.map((b) => <div key={b.id}>{b.title} · {b.basis}</div>)}
+          <div className="xs">반영 전 건별 근거를 확인하고, 잘못 반영된 건은 최신 건부터 롤백합니다.</div>
+        </Callout>
+      ) : null}
 
       {ex ? (
         <Callout tone={ex.ok ? (ex.warnings.length ? 'warning' : 'good') : 'critical'} title={ex.ok ? '반영 전 실행 점검 통과' : '반영 시 실행 보류 예상'}>
@@ -61,7 +69,7 @@ export function ChangeDrawer({ ctx, id, onClose }: { ctx: FlowCtx; id: string; o
             {ex.blocks.map((b, k) => <div key={`b${k}`}>{b}</div>)}
             {ex.warnings.map((w, k) => <div key={`w${k}`}>{w}</div>)}
             {ex.ok ? ex.passes.map((p, k) => <div key={`p${k}`}>{p}</div>) : null}
-            <div className="xs">기준: 지원 API 범위 내 실행, 오류 시 보류 · 보고 (p.15 04) · 전환 추적 단절 시 자동 조정 보류 (p.45)</div>
+            <div className="xs">기준: 지원 API 범위 내 실행, 오류 시 보류 · 보고 (p.15 04) · 전환 추적 단절 시 자동 조정 보류 (p.45) · GFA · AD Pilot 요청은 해당 화면과 같은 실행 검증</div>
           </div>
         </Callout>
       ) : null}

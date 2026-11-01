@@ -8,7 +8,7 @@ import { renderToString } from 'react-dom/server';
 import type { Dataset } from '@/core/types';
 import { DEMO } from '@/data/demo';
 import {
-  auditHtml, buildFaqDraft, buildGeoSnapshot, EMPTY_CASE, faqCoverage, paidSurfaceRows, reviewFaq, sampleProductHtml, visibilitySummary,
+  auditHtml, buildFaqDraft, buildGeoSnapshot, demoCaseFromSnapshot, EMPTY_CASE, faqCoverage, paidSurfaceRows, parseAiAnswer, reviewFaq, sampleProductHtml, visibilitySummary,
 } from './engine';
 
 beforeAll(() => {
@@ -75,9 +75,28 @@ describe('SearchTuneOS 화면 렌더', () => {
     expect(p).toContain('등록 요청');
     const c = await wrap(h(CaseTab, { value: EMPTY_CASE, onChange: () => undefined, snap }));
     expect(c).toContain('[브랜드 · 진단 전후 브랜드 언급률 · 인용 수 입력]');
+    expect(c).toContain('미입력 5개');
+    // 데모 값 채우기 → TEST DATA 경고 + 삽입 문구에도 TEST DATA
+    const cd = await wrap(h(CaseTab, { value: demoCaseFromSnapshot(snap), onChange: () => undefined, snap }));
+    expect(cd).toContain('TEST DATA 값');
+    expect(cd).toMatch(/geo-case-out[^>]*>[^<]*TEST DATA · 실제 사례 아님/);
+    expect(cd).not.toContain('미입력');
     const m = await wrap(h(MonitorTab, { snap, vis, roundIndex: 3, onRound: () => undefined, live: [], latest: {}, onLive: () => undefined, onClearLive: () => undefined }));
     expect(m).toContain('질의 × 엔진 매트릭스');
-    for (const s of [a, f, p, c, m]) expect(s).not.toMatch(/NaN|Infinity/);
+    expect(m).toContain('진단 결과 복사');
+    expect(m).toContain('CSV');
+    // Claude 열: URL만 인용한 답변은 '인용만'으로 구분 표시
+    const cited = { ...parseAiAnswer('https://mildo.kr 참고'), queryId: 'q14', query: '매트리스 추천', at: '2026-10-31T06:00:00Z', backend: 'artifact' };
+    const mc = await wrap(h(MonitorTab, { snap, vis, roundIndex: 3, onRound: () => undefined, live: [cited], latest: { q14: cited }, onLive: () => undefined, onClearLive: () => undefined }));
+    expect(mc).toContain('인용만');
+    // 급변 키워드 행이 선택되면 원인 후보 순위가 근거와 함께 보인다
+    const hold = paidSurfaceRows(DEMO, snap).filter((r) => r.action.id === 'hold');
+    expect(hold.length).toBeGreaterThan(0);
+    const ph = await wrap(h(PaidTab, { rows: hold, vis }));
+    expect(ph).toContain('원인 후보');
+    expect(ph).toContain('경쟁사 입찰 상승');
+    expect(ph).toContain('확률 아님');
+    for (const s of [a, f, p, c, m, ph]) expect(s).not.toMatch(/NaN|Infinity/);
   });
 
   it('빈 데이터 · 빈 스냅샷에서도 예외 없이 렌더', async () => {

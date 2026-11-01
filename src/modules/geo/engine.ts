@@ -10,12 +10,12 @@
  *  - AEO FAQ: 규칙 기반 초안(사이즈 · 가격은 데이터에서) → REVIEW_RULES 검수 → FAQPage JSON-LD.
  */
 import type { Brief } from '@/ai/prompts';
-import type { Dataset, IntentId, Keyword, Product, Promotion, SalesChannelId } from '@/core/types';
-import { AD_PILOT, RFP, REVIEW_RULES, SA_CAMPAIGNS } from '@/data/constants';
+import type { ApprovalLevel, ChangeRequest, Dataset, IntentId, Keyword, Product, Promotion, SalesChannelId } from '@/core/types';
+import { AD_PILOT, CAUSE_CANDIDATES, KEYWORD_TEST_RULES, RFP, REVIEW_RULES, SA_CAMPAIGNS } from '@/data/constants';
 import { addDays, clamp, fmt, fmtDate, hashString, metrics, rng, sum, weekday } from '@/core/util';
 import {
   AEO_TOPICS, AUDIT_RULES, BRAND_STRONG_PATTERN, CITE_LABEL, COMPETITOR_ALIASES, DENSITY_CONTEXT_PATTERN, GEO_ENGINES, GEO_QUERIES, GEO_ROUNDS,
-  GEO_ROUND_WEEKDAY, GEO_RULES, INTENT_COMPETITOR_MULT, INTENT_MENTION_MULT, OTHER_BRANDS, OWNED_DOMAINS, REVIEW_FIX, SHOPPING_EXPOSE,
+  GEO_ROUND_WEEKDAY, GEO_RULES, INTENT_COMPETITOR_MULT, INTENT_MENTION_MULT, OTHER_BRANDS, OWNED_DOMAINS, REVIEW_FIX, SHIFT_RULES, SHOPPING_EXPOSE,
   type AeoTopicId, type GeoEngineDef, type GeoEngineId, type GeoQuery,
 } from './data';
 
@@ -38,6 +38,11 @@ const r1 = (n: number) => (Number.isFinite(n) ? Math.round(n * 10) / 10 : null);
 export const round = { r0, r1, pct: (ratio: number) => r1(ratio * 100) };
 const pctTxt = (ratio: number, d = 0) => (Number.isFinite(ratio) ? `${(ratio * 100).toFixed(d)}%` : '—');
 const norm = (s: string) => s.toLowerCase().replace(/\([^)]*\)/g, '').replace(/[\s·_\-|/,.()[\]:]+/g, '');
+
+/** 'YYYY-MM-DD' → '10/26(월)' · 날짜가 없거나 형식이 다르면 '—' (fmtDate의 NaN 표기 방지) */
+export function dateLabel(s: string | null | undefined, withWeekday = true): string {
+  return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) ? fmtDate(s, withWeekday) : '—';
+}
 
 export const INTENT_LABEL: Record<IntentId, string> = {
   brand: SA_CAMPAIGNS.brand.name, generic: SA_CAMPAIGNS.generic.name, problem: SA_CAMPAIGNS.problem.name, compare: SA_CAMPAIGNS.compare.name, life: SA_CAMPAIGNS.life.name,
@@ -534,11 +539,12 @@ export function auditPage(facts: PageFacts, data?: Dataset | null): PageAudit {
     return offers.find((o) => o.price !== null && Math.abs(o.price - displayed.value) <= R.priceTolerance) ?? offers.find((o) => o.price !== null) ?? null;
   })();
   const priceDiff = displayed && offerForDisplayed?.price != null ? metrics.pctChange(offerForDisplayed.price, displayed.value) : NaN;
+  const displayedOption = displayed?.option ? ((dataProduct ? optionByKey(dataProduct, displayed.option)?.label : null) ?? displayed.option) : null;
   checks.push({
     id: 'price_match', axis: '구조화 데이터', label: '화면 가격 ↔ offers.price', weight: 3,
     status: !product || !hasOfferPrice ? 'fail' : !displayed ? 'warn' : offerForDisplayed?.price != null && Math.abs(offerForDisplayed.price - displayed.value) <= R.priceTolerance ? 'pass' : 'fail',
     measured: !displayed ? `화면 가격 요소 미검출${hasOfferPrice ? '' : ' · offers.price 없음'}`
-      : `화면 ${fmt.won(displayed.value)}${displayed.option ? ` (${displayed.option})` : ''} · JSON-LD ${offerForDisplayed?.price != null ? fmt.won(offerForDisplayed.price) : '없음'}${Number.isFinite(priceDiff) && Math.abs(priceDiff) > 0.05 ? ` (${fmt.delta(priceDiff)})` : ''}`,
+      : `화면 ${fmt.won(displayed.value)}${displayedOption ? ` (${displayedOption})` : ''} · JSON-LD ${offerForDisplayed?.price != null ? fmt.won(offerForDisplayed.price) : '없음'}${Number.isFinite(priceDiff) && Math.abs(priceDiff) > 0.05 ? ` (화면 대비 ${fmt.delta(priceDiff)})` : ''}`,
     basis: `일치 (허용 오차 ${R.priceTolerance}원) · 불일치 시 검색 · AI 답변에 다른 가격 노출`,
     fix: !displayed ? '화면 판매가 요소에 class="sale-price" 또는 itemprop="price"를 지정합니다.'
       : offerForDisplayed?.price != null && Math.abs(offerForDisplayed.price - displayed.value) <= R.priceTolerance ? '현재 기준 충족.'
@@ -556,7 +562,7 @@ export function auditPage(facts: PageFacts, data?: Dataset | null): PageAudit {
     measured: !dataProduct ? '판매 데이터에 일치 상품 없음' : !matchedOffers.length ? '옵션과 연결된 offer 없음'
       : priceMis.length ? priceMis.map(({ o, opt }) => `${opt.label} ${o.price != null ? fmt.won(o.price) : '가격 없음'} → ${fmt.won(expectedSalePrice(opt.price, promo))}`).join(' · ')
         : `${matchedOffers.length}개 옵션 일치`,
-    basis: promo ? `정가 × (1 − ${promo.discountRate}%) · ${promo.name} ${fmtDate(promo.start, false)}~${fmtDate(promo.end, false)} 진행 중` : '정가 기준 (진행 중 프로모션 없음)',
+    basis: promo ? `정가 × (1 − ${promo.discountRate}%) · ${promo.name} ${dateLabel(promo.start, false)}~${dateLabel(promo.end, false)} 진행 중` : '정가 기준 (진행 중 프로모션 없음)',
     fix: priceMis.length ? `옵션별 offers.price를 판매가로 갱신합니다${promo ? ` (프로모션 종료일 ${promo.end}을 priceValidUntil로)` : ''}.` : matchedOffers.length ? '현재 기준 충족.' : 'offers.name에 옵션명(슈퍼싱글 · 퀸 · 킹)을 넣으면 옵션별 대조가 가능합니다.',
   });
   const stockMis = matchedOffers.filter(({ o, opt }) => (o.availability === 'InStock' && !opt.inStock) || (o.availability === 'OutOfStock' && opt.inStock));
@@ -983,8 +989,10 @@ export function visibilitySummary(snap: GeoSnapshot, roundIndex?: number): Visib
   }).sort((a, b) => b.mentions - a.mentions);
 
   const intents: IntentId[] = ['brand', 'generic', 'problem', 'compare', 'life'];
+  const intentOf: Record<string, IntentId> = {};
+  for (const q of snap.queries) intentOf[q.id] = q.intent;
   const byIntent = intents.map((intent) => {
-    const ic = cells.filter((c) => QUERY_BY_ID[c.queryId]?.intent === intent || snap.queries.find((q) => q.id === c.queryId)?.intent === intent);
+    const ic = cells.filter((c) => (intentOf[c.queryId] ?? QUERY_BY_ID[c.queryId]?.intent) === intent);
     return { intent, label: INTENT_LABEL[intent], total: ic.length, mentioned: ic.filter((c) => c.mentioned).length, rate: safeDiv(ic.filter((c) => c.mentioned).length, ic.length) };
   });
 
@@ -1059,24 +1067,32 @@ function domainOf(url: string): string {
   return low.split(/[/?#]/)[0];
 }
 
+/** URL · 도메인 표기 (본문 언급이 아니라 인용) — 같은 길이의 공백으로 가려 위치(순서 · 발췌)는 그대로 둔다 */
+const URL_TOKEN = /(?:https?:\/\/|www\.)[^\s)\]>"'<]+|[a-z0-9][a-z0-9.-]*\.(?:co\.kr|kr|com|net|se|io|wiki)(?:\/[^\s)\]>"'<]*)?/gi;
+export function maskUrls(text: string): string {
+  return String(text ?? '').replace(URL_TOKEN, (m) => ' '.repeat(m.length));
+}
+
 export function parseAiAnswer(text: string): LiveParse {
   const t = String(text ?? '');
-  const strong = [...t.matchAll(new RegExp(BRAND_STRONG_PATTERN, 'gi'))].map((m) => ({ i: m.index ?? 0, len: m[0].length }));
-  const ctx = [...t.matchAll(new RegExp(DENSITY_CONTEXT_PATTERN, 'gi'))].map((m) => ({ i: m.index ?? 0, len: m[0].length }));
+  // 브랜드 · 경쟁사 언급은 본문에서만 센다 (mildo.kr · zinus.com 같은 URL은 인용으로만 집계)
+  const body = maskUrls(t);
+  const strong = [...body.matchAll(new RegExp(BRAND_STRONG_PATTERN, 'gi'))].map((m) => ({ i: m.index ?? 0, len: m[0].length }));
+  const ctx = [...body.matchAll(new RegExp(DENSITY_CONTEXT_PATTERN, 'gi'))].map((m) => ({ i: m.index ?? 0, len: m[0].length }));
   const inside = (spans: { i: number; len: number }[], i: number) => spans.some((s) => i >= s.i && i < s.i + s.len);
   let ambiguous = 0;
-  for (const m of t.matchAll(/밀도/g)) {
+  for (const m of body.matchAll(/밀도/g)) {
     const i = m.index ?? 0;
     if (!inside(strong, i) && !inside(ctx, i)) ambiguous++;
   }
   const firsts: { name: string; i: number; kind: 'brand' | 'competitor' | 'other' }[] = [];
   if (strong.length) firsts.push({ name: BRAND, i: strong[0].i, kind: 'brand' });
   for (const [name, aliases] of Object.entries(COMPETITOR_ALIASES)) {
-    const m = t.match(new RegExp(aliases.join('|'), 'i'));
+    const m = body.match(new RegExp(aliases.join('|'), 'i'));
     if (m && m.index !== undefined) firsts.push({ name, i: m.index, kind: 'competitor' });
   }
   for (const name of OTHER_BRANDS) {
-    const i = t.indexOf(name);
+    const i = body.indexOf(name);
     if (i >= 0) firsts.push({ name, i, kind: 'other' });
   }
   firsts.sort((a, b) => a.i - b.i);
@@ -1110,6 +1126,8 @@ export function liveVerdict(r: LiveParse | null | undefined): Verdict {
   if (!r) return { id: 'none', label: '미진단', tone: 'outline', basis: 'Claude 연결 시 버튼으로 진단' };
   if (r.mentioned) return { id: 'mentioned', label: `언급 · ${r.position}번째`, tone: r.position === 1 ? 'good' : 'neutral', basis: `브랜드 ${r.order.length}개 중 ${r.position}번째 · 경쟁사 ${r.competitors.length}개` };
   if (r.ambiguous > 0) return { id: 'ambiguous', label: '확인 필요', tone: 'warning', basis: `단독 '밀도' ${r.ambiguous}회 — 소재 밀도와 구분 불가` };
+  const owned = r.citations.filter((c) => c.owned).length;
+  if (owned > 0) return { id: 'cited', label: '자사 인용만', tone: 'warning', basis: `본문 브랜드 미언급 · 자사 URL 인용 ${owned}건 · 경쟁사 ${r.competitors.length}개 언급` };
   return { id: 'absent', label: '미언급', tone: 'serious', basis: `경쟁사 ${r.competitors.length}개 언급` };
 }
 
@@ -1121,12 +1139,62 @@ export function liveSummary(records: LiveRecord[]) {
   return { count: n, mentioned: m, rate: safeDiv(m, n), avgPosition: pos.length ? sum(pos, (x) => x) / pos.length : NaN, competitorMentions: sum(records, (r) => r.competitors.length) };
 }
 
+/* ============================== 정기 진단 내보내기 ============================== */
+
+const cellText = (c?: GeoCell) => (!c ? '—' : c.mentioned ? `${c.position}번째` : '미언급');
+const liveText = (r?: LiveRecord) => (!r ? '미진단' : r.mentioned ? `${r.position}번째` : r.ambiguous ? '확인 필요' : r.citations.some((c) => c.owned) ? '자사 인용만' : '미언급');
+
+/** 매트릭스 행 (CSV 등 표 내보내기용 plain record) */
+export function visibilityRows(vis: Visibility, latest: Record<string, LiveRecord> = {}): Record<string, string | number>[] {
+  return vis.queries.map((q) => {
+    const row: Record<string, string | number> = { 진단일: vis.date ?? '', 질의: q.query.text, 구매의도: INTENT_LABEL[q.query.intent], 판정: q.status.label, 언급엔진: q.mentionedEngines, 엔진수: Object.keys(q.cells).length };
+    for (const e of vis.engines) row[e.short] = cellText(q.cells[e.id]);
+    row['Claude(LIVE)'] = liveText(latest[q.query.id]);
+    row.최다경쟁사 = q.topCompetitor ?? '';
+    row.경쟁사언급엔진 = q.competitorEngines;
+    row.자사인용 = q.ownedCitations;
+    row.경쟁사우위 = q.gap ? 'Y' : '';
+    row.출처 = 'TEST DATA 스냅샷 (Claude 열만 LIVE)';
+    return row;
+  });
+}
+
+/** 정기 진단 결과 마크다운 (주간 리포트 첨부용) — 데모 스냅샷 + Claude 라이브 기록 */
+export function visibilityMarkdown(vis: Visibility, latest: Record<string, LiveRecord> = {}): string {
+  if (!vis.hasData) return '# SearchTuneOS GEO 정기 진단\n\n진단 스냅샷이 없습니다. 정기 진단 수집 연동 후 생성됩니다.';
+  const o = vis.overall;
+  const md = (s: string) => s.replace(/\|/g, '/');
+  const sign = (n: number) => (n >= 0 ? '+' : '');
+  const lines = [
+    `# SearchTuneOS GEO 정기 진단 · ${dateLabel(vis.date)}`,
+    '',
+    `출처: 데모 진단 스냅샷(TEST DATA · 실제 엔진 응답 아님), Claude 열만 실제 응답(LIVE) · 제안서 p.29 · 질의 ${vis.queries.length}개 × 엔진 ${vis.engines.length}개`,
+    '',
+    `브랜드 언급률 ${pctTxt(o.rate, 1)} (${o.mentioned}/${o.total}셀${o.deltaPp !== null ? `, 직전 회차 대비 ${sign(o.deltaPp)}${o.deltaPp.toFixed(1)}pp` : ''}) · 평균 언급 순서 ${Number.isFinite(o.avgPosition) ? `${fmt.dec1(o.avgPosition)}번째` : '—'} · 자사 인용 ${o.ownedCitations}/${o.citations}건 · 경쟁 6개사 대비 점유 ${pctTxt(o.sov, 1)} · 검색 커버리지(확보 질의) ${o.covered}/${vis.queries.length} (기준 ≥${Math.min(GEO_RULES.coveredEngines, vis.engines.length)}/${vis.engines.length} 엔진)`,
+    '',
+    `| 질의 | 구매 의도 | 판정 | ${vis.engines.map((e) => e.short).join(' | ')} | Claude (LIVE) | 최다 경쟁사 |`,
+    `| --- | --- | --- | ${vis.engines.map(() => '---').join(' | ')} | --- | --- |`,
+    ...vis.queries.map((q) => `| ${md(q.query.text)} | ${INTENT_LABEL[q.query.intent]} | ${q.status.label} (${q.mentionedEngines}/${Object.keys(q.cells).length})${q.gap ? ' · 경쟁사 우위' : ''} | ${vis.engines.map((e) => cellText(q.cells[e.id])).join(' | ')} | ${liveText(latest[q.query.id])} | ${q.topCompetitor ? `${q.topCompetitor} ${q.competitorEngines}/${Object.keys(q.cells).length}` : '—'} |`),
+    '',
+    `엔진별 언급률: ${vis.engines.map((e) => `${e.name} ${pctTxt(e.rate)} (${e.verdict.label})`).join(' · ')} · 기준 ≥${pctTxt(GEO_RULES.engineRateGood)} 확보, <${pctTxt(GEO_RULES.engineRateLow)} 취약`,
+    '',
+    vis.gaps.length ? `경쟁사 우위 질의 ${vis.gaps.length}개(경쟁사 ≥${GEO_RULES.gapCompetitorEngines}개 엔진 & 자사 ≤${GEO_RULES.gapBrandMax}개): ${vis.gaps.map((g) => g.query.text).join(', ')}` : '경쟁사 우위 질의 없음',
+    '',
+    `반복 관측: 최근 ${vis.stability.rounds}회 중 ${GEO_RULES.stableRounds}회 이상 언급 ${vis.stability.stable}셀 · 변동 ${vis.stability.volatile}셀 · 미언급 ${vis.stability.never}셀. 변동 구간은 2회 연속 같은 방향일 때만 변화로 기록합니다.`,
+    '',
+    '노출 순위 보장이 아닌 정기 진단 · 개선 방식으로 운영합니다. (제안서 p.29)',
+  ];
+  return lines.join('\n');
+}
+
 /* ============================== 페이드 AI 지면 → SA 키워드 ============================== */
 
 export interface KwInfo {
   id: string; text: string; status: Keyword['status']; isBrand: boolean; avgRank: number; lost: number;
   cost: number; conversions: number; roas: number; targetRoas: number; roasRatio: number;
-  landing: string; soldOutOption: string | null; cpcChangePct: number; convChangePct: number;
+  landing: string; soldOutOption: string | null; cpcChangePct: number; convChangePct: number; clicksChangePct: number;
+  /** 성과 급변 판정 (표본 기준 · 수집 이상 포함) */
+  shift: KeywordShift;
 }
 export interface TermInfo { term: string; registered: boolean; clicks: number; conversions: number; cost: number; revenue: number; roas: number }
 export interface ShoppingCell { exposed: boolean; rank: number | null; competitorsAbove: string[] }
@@ -1138,18 +1206,115 @@ export interface PaidRow {
   kw: KwInfo | null;
   term: TermInfo | null;
   signals: PaidSignal[];
+  /** 성과 급변 원인 후보 (급변 신호가 없으면 빈 목록) */
+  causes: CauseCandidate[];
   action: Verdict & { detail: string };
   requestable: boolean;
 }
 
-/** 최근 3일 vs 이전 11일 (keyword.daily 14일) — p.14 성과 급변 판단과 같은 창 */
-export function keywordShift(k: Keyword): { cpcChangePct: number; convChangePct: number } {
-  const d = k.daily ?? [];
-  if (d.length < 6) return { cpcChangePct: NaN, convChangePct: NaN };
-  const last = d.slice(-3), prior = d.slice(0, -3);
-  const cpc = (rows: typeof d) => metrics.cpc(sum(rows, (r) => r.cost), sum(rows, (r) => r.clicks));
-  const convPerDay = (rows: typeof d) => safeDiv(sum(rows, (r) => r.conversions), rows.length);
-  return { cpcChangePct: metrics.pctChange(cpc(last), cpc(prior)), convChangePct: metrics.pctChange(convPerDay(last), convPerDay(prior)) };
+export interface KeywordShift {
+  cpcChangePct: number; convChangePct: number; clicksChangePct: number;
+  recentClicks: number; expectedConv: number; cpcEligible: boolean; convEligible: boolean;
+  /** 수집 데이터 이상 (음수 · 비수치 값, 또는 최근 노출 0) */
+  collection: boolean;
+  cpcHit: boolean; convHit: boolean;
+  /** 자동 조정 보류 대상 (p.14) */
+  triggered: boolean;
+  basis: string;
+}
+
+/**
+ * 최근 3일 vs 이전 11일 (keyword.daily 14일) — p.14 성과 급변 판단.
+ * CPC = 기간 합계 비용 ÷ 클릭, 전환 · 클릭 = 일평균 비교. 표본이 부족하면 급변으로 판정하지 않는다 (SHIFT_RULES).
+ */
+export function keywordShift(k: Keyword): KeywordShift {
+  const d = Array.isArray(k.daily) ? k.daily : [];
+  const n = SHIFT_RULES.windowDays;
+  const hold = AD_PILOT.anomalyHoldPct;
+  if (d.length < n + 3) {
+    return {
+      cpcChangePct: NaN, convChangePct: NaN, clicksChangePct: NaN, recentClicks: 0, expectedConv: 0, cpcEligible: false, convEligible: false,
+      collection: false, cpcHit: false, convHit: false, triggered: false, basis: '일자별 데이터 부족 — 급변 판정 불가',
+    };
+  }
+  const val = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+  const invalid = d.some((r) => [r.impressions, r.clicks, r.cost, r.conversions, r.revenue].some((v) => typeof v !== 'number' || !Number.isFinite(v) || v < 0));
+  const last = d.slice(-n), prior = d.slice(0, -n);
+  const tot = (rows: typeof d, f: (r: (typeof d)[number]) => number) => sum(rows, (r) => val(f(r)));
+  const rClicks = tot(last, (r) => r.clicks), bClicks = tot(prior, (r) => r.clicks);
+  const cpcR = metrics.cpc(tot(last, (r) => r.cost), rClicks);
+  const cpcB = metrics.cpc(tot(prior, (r) => r.cost), bClicks);
+  const cpcChangePct = Number.isFinite(cpcR) && Number.isFinite(cpcB) ? metrics.pctChange(cpcR, cpcB) : NaN;
+  const convPerDayB = tot(prior, (r) => r.conversions) / prior.length;
+  const convChangePct = convPerDayB > 0 ? metrics.pctChange(tot(last, (r) => r.conversions) / n, convPerDayB) : NaN;
+  const clicksChangePct = bClicks > 0 ? metrics.pctChange(rClicks / n, bClicks / prior.length) : NaN;
+  const expectedConv = convPerDayB * n;
+  const cpcEligible = rClicks >= SHIFT_RULES.minRecentClicks && bClicks > 0;
+  const convEligible = expectedConv >= SHIFT_RULES.minExpectedConv;
+  const collection = invalid || (tot(last, (r) => r.impressions) === 0 && tot(prior, (r) => r.impressions) > 0);
+  const cpcHit = cpcEligible && Number.isFinite(cpcChangePct) && Math.abs(cpcChangePct) >= hold;
+  const convHit = convEligible && Number.isFinite(convChangePct) && Math.abs(convChangePct) >= hold;
+  const dl = (x: number) => (Number.isFinite(x) ? fmt.delta(x, 0) : '—');
+  const parts = [
+    collection ? (invalid ? '수집값 이상(음수 · 비수치)' : `최근 ${n}일 노출 0`) : '',
+    `CPC ${dl(cpcChangePct)}${cpcEligible ? '' : ' (표본 부족)'}`,
+    `전환 ${dl(convChangePct)}${convEligible ? '' : ' (표본 부족)'}`,
+    `클릭 ${dl(clicksChangePct)}`,
+  ].filter(Boolean);
+  return {
+    cpcChangePct, convChangePct, clicksChangePct, recentClicks: rClicks, expectedConv, cpcEligible, convEligible,
+    collection, cpcHit, convHit, triggered: collection || cpcHit || convHit,
+    basis: `${parts.join(' · ')} (최근 ${n}일 vs 이전 ${prior.length}일 · 기준 ±${hold}%)`,
+  };
+}
+
+export interface CauseCandidate { label: string; score: number; basis: string }
+
+/**
+ * 성과 급변 원인 후보 순위 (CAUSE_CANDIDATES · p.47) — 키워드 일자 데이터 · 재고 · 프로모션 일정에서 근거를 계산한다.
+ * 점수는 근거 강도 순서를 매기기 위한 상대값이며 확률이 아니다. 급변 신호가 없으면 빈 목록.
+ */
+export function shiftCauses(
+  data: Dataset,
+  kw: Pick<KwInfo, 'cpcChangePct' | 'convChangePct' | 'clicksChangePct' | 'soldOutOption' | 'landing'> & { triggered?: boolean },
+): CauseCandidate[] {
+  const hold = AD_PILOT.anomalyHoldPct;
+  const cpc = kw.cpcChangePct, conv = kw.convChangePct, clk = kw.clicksChangePct;
+  const fin = (n: number) => Number.isFinite(n);
+  // 표본 기준을 거친 판정(keywordShift.triggered)이 있으면 그것을 따르고, 없으면 변화율만으로 판단한다
+  const shifted = kw.triggered ?? ((fin(cpc) && Math.abs(cpc) >= hold) || (fin(conv) && Math.abs(conv) >= hold) || (fin(clk) && clk <= -hold));
+  if (!shifted) return [];
+  const clicksHeld = fin(clk) && Math.abs(clk) <= 20;
+  const d = (n: number) => (fin(n) ? fmt.delta(n, 0) : '—');
+  const [competitor, landing, promoCause, media] = CAUSE_CANDIDATES;
+  const channel = channelFromUrl(kw.landing);
+  const from = addDays(data.today, -2);
+  const promoChanged = channel
+    ? data.promotions.filter((p) => p.channel === channel && ((p.start >= from && p.start <= data.today) || (p.end >= from && p.end <= data.today)))
+    : [];
+  const out: CauseCandidate[] = [
+    {
+      label: competitor,
+      score: fin(cpc) && cpc >= hold ? (clicksHeld ? 80 : 60) : fin(cpc) && cpc >= 20 ? 35 : 5,
+      basis: `CPC ${d(cpc)} · 클릭 ${d(clk)}${fin(cpc) && cpc >= hold && clicksHeld ? ' — 클릭은 유지되고 클릭당 비용만 오름 (입찰 경쟁 상승 시 전형 패턴)' : ''}`,
+    },
+    {
+      label: landing,
+      score: kw.soldOutOption ? 70 : fin(conv) && conv <= -30 && clicksHeld && !(fin(cpc) && cpc >= hold) ? 50 : fin(conv) && conv <= -30 ? 25 : 5,
+      basis: kw.soldOutOption ? `${kw.soldOutOption} 옵션 품절 · 랜딩 = 상품 상세 · 전환 ${d(conv)}` : `전환 ${d(conv)} · 품절 옵션 연결 없음`,
+    },
+    {
+      label: promoCause,
+      score: promoChanged.length ? 45 : 5,
+      basis: promoChanged.length ? `최근 3일 ${promoChanged.map((p) => `${p.name} ${p.start >= from ? '시작' : '종료'}`).join(' · ')}` : `최근 3일 ${channel ? '해당 채널' : '랜딩 채널'} 프로모션 시작 · 종료 없음`,
+    },
+    {
+      label: media,
+      score: fin(clk) && clk <= -hold ? 60 : 5,
+      basis: fin(clk) && clk <= -hold ? `클릭 ${d(clk)} — 다음 수집(07:00)에서 해소되는지 확인` : `클릭 ${d(clk)} · 집계 공백 패턴 없음`,
+    },
+  ];
+  return out.sort((a, b) => b.score - a.score);
 }
 
 export function keywordInfo(data: Dataset, k: Keyword): KwInfo {
@@ -1165,7 +1330,8 @@ export function keywordInfo(data: Dataset, k: Keyword): KwInfo {
   return {
     id: k.id, text: k.text, status: k.status, isBrand: k.isBrand, avgRank: k.avgRank, lost: k.impressionShareLost,
     cost: k.last14.cost, conversions: k.last14.conversions, roas, targetRoas, roasRatio: Number.isFinite(roas) ? roas / targetRoas : NaN,
-    landing: k.landing, soldOutOption, cpcChangePct: sh.cpcChangePct, convChangePct: sh.convChangePct,
+    landing: k.landing, soldOutOption, cpcChangePct: sh.cpcChangePct, convChangePct: sh.convChangePct, clicksChangePct: sh.clicksChangePct,
+    shift: sh,
   };
 }
 
@@ -1197,18 +1363,24 @@ export function shoppingCell(q: GeoQuery, date: string): ShoppingCell {
 export function paidSurfaceRows(data: Dataset, snap: GeoSnapshot, roundIndex?: number): PaidRow[] {
   const vis = visibilitySummary(snap, roundIndex);
   const date = vis.date ?? data.today;
-  const minHold = AD_PILOT.anomalyHoldPct;
+  const dlabel = dateLabel(date, false);
   return snap.queries.map((q) => {
     const naverAi = vis.queries.find((x) => x.query.id === q.id)?.cells.naver_ai ?? null;
     const shopping = shoppingCell(q, date);
     const k = findKeyword(data, q);
     const kw = k ? keywordInfo(data, k) : null;
     const term = findTerm(data, q);
+    const shifted = !!kw?.shift.triggered;
+    const causes = kw && shifted ? shiftCauses(data, { ...kw, triggered: true }) : [];
+    const top = causes[0];
     const signals: PaidSignal[] = [];
     if (kw?.soldOutOption) signals.push({ id: 'soldout', label: '품절 옵션 랜딩', tone: 'serious', basis: `${kw.soldOutOption} 옵션 품절 · '${kw.text}' 랜딩 = 상품 상세` });
-    if (kw && Number.isFinite(kw.cpcChangePct) && Math.abs(kw.cpcChangePct) >= minHold) signals.push({ id: 'cpc', label: `CPC ${fmt.delta(kw.cpcChangePct, 0)}`, tone: 'warning', basis: `최근 3일 vs 이전 11일 · 기준 ±${minHold}% (p.14 자동 조정 보류)` });
-    if (naverAi && !naverAi.mentioned) signals.push({ id: 'ai_miss', label: 'AI 브리핑 미언급', tone: 'warning', basis: `${fmtDate(date, false)} 진단 · 경쟁사 ${naverAi.competitors.length}개 언급` });
-    if (!shopping.exposed) signals.push({ id: 'shop_miss', label: '쇼핑 지면 미노출', tone: 'warning', basis: `${fmtDate(date, false)} 점검` });
+    if (kw && shifted) {
+      const lbl = kw.shift.collection ? '수집 데이터 이상' : [kw.shift.cpcHit ? `CPC ${fmt.delta(kw.cpcChangePct, 0)}` : '', kw.shift.convHit ? `전환 ${fmt.delta(kw.convChangePct, 0)}` : ''].filter(Boolean).join(' · ');
+      signals.push({ id: 'shift', label: `성과 급변 · ${lbl}`, tone: 'warning', basis: `${kw.shift.basis} · p.14 자동 조정 보류` });
+    }
+    if (naverAi && !naverAi.mentioned) signals.push({ id: 'ai_miss', label: 'AI 브리핑 미언급', tone: 'warning', basis: `${dlabel} 진단 · 경쟁사 ${naverAi.competitors.length}개 언급` });
+    if (!shopping.exposed) signals.push({ id: 'shop_miss', label: '쇼핑 지면 미노출', tone: 'warning', basis: `${dlabel} 점검` });
     if (term && !term.registered && term.conversions > 0) signals.push({ id: 'term', label: '미등록 검색어 전환', tone: 'accent', basis: `클릭 ${fmt.int(term.clicks)} · 전환 ${fmt.dec1(term.conversions)} · ROAS ${fmt.roas(term.roas)}` });
 
     let action: Verdict & { detail: string };
@@ -1219,12 +1391,16 @@ export function paidSurfaceRows(data: Dataset, snap: GeoSnapshot, roundIndex?: n
     } else if (term && !term.registered && term.conversions > 0) {
       requestable = true;
       action = { id: 'register', label: 'SA 테스트 그룹 등록 후보', tone: 'accent', basis: `검색어 보고서 미등록 · 전환 ${fmt.dec1(term.conversions)} · ROAS ${fmt.roas(term.roas)}`, detail: `'${term.term}'를 테스트 전용 그룹(입찰 상한)에 등록하고 MILDO Lab 기준(14일 또는 최소 클릭)으로 판정합니다. AI 답변에 같은 질의가 나오므로 AEO FAQ와 랜딩 문구를 함께 맞춥니다.` };
-    } else if (kw && Number.isFinite(kw.cpcChangePct) && Math.abs(kw.cpcChangePct) >= minHold) {
-      action = { id: 'hold', label: '자동 조정 보류 유지', tone: 'warning', basis: `CPC ${fmt.delta(kw.cpcChangePct, 0)} (기준 ±${minHold}%) · ${roasBasis}`, detail: `AD Pilot 자동 조정 보류 구간입니다. 원인 후보(경쟁사 입찰 상승)를 확인하는 동안 입찰을 올리지 않고, ${naverAi?.mentioned ? 'AI 브리핑 노출이 유지되는지' : 'AI 브리핑 미노출 구간을 AEO 콘텐츠로 보완할 수 있는지'} 함께 봅니다 (가설).` };
+    } else if (kw && shifted) {
+      action = {
+        id: 'hold', label: '자동 조정 보류 유지', tone: 'warning',
+        basis: `${kw.shift.basis} · ${roasBasis}`,
+        detail: `AD Pilot 자동 조정 보류 구간입니다. 근거가 가장 강한 원인 후보는 ${top ? `${top.label}(${top.basis})` : '확인 중'}이며, 확인되는 동안 입찰을 올리지 않습니다. ${naverAi?.mentioned ? 'AI 브리핑 노출이 유지되는지' : 'AI 브리핑 미노출 구간을 AEO 콘텐츠로 보완할 수 있는지'} 함께 봅니다 (가설).`,
+      };
     } else if (kw && naverAi && !naverAi.mentioned && Number.isFinite(kw.roasRatio) && kw.roasRatio >= 1) {
-      action = { id: 'defend', label: 'SA 노출 유지 · 방어', tone: 'good', basis: `AI 브리핑 미언급 · ${roasBasis} · 노출 기회 손실 ${pctTxt(kw.lost)}`, detail: 'AI 요약에 브랜드가 없는 질의입니다. 목표 ROAS를 넘는 SA 노출을 유지해 유료 지면으로 보완하고, 노출 기회 손실이 25% 이상이면 AD Pilot 상향 후보와 함께 검토합니다.' };
-    } else if (kw && naverAi?.mentioned && Number.isFinite(kw.roasRatio) && kw.roasRatio < 0.7) {
-      action = { id: 'review', label: 'SA 효율 점검', tone: 'warning', basis: `AI 브리핑 언급 · ${roasBasis} (기준 70%)`, detail: 'AI 요약에 브랜드가 노출되는 질의에서 SA 효율이 목표의 70%에 못 미칩니다. 오가닉과 유료 노출이 겹치는지 홀드아웃 없이 단정할 수 없으므로, 입찰 하향 전 2주 비교로 판정합니다 (가설).' };
+      action = { id: 'defend', label: 'SA 노출 유지 · 방어', tone: 'good', basis: `AI 브리핑 미언급 · ${roasBasis} · 노출 기회 손실 ${pctTxt(kw.lost)}`, detail: `AI 요약에 브랜드가 없는 질의입니다. 목표 ROAS를 넘는 SA 노출을 유지해 유료 지면으로 보완하고, 노출 기회 손실이 ${pctTxt(AD_PILOT.lostShareTrigger)} 이상이면 AD Pilot 상향 후보(p.14)와 함께 검토합니다.` };
+    } else if (kw && naverAi?.mentioned && Number.isFinite(kw.roasRatio) && kw.roasRatio < KEYWORD_TEST_RULES.keepFromPct / 100) {
+      action = { id: 'review', label: 'SA 효율 점검', tone: 'warning', basis: `AI 브리핑 언급 · ${roasBasis} (기준 목표 대비 ${KEYWORD_TEST_RULES.keepFromPct}% · p.26)`, detail: `AI 요약에 브랜드가 노출되는 질의에서 SA 효율이 목표의 ${KEYWORD_TEST_RULES.keepFromPct}%에 못 미칩니다. 오가닉과 유료 노출이 겹치는지 홀드아웃 없이 단정할 수 없으므로, 입찰 하향 전 2주 비교로 판정합니다 (가설).` };
     } else if (naverAi && !naverAi.mentioned && !shopping.exposed) {
       action = { id: 'content', label: 'AEO 콘텐츠 · 쇼핑 지면 보완', tone: 'warning', basis: `AI 브리핑 미언급 · 쇼핑 지면 미노출${kw ? ` · ${roasBasis}` : ''}`, detail: '오가닉 AI 지면과 쇼핑 지면 모두 브랜드가 없습니다. FAQ · 상품 정보 보강을 먼저 하고 다음 정기 진단에서 변화를 확인합니다.' };
     } else if (!kw && !term) {
@@ -1232,7 +1408,7 @@ export function paidSurfaceRows(data: Dataset, snap: GeoSnapshot, roundIndex?: n
     } else {
       action = { id: 'keep', label: '유지 · 정기 진단', tone: 'neutral', basis: kw ? roasBasis : `검색어 보고서 ${term?.registered ? '등록' : '미등록'}`, detail: '현재 기준 내 · 다음 정기 진단에서 재확인합니다.' };
     }
-    return { query: q, naverAi, shopping, kw, term, signals, action, requestable };
+    return { query: q, naverAi, shopping, kw, term, signals, causes, action, requestable };
   });
 }
 
@@ -1244,6 +1420,37 @@ export function paidSummary(rows: PaidRow[]) {
     aiMiss: rows.filter((r) => r.naverAi && !r.naverAi.mentioned).length,
     shopMiss: rows.filter((r) => !r.shopping.exposed).length,
     linkedKw: rows.filter((r) => r.kw).length,
+  };
+}
+
+/* ---------- SA 테스트 그룹 등록 요청 (ChangeRequest pending) ---------- */
+
+const termKey = (s: unknown) => String(s ?? '').replace(/\s+/g, '').toLowerCase();
+export const REGISTRATION_ORIGIN: Record<string, string> = { geo: 'SearchTuneOS', adpilot: 'AD Pilot', lab: 'MILDO Lab' };
+
+/**
+ * 같은 검색어의 등록 요청이 이미 있는가 — SearchTuneOS · AD Pilot(targetId 'term:…', target '… → X_TEST 등록') ·
+ * MILDO Lab(targetId 'labreg:…') 어느 화면에서 올렸든 같은 검색어면 중복으로 본다. 반려 · 롤백 건은 제외.
+ */
+export function findRegistration(changes: readonly ChangeRequest[] | null | undefined, term: string): ChangeRequest | undefined {
+  const t = termKey(term);
+  if (!t) return undefined;
+  return (changes ?? []).find((c) => !!c && c.kind === 'keyword_add' && c.status !== 'rejected' && c.status !== 'rolled_back' && (
+    c.targetId === `term:${term}` || c.targetId === `labreg:${t}` || termKey(c.target) === t || termKey(String(c.target ?? '').split('→')[0]) === t
+  ));
+}
+
+/** 등록 요청 페이로드 — 형식은 AD Pilot 테스트 그룹 등록과 같게 맞춘다 (targetId 'term:…', after '<의도>_TEST'). 브랜드 검색어 편입은 PM 승인 */
+export function registrationRequest(r: PaidRow, requestedBy: string): Omit<ChangeRequest, 'id' | 'createdAt' | 'history' | 'status'> | null {
+  if (!r.requestable || !r.term) return null;
+  const intent = r.query.intent;
+  const brand = intent === 'brand';
+  const approver: ApprovalLevel = brand ? 'PM' : 'AE';
+  return {
+    module: 'geo', kind: 'keyword_add', target: r.term.term, targetId: `term:${r.term.term}`,
+    before: '미등록 (검색어 보고서)', after: `${intent.toUpperCase()}_TEST · 테스트 그룹 등록 · 입찰 상한 적용`,
+    reason: `GEO 질의 '${r.query.text}' · ${r.action.basis} · 네이버 AI 브리핑 ${r.naverAi ? (r.naverAi.mentioned ? '언급' : '미언급') : '진단 없음'} (TEST DATA)${brand ? ' · 브랜드 검색어 편입은 PM 승인' : ' · 승인 범위 내 운영 조정(p.53)'}`,
+    requestedBy, approver,
   };
 }
 
@@ -1381,10 +1588,23 @@ export function faqAiPrompt(data: Dataset, vis: Visibility): string {
 
 /* ============================== 진단 전후 기록 (p.29 공란) ============================== */
 
-export interface CaseInput { brand: string; beforeLabel: string; afterLabel: string; engines: string; beforeRate: number | null; afterRate: number | null; beforeCites: number | null; afterCites: number | null }
-export const EMPTY_CASE: CaseInput = { brand: '', beforeLabel: '', afterLabel: '', engines: '', beforeRate: null, afterRate: null, beforeCites: null, afterCites: null };
+export interface CaseInput {
+  brand: string; beforeLabel: string; afterLabel: string; engines: string;
+  beforeRate: number | null; afterRate: number | null; beforeCites: number | null; afterCites: number | null;
+  /** 데모 스냅샷으로 채운 값 (TEST DATA) — '지우기' 전까지 유지 */
+  demo?: boolean;
+}
+export const EMPTY_CASE: CaseInput = { brand: '', beforeLabel: '', afterLabel: '', engines: '', beforeRate: null, afterRate: null, beforeCites: null, afterCites: null, demo: false };
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/** 숫자 입력 칸 문자열 → 숫자 (콤마 · % · 건 허용, 빈 값 · 비수치는 null) */
+export function parseNumInput(v: string): number | null {
+  const s = String(v ?? '').replace(/[,%건\s]/g, '');
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
 
 export function caseMetrics(c: CaseInput) {
   const missing: string[] = [];
@@ -1393,6 +1613,14 @@ export function caseMetrics(c: CaseInput) {
   if (!isNum(c.afterRate)) missing.push('진단 후 언급률');
   if (!isNum(c.beforeCites)) missing.push('진단 전 인용 수');
   if (!isNum(c.afterCites)) missing.push('진단 후 인용 수');
+  // 범위 점검: 언급률 0~100%, 인용 수 0 이상 정수
+  const invalid: string[] = [];
+  const rateOk = (v: number | null) => !isNum(v) || (v >= 0 && v <= 100);
+  const citeOk = (v: number | null) => !isNum(v) || (v >= 0 && Number.isInteger(v));
+  if (!rateOk(c.beforeRate)) invalid.push('진단 전 언급률(0~100%)');
+  if (!rateOk(c.afterRate)) invalid.push('진단 후 언급률(0~100%)');
+  if (!citeOk(c.beforeCites)) invalid.push('진단 전 인용 수(0 이상 정수)');
+  if (!citeOk(c.afterCites)) invalid.push('진단 후 인용 수(0 이상 정수)');
   const rateDeltaPp = isNum(c.beforeRate) && isNum(c.afterRate) ? c.afterRate - c.beforeRate : null;
   const citeDelta = isNum(c.beforeCites) && isNum(c.afterCites) ? c.afterCites - c.beforeCites : null;
   const citeDeltaPct = citeDelta !== null && isNum(c.beforeCites) && c.beforeCites > 0 ? (citeDelta / c.beforeCites) * 100 : null;
@@ -1402,8 +1630,9 @@ export function caseMetrics(c: CaseInput) {
     `${c.brand.trim() || '[브랜드]'}${c.beforeLabel || c.afterLabel ? ` · ${c.beforeLabel || '[진단 전]'} → ${c.afterLabel || '[진단 후]'}` : ''}${c.engines.trim() ? ` · ${c.engines.trim()}` : ''}`,
     `브랜드 언급률 ${v(c.beforeRate, '%')} → ${v(c.afterRate, '%')}${rateDeltaPp !== null ? ` (${sign(rateDeltaPp)}${rateDeltaPp.toFixed(1)}pp)` : ''}`,
     `인용 수 ${v(c.beforeCites, '건')} → ${v(c.afterCites, '건')}${citeDelta !== null ? ` (${sign(citeDelta)}${citeDelta}건${citeDeltaPct !== null ? `, ${sign(citeDeltaPct)}${citeDeltaPct.toFixed(1)}%` : ''})` : ''}`,
-  ].join(' · ');
-  return { rateDeltaPp, citeDelta, citeDeltaPct, complete: missing.length === 0, missing, text };
+    c.demo ? 'TEST DATA · 실제 사례 아님' : '',
+  ].filter(Boolean).join(' · ');
+  return { rateDeltaPp, citeDelta, citeDeltaPct, complete: missing.length === 0 && invalid.length === 0, missing, invalid, demo: !!c.demo, text };
 }
 
 /** 데모 스냅샷 첫 회차 vs 최신 회차 (TEST DATA — 실제 사례 아님) */
@@ -1415,11 +1644,12 @@ export function demoCaseFromSnapshot(snap: GeoSnapshot): CaseInput {
     brand: BRAND,
     beforeLabel: first.date ?? '',
     afterLabel: last.date ?? '',
-    engines: `${snap.engines.map((e) => e.short).join(' · ')} · 질의 ${snap.queries.length}개 (TEST DATA)`,
+    engines: `${snap.engines.map((e) => e.short).join(' · ')} · 질의 ${snap.queries.length}개`,
     beforeRate: r1(first.overall.rate * 100),
     afterRate: r1(last.overall.rate * 100),
     beforeCites: first.overall.ownedCitations,
     afterCites: last.overall.ownedCitations,
+    demo: true,
   };
 }
 
@@ -1467,7 +1697,7 @@ export function visibilityBrief(vis: Visibility, live: LiveRecord[] = []): Brief
       title: 'GEO 모니터링 · 진단 스냅샷 없음',
       facts: ['진단 스냅샷이 없어 브랜드 언급률을 계산할 수 없습니다.'],
       patterns: [], interpretation: [],
-      conditions: [`판정 기준: 질의별 ${GEO_RULES.coveredEngines}/5 엔진 이상 언급 시 확보 (운영 초기 기준 · 온보딩 중 확정)`],
+      conditions: [`판정 기준: 질의별 ${GEO_RULES.coveredEngines}/${vis.engines.length} 엔진 이상 언급 시 확보 (운영 초기 기준 · 온보딩 중 확정)`],
       counter: [], actions: ['담당 AE: 정기 진단(매주 월) 수집 연동 상태를 확인합니다.'],
     };
   }
@@ -1498,7 +1728,7 @@ export function visibilityBrief(vis: Visibility, live: LiveRecord[] = []): Brief
     patterns,
     interpretation,
     conditions: [
-      `질의 확보 기준 ${GEO_RULES.coveredEngines}/5 엔진 이상, 경쟁사 우위 기준 경쟁사 ${GEO_RULES.gapCompetitorEngines}개 엔진 이상 & 자사 ${GEO_RULES.gapBrandMax}개 이하, 안정 구간 최근 4회 중 ${GEO_RULES.stableRounds}회 이상 (운영 초기 기준 · 온보딩 중 확정).`,
+      `질의 확보 기준 ${GEO_RULES.coveredEngines}/${vis.engines.length} 엔진 이상, 경쟁사 우위 기준 경쟁사 ${GEO_RULES.gapCompetitorEngines}개 엔진 이상 & 자사 ${GEO_RULES.gapBrandMax}개 이하, 안정 구간 최근 4회 중 ${GEO_RULES.stableRounds}회 이상 (운영 초기 기준 · 온보딩 중 확정).`,
       '진단 스냅샷은 시연용 테스트 데이터입니다. 실데이터는 엔진별 수집 연동 후 같은 구조로 채웁니다.',
     ],
     counter: [
@@ -1529,7 +1759,7 @@ export function auditBrief(a: PageAudit): Brief {
     patterns: warns.length ? [`개선 항목 ${warns.length}개: ${warns.map((c) => c.label).join(', ')}.`] : [],
     interpretation: [
       'JSON-LD 가격 · 재고가 실제 판매 상태와 다르면 검색 결과 리치 스니펫과 AI 답변이 잘못된 가격이나 구매 가능 상태를 인용할 수 있습니다. 이 경우 클릭 후 이탈로 CVR이 떨어지고 같은 광고비에서 CPA가 오르는 구조이므로, 표기 오류는 노출 문제가 아니라 전환 비용 문제로 다룹니다.',
-      a.review.some((h) => h.level === 'block') ? '의료 효능 암시 문구는 표시광고 리스크와 함께 AI 답변이 해당 문구를 그대로 인용할 위험이 있어 게시 전에 수정합니다.' : '',
+      a.review.some((h) => h.level === 'block') ? '의료 효능 암시 문구는 표시광고 리스크가 있고 AI 답변이 해당 문구를 그대로 인용할 수 있으므로 게시 전에 수정합니다.' : '',
     ].filter(Boolean),
     conditions: ['제목 · 메타 설명 길이와 점수 구간은 운영 초기 기준(한글 기준 · 온보딩 중 확정)입니다. 판매가 · 재고 대조는 운영 데이터(TEST DATA) 기준입니다.'],
     counter: ['점수가 높아도 검색 · AI 노출 순위를 보장하지 않습니다. 정기 진단 · 개선 방식으로 운영합니다 (p.29).'],
@@ -1577,8 +1807,11 @@ export function paidBrief(rows: PaidRow[]): Brief {
       ...hold.map((r) => `'${r.kw?.text}': ${r.action.basis}.`),
     ],
     patterns: s.defend ? [`AI 브리핑 미언급이면서 SA ROAS가 목표 이상인 질의 ${s.defend}개는 유료 지면이 오가닉 공백을 메우고 있는 구간입니다.`] : [],
-    interpretation: ['네이버 AI 브리핑에서 브랜드가 빠진 질의는 SA 노출이 없으면 해당 검색에서 브랜드 접점이 사라집니다. 반대로 AI 브리핑에 이미 노출된 질의의 SA 비용은 일부 겹칠 수 있으나, 홀드아웃 없이 중복 정도를 단정할 수 없습니다.'],
-    conditions: [`목표 ROAS ${AD_PILOT.targetRoas}% · 브랜드 ${AD_PILOT.brandTargetRoas}%(p.14), 성과 급변 ±${AD_PILOT.anomalyHoldPct}% 자동 조정 보류, 테스트 그룹 등록은 승인 범위 내 운영 조정(담당 AE, p.53).`],
+    interpretation: [
+      '네이버 AI 브리핑에서 브랜드가 빠진 질의는 SA 노출이 없으면 해당 검색에서 브랜드 접점이 사라집니다. 반대로 AI 브리핑에 이미 노출된 질의의 SA 비용은 일부 겹칠 수 있으나, 홀드아웃 없이 중복 정도를 단정할 수 없습니다.',
+      ...hold.filter((r) => r.causes[0]).map((r) => `'${r.kw?.text}' 급변은 원인 후보 중 ${r.causes[0].label} 근거가 가장 강합니다(${r.causes[0].basis}). 확정하려면 같은 기간 경쟁사 검색 지면 변화(MILDO Watch 아카이브)와 입찰 변경 이력을 대조해야 하며, 그 전까지 자동 조정 보류를 유지합니다.`),
+    ],
+    conditions: [`목표 ROAS ${AD_PILOT.targetRoas}% · 브랜드 ${AD_PILOT.brandTargetRoas}%(p.14), 성과 급변 ±${AD_PILOT.anomalyHoldPct}% 자동 조정 보류, 테스트 그룹 등록은 승인 범위 내 운영 조정(담당 AE, p.53) · 브랜드 검색어 편입은 PM 승인.`],
     counter: ['미등록 검색어의 전환 수가 적으면 우연일 수 있으므로 등록 후 MILDO Lab 판정 기준(14일 또는 최소 클릭)으로 확장 · 유지 · 제외를 정합니다.'],
     actions: [
       reg.length ? `담당 AE: SA 반영 요청으로 ${reg.length}개 검색어를 테스트 그룹 등록 승인 대기(MILDO Flow)에 올립니다.` : '담당 AE: 다음 정기 진단에서 미등록 검색어를 다시 확인합니다.',

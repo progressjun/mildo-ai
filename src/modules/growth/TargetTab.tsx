@@ -1,6 +1,6 @@
 /* 구매 의도별 타겟 그룹(p.34) · RFP 세그먼트 · 네이버 SA 5개 캠페인 구조와 성과(p.35) · 제한된 SKU 확장(p.36) */
 import type { Dataset } from '@/core/types';
-import { SKU_EXPANSION } from '@/data/constants';
+import { AD_PILOT, SA_CAMPAIGNS, SKU_EXPANSION } from '@/data/constants';
 import { fmt } from '@/core/util';
 import { Callout, Card, DataTable, Pill, Src, Stat, type Column, type Tone } from '@/ui/primitives';
 import { HBarChart, ShareBar } from '@/ui/charts';
@@ -25,7 +25,8 @@ export function TargetTab({ d }: { d: Dataset }) {
       render: (r) => (
         <span className="stack-sm" style={{ gap: 0 }}>
           <strong>{r.name}</strong>
-          <span className="xs muted">{r.examples.join(' · ') || '—'}{r.testKeywords ? ` · 테스트 ${r.testKeywords}개` : ''}</span>
+          <span className="xs muted">예시 {SA_CAMPAIGNS[r.intent].keywords.join(' · ')}</span>
+          <span className="xs muted">운영 키워드 {r.keywords}개{r.testKeywords ? ` · 테스트 ${r.testKeywords}개` : ''}</span>
         </span>
       ),
     },
@@ -49,6 +50,12 @@ export function TargetTab({ d }: { d: Dataset }) {
     { key: 'cpa', label: 'CPA', align: 'right', sort: (r) => r.cpa, render: (r) => fmt.won(r.cpa) },
     { key: 'share', label: '매출 비중', align: 'right', sort: (r) => r.revenueShare, render: (r) => fmt.ratio(r.revenueShare) },
     { key: 'lost', label: '노출 손실', align: 'right', sort: (r) => r.lostShare, render: (r) => fmt.ratio(r.lostShare, 0) },
+    {
+      key: 'star', label: '확대 여지 키워드', sort: (r) => r.expandKeywords.length,
+      render: (r) => r.expandKeywords.length
+        ? <span className="stack-sm" style={{ gap: 2 }}>{r.expandKeywords.slice(0, 3).map((k) => <span key={k.keyword} className="xs"><strong>{k.keyword}</strong> <span className="muted">목표 대비 {fmt.int(k.ratioPct)}% · 손실 {fmt.ratio(k.lostShare, 0)}</span></span>)}{r.expandKeywords.length > 3 ? <span className="xs muted">외 {r.expandKeywords.length - 3}개</span> : null}</span>
+        : <span className="xs muted">없음</span>,
+    },
     { key: 'search', label: '월 검색량', align: 'right', sort: (r) => r.monthlySearch, render: (r) => fmt.int(r.monthlySearch) },
   ];
 
@@ -99,7 +106,7 @@ export function TargetTab({ d }: { d: Dataset }) {
 
       <Card
         title={<>네이버 SA 캠페인 · 메시지 구조 <Src kind="PROPOSAL" page="p.35" /><Src kind="DEMO" /></>}
-        sub="구매 의도별 5개 캠페인마다 키워드 · 메시지 · 랜딩 · 지표를 따로 설계 · 성과는 최근 14일 키워드 의도 집계 · AD Pilot이 캠페인별 입찰을, MILDO Board가 캠페인별 실매출을 추적 · 의료 효능 암시 표현 제외">
+        sub={`구매 의도별 5개 캠페인마다 키워드 · 메시지 · 랜딩 · 지표를 따로 설계 · 성과는 최근 14일 키워드 의도 집계 · 확대 여지 키워드 기준: 목표 ROAS(브랜드 ${AD_PILOT.brandTargetRoas}%, 그 외 ${AD_PILOT.targetRoas}%) 대비 ${AD_PILOT.highEfficiencyRoasRatio * 100}% 이상 + 노출 손실 ${AD_PILOT.lostShareTrigger * 100}% 이상(p.14, AD Pilot 입찰 상향 후보와 같은 기준) · AD Pilot이 캠페인별 입찰을, MILDO Board가 캠페인별 실매출을 추적 · 의료 효능 암시 표현 제외`}>
         <DataTable rows={camps} columns={cols} rowKey={(r) => r.intent} />
       </Card>
 

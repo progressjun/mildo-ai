@@ -29,7 +29,9 @@ export const levelLabel = (l: CheckLevel) => LEVEL_META[l].label;
 export function ApproverBadge({ c }: { c: Pick<ChangeRequest, 'approver' | 'changePct' | 'kind'> }) {
   const pct = c.changePct;
   const pctBased = (c.kind === 'budget' || c.kind === 'bid') && pct !== undefined && Number.isFinite(pct);
-  const basis = pctBased ? GFA_DELEGATION[delegationIndexByPct(pct!)].range.split(' · ')[0] : undefined;
+  // 입찰은 일 예산 위임 범위를 '변경 폭' 기준으로 준용
+  const range = pctBased ? GFA_DELEGATION[delegationIndexByPct(pct!)].range.split(' · ')[0] : undefined;
+  const basis = range && c.kind === 'bid' ? range.replace('일 예산', '변경 폭') : range;
   return (
     <span className="flow-approver" title={basis ? `위임 범위 ${basis} (p.15)` : undefined}>
       <Icon name="shield" size={11} />승인 {APPROVER_LABEL[c.approver as ApprovalLevel]}{basis ? <span className="muted"> · {basis}</span> : null}
@@ -60,7 +62,10 @@ export function ChangeValue({ c }: { c: ChangeRequest }) {
 
 export function LeadBadge({ l, compact }: { l: LeadState; compact?: boolean }) {
   if (l.decidedMs !== null) {
-    return <Pill tone={l.met === false ? 'serious' : 'outline'} icon="clock" title={l.text}>{compact ? `결정 ${l.text.replace(/^결정 /, '').split(' · ')[0]}` : l.text}</Pill>;
+    // 판정(충족 · 초과)은 기준값과 같이 보여준다 — 색만으로 판정하지 않음
+    const dur = l.text.replace(/^결정 /, '').split(' · ')[0];
+    const verdict = l.met === null ? '' : l.met ? ' 충족' : ' 초과';
+    return <Pill tone={l.met === false ? 'serious' : 'outline'} icon="clock" title={l.text}>{compact ? `결정 ${dur} · 기준 ${l.label.split(' · ')[1] ?? l.label}${verdict}` : l.text}</Pill>;
   }
   if (l.overdue) return <Pill tone="critical" icon="clock" title={l.text}>기준 초과 · {l.label}</Pill>;
   return <Pill tone="outline" icon="clock" title={l.text}>{compact ? l.text.split(' · ')[0] : l.text}</Pill>;

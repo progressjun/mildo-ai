@@ -53,6 +53,8 @@ export function loadCase(): CaseInput {
   return {
     brand: s(v.brand), beforeLabel: s(v.beforeLabel), afterLabel: s(v.afterLabel), engines: s(v.engines),
     beforeRate: num(v.beforeRate), afterRate: num(v.afterRate), beforeCites: num(v.beforeCites), afterCites: num(v.afterCites),
+    // 이전 버전 저장값(측정 범위 문구에 'TEST DATA' 표기)도 데모 값으로 본다
+    demo: v.demo === true || s(v.engines).includes('TEST DATA'),
   } satisfies CaseInput;
 }
 export function saveCase(c: CaseInput): void {

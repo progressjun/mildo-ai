@@ -5,8 +5,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeRequest, Incident } from '@/core/types';
 import { useActions, useStore } from '@/core/store';
 import { makeClock } from './clock';
+import { STATUS_META } from './data';
 import {
-  ACTION_META, bulkGuard, canAct, canRollback, checkAllPromotions, executionCheck, flowSummary, fmtValue, incidentStagePatch, nextStatus,
+  ACTION_META, adpilotConfigOf, bulkChangeAlerts, bulkGuard, canAct, canRollback, checkAllPromotions, executionCheck, flowSummary, fmtValue, incidentStagePatch, nextStatus,
   opsCases, seedChanges, type ChangeInput, type FlowAction,
 } from './engine';
 
@@ -45,6 +46,10 @@ export function useFlow() {
   const summary = useMemo(() => flowSummary(changes, state.role, clock.nowMs, clock.toMs, data.today), [changes, state.role, clock, data.today]);
   const checks = useMemo(() => checkAllPromotions(data, { changes, incidents }), [data, changes, incidents]);
   const cases = useMemo(() => opsCases(data, incidents, changes, clock.toMs), [data, incidents, changes, clock]);
+  /** 대량 변경 실수 감지 (MILDO Alert detectBulkChange · p.45) — 요청 · 승인 이력 화면에 표시 */
+  const bulkAlerts = useMemo(() => bulkChangeAlerts(changes, data.today, incidents), [changes, data.today, incidents]);
+  /** AD Pilot 공식 기준 (일 조정 폭 상한 · 대량 변경 건수) — 승인 · 반영된 설정 변경 포함 */
+  const apCfg = useMemo(() => adpilotConfigOf(changes), [changes]);
 
   /** 단건 액션 (권한 · 실행 점검 · 이력) */
   const act = useCallback((c: ChangeRequest, action: FlowAction, note = '', opts: { silent?: boolean; bulk?: boolean } = {}): boolean => {
@@ -54,6 +59,7 @@ export function useFlow() {
     if (!perm.ok) { say({ tone: 'warning', title: `${meta.label} 권한이 없습니다`, body: perm.reason }); return false; }
     if (meta.needsNote && !note.trim()) { say({ tone: 'warning', title: `${meta.label} 사유를 입력하세요`, body: '누가 · 언제 · 왜를 이력에 남깁니다 (p.31)' }); return false; }
     if (action === 'apply') {
+      if (c.status !== 'approved') { say({ tone: 'warning', title: '승인된 건만 반영할 수 있습니다', body: `현재 상태 ${STATUS_META[c.status].label}` }); return false; }
       const ex = executionCheck(data, changes, incidents, c);
       if (!ex.ok) {
         actions.updateChange(c.id, { status: 'held' }, '실행 보류', ex.blocks.join(' · '));
@@ -74,7 +80,7 @@ export function useFlow() {
     const allowedFrom: Record<FlowAction, ChangeRequest['status'][]> = {
       approve: ['pending'], reject: ['pending', 'held'], hold: ['pending', 'approved'], resume: ['held'], cancel: ['approved'], apply: ['approved'], rollback: ['applied'],
     };
-    if (!allowedFrom[action].includes(c.status)) { say({ tone: 'warning', title: `${meta.label}할 수 없는 상태입니다`, body: c.status }); return false; }
+    if (!allowedFrom[action].includes(c.status)) { say({ tone: 'warning', title: `${meta.label}할 수 없는 상태입니다`, body: `현재 상태 ${STATUS_META[c.status].label}` }); return false; }
     const label = action === 'approve' && opts.bulk ? '일괄 승인' : meta.label;
     actions.updateChange(c.id, { status: nextStatus(c, action) }, label, note.trim() || perm.reason);
     say({ tone: action === 'approve' ? 'good' : 'info', title: `${label}: ${c.target}`, body: action === 'approve' ? '반영 대기로 이동했습니다' : undefined });
@@ -82,13 +88,13 @@ export function useFlow() {
   }, [actions, changes, data, incidents, state.role]);
 
   const bulk = useCallback((list: ChangeRequest[], action: 'approve' | 'apply') => {
-    const g = bulkGuard(list, action);
+    const g = bulkGuard(list, action, apCfg);
     if (!g.ok) { actions.toast({ tone: 'warning', title: '일괄 처리 차단', body: g.reasons.join(' · ') }); return 0; }
     let ok = 0;
     for (const c of list) if (act(c, action, '', { silent: true, bulk: true })) ok++;
     actions.toast({ tone: ok === list.length ? 'good' : 'warning', title: `일괄 ${action === 'approve' ? '승인' : '반영'} ${ok}/${list.length}건`, body: ok < list.length ? '나머지는 권한 · 실행 점검으로 보류되었습니다' : g.reasons.join(' · ') });
     return ok;
-  }, [act, actions]);
+  }, [act, actions, apCfg]);
 
   const createRequest = useCallback((input: ChangeInput, silent = false) => {
     const c = actions.addChange({ ...input, requestedBy: state.role });
@@ -103,6 +109,6 @@ export function useFlow() {
     actions.toast({ tone: 'info', title: log, body: inc.title });
   }, [actions, clock.nowIso, state.role]);
 
-  return { state, data, dispatch, actions, clock, seeds, missingSeeds, loadSeeds, changes, incidents, summary, checks, cases, act, bulk, createRequest, incidentStep };
+  return { state, data, dispatch, actions, clock, seeds, missingSeeds, loadSeeds, changes, incidents, summary, checks, cases, bulkAlerts, apCfg, act, bulk, createRequest, incidentStep };
 }
 export type FlowCtx = ReturnType<typeof useFlow>;

@@ -9,7 +9,8 @@ import { mediaRows, rangeOf, totalsOf } from '@/core/selectors';
 import { MEDIA } from '@/data/constants';
 import { fmt } from '@/core/util';
 import { Card, PageHeader, Pill, Src, Stat, Tabs } from '@/ui/primitives';
-import { allocationModel, daSaAnalysis, f2, funnelDiagnosis, growthSignals, saCampaignPerformance } from './engine';
+import { allocationModel, budgetConstraints, daSaAnalysis, deltaPct, f2, funnelDiagnosis, growthSignals, saCampaignPerformance } from './engine';
+import { FUNNEL_RULES } from './data';
 import { OverviewTab } from './OverviewTab';
 import { TargetTab } from './TargetTab';
 import { AllocationTab } from './AllocationTab';
@@ -35,20 +36,23 @@ export default function View({ initialTab = 'overview' }: { initialTab?: TabId }
   const funnel = useMemo(() => funnelDiagnosis(d), [d]);
   const signals = useMemo(() => growthSignals(d, model), [d, model]);
   const camps = useMemo(() => saCampaignPerformance(d), [d]);
+  const constraints = useMemo(() => budgetConstraints(d, model), [d, model]);
   const r30 = rangeOf(d, 'last30');
   const t30 = useMemo(() => totalsOf(mediaRows(d, r30.from, r30.to)), [d, r30.from, r30.to]);
 
   const go = (t: TabId) => setTab(t);
   const sp = model.baseline.spread;
-  const cart = funnel.stages.find((s) => s.stage === 'cart');
+  const pri = funnel.priority ?? funnel.stages.find((s) => s.stage === 'cart') ?? null;
+  const priOm = !pri || pri.focus !== 'brandstore';
+  const priGap = pri ? (priOm ? pri.gapPct : deltaPct(pri.bs.cur, pri.om.cur)) : NaN;
   const tabs: { id: TabId; label: ReactNode; badge?: ReactNode }[] = [
     { id: 'overview', label: '성장 공식 · 과제', badge: <Badge n={signals.filter((s) => s.tone === 'serious').length} tone="serious" /> },
-    { id: 'target', label: '타겟 · SA 캠페인', badge: <Badge n={camps.filter((c) => c.verdict === 'expand').length} tone="good" /> },
-    { id: 'alloc', label: '예산 재배분 · 한계 효율' },
+    { id: 'target', label: '타겟 · SA 캠페인', badge: <Badge n={camps.filter((c) => c.verdict === 'expand' || c.expandKeywords.length > 0).length} tone="good" /> },
+    { id: 'alloc', label: '예산 재배분 · 한계 효율', badge: <Badge n={constraints.filter((c) => c.verdict === 'hold').length} tone="serious" /> },
     { id: 'dasa', label: 'DA → SA 기여' },
     { id: 'funnel', label: '전환 개선 · 자사몰', badge: <Badge n={funnel.stages.filter((s) => s.focus).length + funnel.landing.soldout.length} /> },
     { id: 'demand', label: '신규 매체 · 코프로모션' },
-    { id: 'partner', label: '매체 협력 · 캘린더' },
+    { id: 'partner', label: '줄인 시간 · 매체 협력 · 캘린더' },
   ];
 
   return (
@@ -69,14 +73,15 @@ export default function View({ initialTab = 'overview' }: { initialTab?: TabId }
             foot={<span className="xs muted">{fmt.krw(model.upliftOptimized)} · b ±0.1 {fmt.delta(model.sensitivity.lowPct)}~{fmt.delta(model.sensitivity.highPct)} · 시나리오</span>} />
           <Stat label="DA → 브랜드 검색 시차" src={<Src kind="DEMO" />} value={ds.bestLag !== null ? `${ds.bestLag}일` : '미확인'}
             foot={<span className="xs muted">보정 r {f2(ds.bestR)} · 기준 {f2(ds.threshold)} · DA 경유 {fmt.ratio(ds.daShareBrand, 0)}</span>} />
-          <Stat label="자사몰 장바구니 → 구매" src={<Src kind="DEMO" />} value={fmt.pct(cart?.om.cur ?? NaN)}
-            foot={<span className="xs muted">브랜드스토어 {fmt.pct(cart?.bs.cur ?? NaN)} 대비 {fmt.delta(cart?.gapPct ?? NaN)} (기준 −20%)</span>} />
+          <Stat label={`${funnel.priority ? '우선 개선 · ' : ''}${priOm ? '자사몰' : '브랜드스토어'} ${pri?.metricLabel ?? '장바구니 → 구매'}`} src={<Src kind="DEMO" />}
+            value={fmt.pct(pri ? (priOm ? pri.om.cur : pri.bs.cur) : NaN)}
+            foot={<span className="xs muted">{priOm ? '브랜드스토어' : '자사몰'} {fmt.pct(pri ? (priOm ? pri.bs.cur : pri.om.cur) : NaN)} 대비 {fmt.delta(priGap)} (기준 {FUNNEL_RULES.gapPct}%)</span>} />
         </div>
       </Card>
 
       <Tabs id="growth-tabs" tabs={tabs} value={tab} onChange={setTab} />
 
-      {tab === 'overview' ? <OverviewTab d={d} model={model} onGo={go} /> : null}
+      {tab === 'overview' ? <OverviewTab d={d} model={model} signals={signals} onGo={go} /> : null}
       {tab === 'target' ? <TargetTab d={d} /> : null}
       {tab === 'alloc' ? <AllocationTab key={creditPref ? 'credit' : 'plain'} d={d} initialCredit={creditPref} /> : null}
       {tab === 'dasa' ? <DaSaTab d={d} ds={ds} onApplyCredit={() => { setCreditPref(true); setTab('alloc'); }} /> : null}

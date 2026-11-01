@@ -1,21 +1,24 @@
 /* 예산 배분 · 한계 효율 재배분 시뮬레이터 (p.37) — 예측이 아닌 시나리오 */
 import { useMemo, useState } from 'react';
 import type { Dataset, MediaId } from '@/core/types';
-import { MEDIA, MEDIA_IDS, RFP } from '@/data/constants';
+import { AD_PILOT, MEDIA, MEDIA_IDS, RFP } from '@/data/constants';
 import { clamp, fmt } from '@/core/util';
 import { useActions, useStore } from '@/core/store';
-import { Button, Callout, Card, NumberInput, Pill, Segmented, Src, Stat, Toggle } from '@/ui/primitives';
+import { Button, Callout, Card, DataTable, NumberInput, Pill, ProgressBar, Segmented, Src, Stat, Toggle, type Column, type Tone } from '@/ui/primitives';
 import { LineChart } from '@/ui/charts';
 import { AiInsight } from '@/ui/AiInsight';
-import { ALLOCATION_GUARDRAILS, CURVE_PRIORS, REBALANCE_RULES } from './data';
+import { ALLOCATION_GUARDRAILS, CURVE_PRIORS, PACE_RULES, REBALANCE_RULES } from './data';
+import { resolveConfig } from '@/modules/adpilot/engine';
 import {
-  B_RANGE, PROPOSAL_SHARES, allocationModel, allocationSnapshot, fitResponseCurves, growthPrompt, marginalCurvePoints, rebalanceShares, reallocationChange,
-  type Guardrails, type Shares,
+  B_RANGE, CONSTRAINT_LABEL, PROPOSAL_SHARES, activeDuplicate, allocationModel, allocationSnapshot, budgetConstraints, exhaustText, f2, fitResponseCurves, growthPrompt,
+  marginalCurvePoints, maxShareMove, rebalanceShares, reallocationChange, type BudgetConstraint, type ConstraintVerdict, type Guardrails, type Shares,
 } from './engine';
 import { allocationBrief } from './briefs';
 import { BIND_LABEL, MediaLabel, StackRows, Verdict } from './parts';
 
 type BMode = 'prior' | 'data' | 'manual';
+const CONSTRAINT_TONE: Record<ConstraintVerdict, Tone> = { raise: 'good', hold: 'serious', bid: 'warning' };
+const HOLD_LABEL: Record<NonNullable<BudgetConstraint['holdKind']>, string> = { account: '계정 · 결제', spike: '광고비 급변', cpc: 'CPC 급등' };
 
 export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initialCredit?: boolean }) {
   const { state } = useStore();
@@ -28,7 +31,6 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
   const [guard, setGuard] = useState<Guardrails>(ALLOCATION_GUARDRAILS);
   const [stepOn, setStepOn] = useState(true);
   const [stepCap, setStepCap] = useState<number>(REBALANCE_RULES.stepCapPct);
-  const [requested, setRequested] = useState<string | null>(null);
 
   const baseCurves = useMemo(() => fitResponseCurves(d), [d]);
   const bOverride = useMemo(() => {
@@ -39,18 +41,49 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
   const input = useMemo(() => ({ budget, shares, bOverride, guard, stepCapPct: stepOn ? stepCap : null, daSaCredit: credit }), [budget, shares, bOverride, guard, stepOn, stepCap, credit]);
   const model = useMemo(() => allocationModel(d, input), [d, input]);
   const curvePts = useMemo(() => marginalCurvePoints(model.curves, model.budget), [model]);
+  const constraints = useMemo(() => budgetConstraints(d, model), [d, model]);
 
   if (!model.baseline.valid) {
     return <Callout tone="warning" title="반응 곡선을 적합할 데이터가 없습니다">매체별 일별 광고비 · 매출 데이터(최근 90일)가 필요합니다. 배분 가안(p.37)을 유지합니다.</Callout>;
   }
 
-  const scenarioChanged = MEDIA_IDS.some((m) => Math.abs(shares[m] - PROPOSAL_SHARES[m]) > 0.0005);
+  const scenarioChanged = maxShareMove(shares) > 0.05;
+  const optimizedChanged = maxShareMove(model.equalize.shares) > 0.05;
+  const payloads = { optimized: reallocationChange(model, 'optimized', state.role), scenario: reallocationChange(model, 'scenario', state.role) };
+  const dup = { optimized: activeDuplicate(state.changes, payloads.optimized.targetId), scenario: activeDuplicate(state.changes, payloads.scenario.targetId) };
   const request = (which: 'optimized' | 'scenario') => {
-    const c = addChange({ ...reallocationChange(model, which, state.role) });
-    setRequested(c.id);
+    if (dup[which]) return;
+    const c = addChange({ ...payloads[which] });
     toast({ tone: 'info', title: '재배분안 승인 요청을 만들었습니다', body: `${c.target} · 수면밀도 승인 대기 · MILDO Flow에서 확인`, route: 'flow' });
   };
+  const exhaustBefore = resolveConfig().exhaustBeforeHour;
+  const bLabel = (src: 'data' | 'prior' | 'manual', why: string) => (src === 'prior' ? `사전 가정 · ${why}` : bMode === 'data' ? `데이터 적합 (범위 ${B_RANGE.min}~${B_RANGE.max})` : src === 'data' ? '데이터 적합' : '직접 입력');
   const series = curvePts.map((s) => ({ id: s.media, label: MEDIA[s.media].short, colorVar: MEDIA[s.media].colorVar, points: s.points }));
+  const constraintCols: Column<BudgetConstraint>[] = [
+    { key: 'campaign', label: '캠페인', render: (r) => <span className="stack-sm" style={{ gap: 0 }}><strong>{r.campaign}</strong><span className="xs muted">{MEDIA[r.media].name} · {MEDIA[r.media].role}</span></span> },
+    { key: 'budget', label: '일 예산', align: 'right', render: (r) => fmt.krw(r.dailyBudget) },
+    {
+      key: 'pace', label: '소진율 (시간대 기대)', sort: (r) => r.pacePct,
+      render: (r) => (
+        <span className="stack-sm" style={{ gap: 2, minWidth: 140 }}>
+          <span className="num small">{fmt.pct(r.pacePct, 0)} <span className="muted">· 기대 {fmt.ratio(r.expectedShare, 0)}</span></span>
+          <ProgressBar value={r.pacePct} max={100} marker={Number.isFinite(r.expectedShare) ? r.expectedShare * 100 : undefined} tone={r.paceIndex > 1 ? 'warning' : 'ink'} label={`${r.campaign} 소진율`} />
+        </span>
+      ),
+    },
+    { key: 'index', label: '소진 배수', align: 'right', sort: (r) => r.paceIndex, render: (r) => <span><strong className="num">{f2(r.paceIndex)}</strong><div className="xs muted">예상 부족 {fmt.krw(r.shortfall)}</div></span> },
+    {
+      key: 'exhaust', label: '예상 마감', align: 'right', sort: (r) => -(r.exhaustHour ?? 99),
+      render: (r) => <span><strong className="num">{exhaustText(r.exhaustHour)}</strong><div className="xs muted">{r.exhaustMethod ?? '—'}{r.missesPeak ? ` · ${PACE_RULES.peakStartHour}~23시 피크 전` : ''}</div></span>,
+    },
+    {
+      key: 'recent', label: `최근 ${PACE_RULES.recentHours}시간 광고비`, align: 'right', sort: (r) => r.recent.deltaPct,
+      render: (r) => <span><strong className="num">{fmt.delta(r.recent.deltaPct, 0)}</strong><div className="xs muted">동요일 · 동시간 {r.recent.baselineDays}주 평균 대비</div></span>,
+    },
+    { key: 'eff', label: '캠페인 ROAS', align: 'right', sort: (r) => r.campaignRatioPct, render: (r) => <span><strong className="num">{fmt.roas(r.campaignRoas)}</strong><div className="xs muted">목표 {fmt.roas(r.campaignTarget)} 대비 {fmt.int(r.campaignRatioPct)}%</div></span> },
+    { key: 'marg', label: '매체 한계 ROAS', align: 'right', render: (r) => <span><strong className="num">{fmt.roas(r.marginalRoas)}</strong><div className="xs muted">균등화 기준 {fmt.roas(r.threshold)}</div></span> },
+    { key: 'verdict', label: '판정 · 기준', render: (r) => <span style={{ display: 'inline-block', maxWidth: 380 }}><Verdict tone={CONSTRAINT_TONE[r.verdict]} icon={r.verdict === 'hold' ? 'alert' : undefined} label={`${CONSTRAINT_LABEL[r.verdict]}${r.holdKind ? ` · ${HOLD_LABEL[r.holdKind]}` : ''}`} basis={r.basis} /></span> },
+  ];
 
   return (
     <div className="stack-lg">
@@ -69,7 +102,7 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
           </div>
           <div className="field">
             <span className="field-label">곡선 형태 b</span>
-            <Segmented label="곡선 형태" value={bMode} onChange={setBMode} options={[{ id: 'prior', label: '사전 가정' }, { id: 'data', label: '데이터 적합 (상한 0.95)' }, { id: 'manual', label: '직접 입력' }]} />
+            <Segmented label="곡선 형태" value={bMode} onChange={setBMode} options={[{ id: 'prior', label: '사전 가정' }, { id: 'data', label: `데이터 적합 (상한 ${B_RANGE.max})` }, { id: 'manual', label: '직접 입력' }]} />
           </div>
           <div className="field">
             <span className="field-label">GFA 평가</span>
@@ -78,7 +111,7 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
           <div className="field">
             <span className="field-label">1회 재배분 폭 상한</span>
             <div className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
-              <Toggle id="growth-step" checked={stepOn} onChange={setStepOn} label="" />
+              <Toggle id="growth-step" checked={stepOn} onChange={setStepOn} label={<span className="xs">적용</span>} />
               <NumberInput id="growth-stepcap" value={stepCap} step={5} min={5} max={100} suffix="± %" onChange={(v) => setStepCap(clamp(v, 5, 100))} style={{ width: 120 }} />
             </div>
           </div>
@@ -93,12 +126,12 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
             foot={<span className="xs muted">{model.scenario.spread.maxMedia ? MEDIA[model.scenario.spread.maxMedia].short : '—'} {fmt.roas(model.scenario.spread.max)} vs {model.scenario.spread.minMedia ? MEDIA[model.scenario.spread.minMedia].short : '—'} {fmt.roas(model.scenario.spread.min)} · 균등화 {fmt.roas(model.equalize.marginalRoas)}</span>} />
         </div>
         <Callout tone="info" title="예측이 아닌 시나리오">
-          곡선 형태 b는 {model.curves.every((c) => c.bSource === 'prior') ? '6개 매체 모두 데이터로 식별되지 않아 사전 가정값' : bMode === 'data' ? '데이터 적합값(체감 미식별 시 상한 0.95)' : bMode === 'manual' ? '직접 입력값' : '데이터 적합 · 사전 가정 혼합'}입니다. 최근 90일 효율 수준을 연간에 적용하며 시즌성 · 경쟁 입찰 변화는 반영하지 않습니다. 볼륨 한계(검색량 · 리마케팅 모수)를 넘는 배분은 매출이 늘지 않는 것으로 계산합니다.
+          곡선 형태 b는 {bMode === 'data' ? `데이터 적합값(범위 ${B_RANGE.min}~${B_RANGE.max}로 제한 — 체감 미식별 매체는 상한 ${B_RANGE.max})` : bMode === 'manual' ? '직접 입력값' : model.curves.every((c) => c.bSource === 'prior') ? '6개 매체 모두 데이터로 식별되지 않아 사전 가정값' : '데이터 적합 · 사전 가정 혼합'}입니다. 최근 90일 효율 수준을 연간에 적용하며 시즌성 · 경쟁 입찰 변화는 반영하지 않습니다. 볼륨 한계(검색량 · 리마케팅 모수)를 넘는 배분은 매출이 늘지 않는 것으로 계산합니다.
           {model.credit.on ? ` DA→SA 기여 반영: GFA에 SA 경유 매출(ROAS ${fmt.roas(model.credit.haloRoas)})을 얹고 같은 금액을 SA에서 뺐습니다 — 홀드아웃 검증 전 추정치.` : ''}
         </Callout>
       </Card>
 
-      <Card title={<>매체별 배분 · 예상 결과 <Src kind="DEMO" /></>} sub={`슬라이더를 움직이면 나머지 매체가 기존 비율대로 조정되어 합계 100% 유지 · 가드레일 (${'초기값 · 협의 후 확정'})`}>
+      <Card title={<>매체별 배분 · 예상 결과 <Src kind="DEMO" /></>} sub="슬라이더를 움직이면 나머지 매체가 기존 비율대로 조정되어 합계 100% 유지 · 가드레일 (초기값 · 협의 후 확정)">
         <div className="table-wrap">
           <table className="tbl">
             <thead>
@@ -116,7 +149,7 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
                 return (
                   <tr key={m}>
                     <td><MediaLabel m={m} sub /></td>
-                    <td className="r">{fmt.ratio(PROPOSAL_SHARES[m])}</td>
+                    <td className="r"><span className="nowrap">{fmt.ratio(PROPOSAL_SHARES[m], 0)} · {fmt.krw(model.budget * PROPOSAL_SHARES[m])}</span></td>
                     <td>
                       <div className="growth-slider-cell">
                         <input className="growth-range" type="range" min={0} max={0.6} step={0.005} value={shares[m]} aria-label={`${MEDIA[m].name} 비중`}
@@ -148,7 +181,7 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
             </tbody>
             <tfoot>
               <tr>
-                <td>합계</td><td className="r">100%</td><td className="r">{fmt.ratio(MEDIA_IDS.reduce((a, m) => a + shares[m], 0))}</td>
+                <td>합계</td><td className="r">100% · {fmt.krw(model.budget)}</td><td className="r">{fmt.ratio(MEDIA_IDS.reduce((a, m) => a + shares[m], 0))}</td>
                 <td className="r">{fmt.krw(model.budget)}</td><td className="r">{fmt.krw(model.scenario.totalRevenue)}</td><td className="r">{fmt.roas(model.scenario.totalRoas)}</td>
                 <td className="r">격차 {fmt.int(model.scenario.spread.gapPct)}%</td><td>{model.scenario.guardViolations.length ? `가드레일 위반 ${model.scenario.guardViolations.length}` : '위반 없음'}</td>
                 <td className="r">{fmt.krw(model.optimized.totalRevenue)}</td>
@@ -159,10 +192,20 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
         <div className="row-between">
           <span className="xs muted">균등화안: {model.equalize.note}</span>
           <div className="row">
-            {requested ? <span className="xs muted">요청 생성됨 · <a href="#flow">MILDO Flow에서 보기</a></span> : null}
-            <Button size="sm" onClick={() => request('scenario')} disabled={!scenarioChanged} title={scenarioChanged ? undefined : '가안과 같은 배분입니다'}>시나리오 승인 요청</Button>
-            <Button size="sm" variant="primary" icon="send" onClick={() => request('optimized')} disabled={!model.equalize.feasible}>균등화안 승인 요청 · 수면밀도</Button>
+            {dup.optimized || dup.scenario ? <span className="xs muted">같은 배분안 승인 흐름 진행 중 · <a href="#flow">MILDO Flow에서 보기</a></span> : null}
+            <Button size="sm" onClick={() => request('scenario')} disabled={!scenarioChanged || !!dup.scenario} title={!scenarioChanged ? '가안과 같은 배분입니다' : dup.scenario ? '같은 배분안이 이미 승인 흐름에 있습니다' : undefined}>시나리오 승인 요청</Button>
+            <Button size="sm" variant="primary" icon="send" onClick={() => request('optimized')} disabled={!model.equalize.feasible || !optimizedChanged || !!dup.optimized}
+              title={!model.equalize.feasible ? '볼륨 한계 안에서 예산을 모두 배분할 수 없습니다' : !optimizedChanged ? '균등화안이 가안과 같습니다' : dup.optimized ? '같은 균등화안이 이미 승인 흐름에 있습니다' : undefined}>균등화안 승인 요청 · 수면밀도</Button>
           </div>
+        </div>
+      </Card>
+
+      <Card title={<>예산 제약 신호 · 오늘 일 예산 조기 소진 예상 <Src kind="DEMO" /></>}
+        sub={`기준일 ${d.today} ${d.currentHour}시 · 대상: 예상 마감 ${exhaustBefore}시 전 (최근 28일 매체 시간대 소진 곡선 + 선형 외삽 — MILDO Board · AD Pilot과 같은 계산) · 판정 순서: 계정 잔액 ${PACE_RULES.runwayMinDays}일치 미만 · 자동충전 실패(p.44), 최근 ${PACE_RULES.recentHours}시간 광고비 급변(동요일 · 동시간 ±30%, p.47), 캠페인 키워드 CPC +${AD_PILOT.anomalyHoldPct}% 이상 → 증액 보류 · 매체 한계 ROAS ≥ 균등화 기준이고 캠페인 ROAS ≥ 목표 → 증액 후보 · 그 외 입찰 조정 우선`}
+        actions={<><a className="btn sm" href="#adpilot">AD Pilot 예산 조정</a><a className="btn sm" href="#alert">MILDO Alert</a></>}>
+        <DataTable rows={constraints} columns={constraintCols} rowKey={(r) => r.id} empty={`조기 소진 예상 캠페인 없음 (예상 마감 ${exhaustBefore}시 이후)`} />
+        <div className="xs muted">
+          당일 증액은 이 화면에서 하지 않습니다 — 일 예산 변경은 AD Pilot · GFA Control 위임 범위(±10% AE · ±10~30% PM · 30% 초과 수면밀도)로 승인 라우팅되고, 여기서는 월 재배분의 입력(예산 제약 = 볼륨이 남아 있는 매체)으로만 씁니다. 광고비 급변 · 키워드 CPC 급등을 동반한 소진 가속은 수요가 아닌 집계 · 경쟁 입찰 변화일 수 있고, 계정 잔액이 1일치 미만이면 증액이 잔액 소진을 앞당기므로 모두 증액 근거에서 뺍니다.
         </div>
       </Card>
 
@@ -171,7 +214,7 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
           <LineChart series={series} height={240} yFormat={(v) => `${Math.round(v)}%`}
             refLine={Number.isFinite(model.equalize.marginalRoas) ? { y: model.equalize.marginalRoas, label: `균등화 ${fmt.roas(model.equalize.marginalRoas)}` } : undefined} ariaLabel="매체별 한계 ROAS 곡선" />
         </Card>
-        <Card title="배분 비교" sub="가안(p.37) · 시나리오 · 균등화안 (매체 색 고정)">
+        <Card title={<>배분 비교 <Src kind="PROPOSAL" page="p.37" /><Src kind="DEMO" /></>} sub="가안(p.37) · 시나리오 · 균등화안 (매체 색 고정)">
           <StackRows rows={[{ label: '가안', shares: PROPOSAL_SHARES }, { label: '시나리오', shares: model.scenarioShares }, { label: '균등화안', shares: model.equalize.shares }]} />
           <div className="xs muted">균등화 원리: 한 매체의 한계 ROAS가 다른 매체보다 높으면 예산을 옮길수록 전체 매출이 늘어나므로, 제약(가드레일 · 재배분 폭 · 볼륨 한계)에 걸리지 않은 매체의 한계 ROAS가 같아질 때까지 옮깁니다.</div>
         </Card>
@@ -198,7 +241,7 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
                   <td className="r">
                     {bMode === 'manual'
                       ? <NumberInput id={`growth-b-${c.media}`} value={manualB[c.media]} step={0.05} min={0.05} max={0.98} onChange={(v) => setManualB({ ...manualB, [c.media]: clamp(v, 0.05, 0.98) })} style={{ justifyContent: 'flex-end' }} />
-                      : <span className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><strong className="num">{c.b.toFixed(2)}</strong><span className="xs muted">{c.bSource === 'prior' ? `사전 가정 · ${c.priorWhy}` : c.bSource === 'data' ? '데이터 적합' : '직접 입력'}</span></span>}
+                      : <span className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><strong className="num">{c.b.toFixed(2)}</strong><span className="xs muted">{bLabel(c.bSource, c.priorWhy)}</span></span>}
                   </td>
                   <td className="small">{fmt.dec1(c.capMult)}배<div className="xs muted">{c.capBasis}</div>{c.creditNote ? <div className="xs muted">{c.creditNote}</div> : null}</td>
                   <td className="r"><div className="growth-mini-input" style={{ marginLeft: 'auto' }}><NumberInput id={`growth-gmin-${c.media}`} value={Math.round(guard[c.media].min * 100)} step={1} min={0} max={100} suffix="%" onChange={(v) => setGuard({ ...guard, [c.media]: { ...guard[c.media], min: clamp(v, 0, 100) / 100 } })} /></div></td>

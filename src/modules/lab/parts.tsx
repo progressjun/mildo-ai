@@ -3,7 +3,7 @@ import { useMemo, type ReactNode } from 'react';
 import type { ApprovalLevel, ChangeRequest } from '@/core/types';
 import { useActions, useStore } from '@/core/store';
 import { Button, Pill } from '@/ui/primitives';
-import { demoTestCards, PATTERN_SEEDS } from './data';
+import { demoTestCards, PATTERN_SEEDS, SCORE_WEIGHTS } from './data';
 import {
   APPROVER_LABEL, buildPipeline, canApprove, CARD_VERDICT_META, collectCopies, discoverCandidates, judgeTestCard, KW_VERDICT_META, LANDING_LEVEL_META,
   resolveCriteria, REVIEW_LEVEL_META, reviewAll, skuEntries, TIER_META, type Candidate, type CardJudgement, type CardVerdict, type KwJudgement, type LandingMatch, type ReviewLevel,
@@ -47,7 +47,8 @@ export function LandingPill({ l }: { l: LandingMatch }) {
 }
 export function TierPill({ c }: { c: Pick<Candidate, 'tier' | 'score'> }) {
   const m = TIER_META[c.tier];
-  return <Pill tone={m.tone} title="우선 ≥ 70 · 검토 ≥ 50 · 보류 < 50 (모듈 가정)">{m.label}</Pill>;
+  const basis = c.tier === 'priority' ? `≥ ${SCORE_WEIGHTS.priority}` : c.tier === 'review' ? `≥ ${SCORE_WEIGHTS.review}` : `< ${SCORE_WEIGHTS.review}`;
+  return <Pill tone={m.tone} title={`우선 ≥ ${SCORE_WEIGHTS.priority} · 검토 ≥ ${SCORE_WEIGHTS.review} · 보류 < ${SCORE_WEIGHTS.review} (모듈 가정)`}>{m.label} · {basis}</Pill>;
 }
 export function ScoreBar({ score }: { score: number }) {
   return (

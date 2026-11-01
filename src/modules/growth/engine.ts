@@ -6,16 +6,18 @@
  *  - 타겟 그룹 (p.34) · SA 캠페인 구조 (p.35) · SKU 확장 (p.36) · 신규 매체 (p.38) · 코프로모션 (p.39) · 캘린더 (p.42)
  * 모든 성과 수치는 Dataset(시연용 테스트 데이터)에서 계산한다. 빈 데이터 · 0 나누기 · NaN을 방어한다.
  */
-import type { ApprovalLevel, ChangeKind, DailyMediaRow, Dataset, IntentId, Keyword, MediaId, SalesChannelId } from '@/core/types';
+import type { AdAccount, ApprovalLevel, Campaign, ChangeKind, ChangeRequest, DailyMediaRow, Dataset, IntentId, Keyword, MediaId, SalesChannelId } from '@/core/types';
 import {
-  AD_PILOT, CO_PROMOTIONS, GROWTH_CALENDAR, INTENT_IDS, MEDIA, MEDIA_IDS, NEW_MEDIA_PILOT, RFP, SA_AUTOMATION_SCOPE, SA_CAMPAIGNS, SALES_CHANNELS,
-  SKU_EXPANSION, TARGET_GROUPS,
+  AD_PILOT, ANOMALY_THRESHOLDS, CO_PROMOTIONS, GROWTH_CALENDAR, INTENT_IDS, MEDIA, MEDIA_IDS, NEW_MEDIA_PILOT, RFP, SA_AUTOMATION_SCOPE, SA_CAMPAIGNS,
+  SALES_CHANNELS, SKU_EXPANSION, TARGET_GROUPS,
 } from '@/data/constants';
-import { addDays, clamp, fmt, linreg, mean, normCdf, parseDate, pearson, stdev, sum } from '@/core/util';
+import { addDays, clamp, fmt, linreg, mean, normCdf, parseDate, pearson, stdev, sum, weekday } from '@/core/util';
+// 일 예산 소진 · 캠페인 효율은 MILDO Board · AD Pilot · 커맨드 센터와 같은 계산을 쓴다 (같은 숫자는 같은 계산)
+import { campaignEfficiency, hourlyCostCurve, paceCampaigns, resolveConfig } from '@/modules/adpilot/engine';
 import {
   ALLOCATION_GUARDRAILS, CALENDAR_LINKS, CO_PROMO_KEYWORDS, CURVE_PRIORS, CURVE_WINDOW_DAYS, DA_SA_MAX_LAG, DA_SHARE_ASSUMPTION, FUNNEL_PLAYBOOK,
-  FUNNEL_RULES, HOLDOUT_UNITS, LANDING_TYPES, MEDIA_PARTNERSHIPS, NAVER_TRIPARTITE, NEW_MEDIA_CPA_MULT, NEW_MEDIA_SCORES, PILOT_DEFAULTS, QUARTER_START,
-  REBALANCE_RULES, SA_CPC_INFLATION, TARGET_GROUP_LINKS, type FunnelStage, type HoldoutUnitId,
+  FUNNEL_RULES, GROWTH_FORMULA, HOLDOUT_UNITS, LANDING_TYPES, MEDIA_PARTNERSHIPS, NAVER_TRIPARTITE, NEW_MEDIA_CPA_MULT, NEW_MEDIA_SCORES, PACE_RULES, PILOT_DEFAULTS,
+  QUARTER_START, REBALANCE_RULES, SA_CPC_INFLATION, TARGET_GROUP_LINKS, type FunnelStage, type HoldoutUnitId,
 } from './data';
 
 /* ================================ 공통 ================================ */
@@ -514,6 +516,160 @@ export function allocationModel(d: Dataset, input: AllocationInput = {}): Alloca
   };
 }
 
+/* ---------------- 일 예산 조기 소진 → 예산 제약 신호 (재배분 입력) ---------------- */
+
+export type ConstraintVerdict = 'raise' | 'hold' | 'bid';
+export const CONSTRAINT_LABEL: Record<ConstraintVerdict, string> = { raise: '증액 후보', hold: '증액 보류', bid: '입찰 조정 우선' };
+/** 증액 보류 사유: 계정 · 결제 / 매체 광고비 급변 / 캠페인 내 키워드 CPC 급등 */
+export type HoldKind = 'account' | 'spike' | 'cpc';
+export interface HourlyDelta { deltaPct: number; hours: number[]; observed: number; baseline: number; baselineDays: number }
+export interface BudgetConstraint {
+  id: string;
+  campaign: string;
+  media: MediaId;
+  intent?: IntentId;
+  dailyBudget: number;
+  spentToday: number;
+  pacePct: number;
+  /** 예상 마감 시각 — MILDO Board · AD Pilot과 같은 값 (시간대 가중이 기준 전이면 그 값, 아니면 선형) */
+  exhaustHour: number | null;
+  exhaustMethod: '시간대 가중' | '선형' | null;
+  /** 21~23시 저녁 피크 전 마감 */
+  missesPeak: boolean;
+  /** 최근 28일 같은 매체 시간대 곡선상 지금까지의 기대 소진 비율 (0~1) */
+  expectedShare: number;
+  /** 소진 배수 = 현재 소진율 ÷ 기대 소진 비율 (오늘 예상 수요 ÷ 일 예산) */
+  paceIndex: number;
+  /** 예상 수요 − 일 예산 (원, 0 이상) */
+  shortfall: number;
+  /** 최근 시간대 광고비 — 최근 4주 같은 요일 · 같은 시간 평균 대비 */
+  recent: HourlyDelta;
+  /** 캠페인 효율 (AD Pilot campaignEfficiency: SA는 의도 키워드 14일, 그 외 매체 14일) */
+  campaignRoas: number;
+  campaignTarget: number;
+  campaignRatioPct: number;
+  campaignEfficient: boolean;
+  /** 가안 운영점의 매체 한계 ROAS (%) */
+  marginalRoas: number;
+  /** 균등화 한계 ROAS (%) — 증액 판단 기준 */
+  threshold: number;
+  verdict: ConstraintVerdict;
+  holdKind: HoldKind | null;
+  basis: string;
+}
+
+/**
+ * 최근 n시간(현재 시각 포함) 매체 광고비 vs 최근 4주 같은 요일 · 같은 시간 평균 (p.47 '동요일 · 동시간' 기준선).
+ * 시간별 데이터가 없으면 NaN.
+ */
+export function recentHourlyDelta(d: Dataset, m: MediaId, hours = 2): HourlyDelta {
+  const n = Math.max(1, Math.floor(hours));
+  const hrs = Array.from({ length: n }, (_, i) => d.currentHour - n + 1 + i).filter((h) => h >= 0);
+  const hs = new Set(hrs);
+  const wd = weekday(d.today);
+  const rows = d.mediaHourly.filter((r) => r.media === m && hs.has(r.hour));
+  const todayRows = rows.filter((r) => r.date === d.today);
+  const past = Array.from(new Set(rows.filter((r) => r.date < d.today && r.weekday === wd).map((r) => r.date))).sort().slice(-4);
+  const base = past.map((dt) => sum(rows.filter((r) => r.date === dt), (r) => r.cost));
+  const observed = sum(todayRows, (r) => r.cost);
+  const baseline = base.length ? mean(base) : NaN;
+  return { deltaPct: todayRows.length ? deltaPct(observed, baseline) : NaN, hours: hrs, observed, baseline, baselineDays: base.length };
+}
+
+/** 캠페인 → 광고 계정 (매체 일치, 버티컬은 캠페인명 접두사로 쿠팡 · 오늘의집 계정) */
+export function accountForCampaign(d: Dataset, c: Pick<Campaign, 'media' | 'name'>): AdAccount | undefined {
+  const direct = d.accounts.find((a) => a.media === c.media);
+  if (direct) return direct;
+  if (c.media === 'vertical') {
+    if (/^쿠팡/.test(c.name)) return d.accounts.find((a) => a.media === 'coupang');
+    if (/^오늘의집/.test(c.name)) return d.accounts.find((a) => a.media === 'ohouse');
+  }
+  return undefined;
+}
+/** 잔액 소진 예상 일수 (후불 · 소진 기준 없음이면 Infinity) */
+export function accountRunway(a: AdAccount | undefined): number {
+  if (!a || !(a.balance >= 0) || !(a.avgDailySpend > 0)) return Infinity;
+  return a.balance / a.avgDailySpend;
+}
+
+/**
+ * 오늘 일 예산 조기 소진 예상 캠페인 → 재배분 관점 판정.
+ * 대상 · 예상 마감: AD Pilot paceCampaigns (Board · 커맨드 센터와 같은 28일 시간대 곡선 + 선형, 23시 전 마감).
+ * 판정 순서 — 증액 보류: 계정 잔액 1일치 미만 · 자동충전 실패 · 계정 검수/제한(p.44), 최근 2시간 광고비 동요일 · 동시간 ±30%(p.47 주의),
+ * 캠페인 내 키워드 최근 3일 CPC +50% 이상(경쟁 입찰 상승 · AD Pilot 자동 조정 보류 기준) →
+ * 증액 후보: 매체 한계 ROAS ≥ 균등화 기준이고 캠페인 ROAS ≥ 목표 → 그 외 입찰 조정 우선.
+ */
+export function budgetConstraints(d: Dataset, model?: AllocationModel): BudgetConstraint[] {
+  const paces = (d.campaigns?.length ? paceCampaigns(d) : []).filter((p) => p.status !== 'off' && p.dailyBudget > 0 && p.earlyExhaust);
+  if (!paces.length) return [];
+  const m = model ?? allocationModel(d);
+  const before = resolveConfig().exhaustBeforeHour;
+  const warn = ANOMALY_THRESHOLDS.find((t) => t.metric === 'cost')?.warnPct ?? 30;
+  const thr = m.equalize.marginalRoas;
+  const spikes = keywordCpcSpikes(d);
+  const out = paces.map((p): BudgetConstraint => {
+    const curveEarly = p.curveExhaustHour !== null && p.curveExhaustHour < before;
+    const exhaustHour = curveEarly ? p.curveExhaustHour : p.linearEarly ? p.linearExhaustHour : p.curveExhaustHour;
+    const exhaustMethod: BudgetConstraint['exhaustMethod'] = exhaustHour === null ? null : curveEarly || !p.linearEarly ? '시간대 가중' : '선형';
+    const missesPeak = exhaustHour !== null && exhaustHour < PACE_RULES.peakStartHour;
+    const cum = hourlyCostCurve(d, p.media);
+    const expectedShare = cum[clamp(Math.round(p.hourOfData), 0, 23)] ?? NaN;
+    const recent = recentHourlyDelta(d, p.media, PACE_RULES.recentHours);
+    const eff = campaignEfficiency(d, p);
+    const marg = m.baseline.rows.find((r) => r.media === p.media)?.marginalRoas ?? NaN;
+    const short = MEDIA[p.media].short;
+    const hrs = recent.hours.length ? `${recent.hours[0]}~${recent.hours[recent.hours.length - 1]}시` : '최근 시간대';
+    const acc = accountForCampaign(d, p);
+    const runway = accountRunway(acc);
+    const kwSpikes = p.media === 'naver_sa' && p.intent ? spikes.filter((s) => s.intent === p.intent) : [];
+    const pace = `예상 마감 ${exhaustText(exhaustHour)} (${exhaustMethod ?? '—'} · 기준 ${before}시 전${missesPeak ? ` · ${PACE_RULES.peakStartHour}~23시 피크 전` : ''})`;
+    const effTxt = `캠페인 ROAS ${fmt.roas(eff.roas)} (목표 ${fmt.roas(eff.target)} 대비 ${fmt.int(eff.ratioPct)}%)`;
+    let verdict: ConstraintVerdict;
+    let holdKind: HoldKind | null = null;
+    let basis: string;
+    if (acc && (runway < PACE_RULES.runwayMinDays || acc.autoCharge === 'failed' || acc.status !== 'active')) {
+      verdict = 'hold';
+      holdKind = 'account';
+      const st = acc.status === 'review' ? ' · 계정 검수/확인 필요' : acc.status === 'restricted' ? ' · 계정 제한' : '';
+      basis = `${acc.name} 잔액 ${Number.isFinite(runway) ? `${runway.toFixed(2)}일치` : '후불'} (기준 ${PACE_RULES.runwayMinDays}일치) · 자동충전 ${acc.autoCharge === 'failed' ? '실패' : acc.autoCharge === 'ok' ? '정상' : acc.autoCharge === 'off' ? '미사용' : '후불'}${st} — 증액은 잔액을 더 빨리 소진시켜 계정 · 결제 확인(MILDO Alert P1) 전 보류 · ${pace}`;
+    } else if (fin(recent.deltaPct) && Math.abs(recent.deltaPct) >= warn) {
+      verdict = 'hold';
+      holdKind = 'spike';
+      basis = `오늘 ${hrs} ${short} 광고비 동요일 · 동시간 ${recent.baselineDays}주 평균 대비 ${fmt.delta(recent.deltaPct, 0)} (기준 ±${warn}%) — 소진 가속이 수요 증가가 아닌 데이터 급변일 수 있어 MILDO Alert 확인 전 증액 판단 보류 · ${pace}`;
+    } else if (kwSpikes.length) {
+      verdict = 'hold';
+      holdKind = 'cpc';
+      basis = `캠페인 내 ${kwSpikes.slice(0, 2).map((s) => `'${s.keyword}' 최근 3일 CPC ${fmt.delta(s.deltaPct, 0)}`).join(' · ')} (기준 +${AD_PILOT.anomalyHoldPct}%, AD Pilot 자동 조정 보류 기준) — 소진 가속이 경쟁 입찰 상승 때문일 수 있어 증액 대신 원인 확인 · ${pace}`;
+    } else if (fin(marg) && fin(thr) && marg >= thr && eff.efficient) {
+      verdict = 'raise';
+      basis = `${short} 한계 ROAS ${fmt.roas(marg)} ≥ 균등화 기준 ${fmt.roas(thr)} · ${effTxt} · 최근 ${PACE_RULES.recentHours}시간 광고비 ${fmt.delta(recent.deltaPct, 0)} (기준 ±${warn}% 이내) — 예산 제약으로 노출이 끊기는 구간 · ${pace}`;
+    } else {
+      verdict = 'bid';
+      basis = !fin(marg) || !fin(thr)
+        ? `한계 ROAS를 계산할 데이터가 없어 증액 근거 없음 — 입찰 조정 우선 · ${pace}`
+        : marg < thr
+          ? `${short} 한계 ROAS ${fmt.roas(marg)} < 균등화 기준 ${fmt.roas(thr)} — 증액보다 입찰 · 타겟 조정이 먼저 · ${pace}`
+          : `${effTxt} — 목표 미달 캠페인은 증액보다 입찰 · 타겟 조정이 먼저 · ${pace}`;
+    }
+    return {
+      id: p.id, campaign: p.name, media: p.media, intent: p.intent, dailyBudget: p.dailyBudget, spentToday: p.spentToday, pacePct: p.pacePct,
+      exhaustHour, exhaustMethod, missesPeak, expectedShare, paceIndex: p.projectedRatio, shortfall: Math.max(0, p.projectedSpend - p.dailyBudget), recent,
+      campaignRoas: eff.roas, campaignTarget: eff.target, campaignRatioPct: eff.ratioPct, campaignEfficient: eff.efficient,
+      marginalRoas: marg, threshold: thr, verdict, holdKind, basis,
+    };
+  });
+  return out.sort((a, b) => (a.exhaustHour ?? 99) - (b.exhaustHour ?? 99) || a.id.localeCompare(b.id));
+}
+
+/** 예상 마감 시각 표기 (24시 이후는 '자정 이후') */
+export function exhaustText(h: number | null): string {
+  if (h === null || !fin(h)) return '소진 없음';
+  if (h >= 24) return '자정 이후';
+  const hh = Math.floor(h);
+  const mm = Math.round((h - hh) * 60);
+  return `${String(hh).padStart(2, '0')}:${String(mm === 60 ? 59 : mm).padStart(2, '0')}`;
+}
+
 /** 매체별 한계 ROAS 곡선 (가안 배분 대비 배수) — 차트용 */
 export function marginalCurvePoints(curves: readonly ResponseCurve[], budget: number, mults: readonly number[] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]) {
   return curves.map((c) => ({
@@ -1008,6 +1164,20 @@ export interface CampaignPerf {
   basis: string;
   landingMismatch: number;
   actualLandings: string[];
+  /** 키워드 단위 확대 여지 (p.14 고효율 기준: ROAS ≥ 목표 × 1.3 · 노출 손실 ≥ 25%) */
+  expandKeywords: { keyword: string; ratioPct: number; lostShare: number }[];
+}
+
+/** 키워드 단위 고효율 · 노출 손실 (AD Pilot 입찰 상향 후보와 같은 기준, 브랜드는 브랜드 목표) */
+export function expandKeywordsOf(list: readonly Keyword[]): CampaignPerf['expandKeywords'] {
+  return list
+    .filter((k) => k.status === 'on' && k.last14.cost > 0)
+    .map((k) => {
+      const target = k.isBrand ? AD_PILOT.brandTargetRoas : AD_PILOT.targetRoas;
+      return { keyword: k.text, ratioPct: pctOf(pctOf(k.last14.revenue, k.last14.cost), target), lostShare: k.impressionShareLost };
+    })
+    .filter((k) => fin(k.ratioPct) && k.ratioPct >= AD_PILOT.highEfficiencyRoasRatio * 100 && k.lostShare >= AD_PILOT.lostShareTrigger)
+    .sort((a, b) => b.lostShare - a.lostShare);
 }
 
 export function saCampaignPerformance(d: Dataset): CampaignPerf[] {
@@ -1042,24 +1212,26 @@ export function saCampaignPerformance(d: Dataset): CampaignPerf[] {
       prevRoas, roasDelta: deltaPct(roas, prevRoas), revenueShare: safeDiv(revenue, totRev), costShare: safeDiv(cost, totCost), lostShare: lost,
       monthlySearch: s((k) => k.monthlySearch), target, ratioPct: ratio, verdict,
       basis: verdict === 'nodata' ? '최근 14일 집행 없음'
-        : `목표 ROAS ${fmt.int(target)}% 대비 ${fmt.int(ratio)}% · 노출 손실 ${fmt.ratio(lost)}${verdict === 'expand' ? ` (기준 ${AD_PILOT.highEfficiencyRoasRatio * 100}% · ${AD_PILOT.lostShareTrigger * 100}%)` : ''}`,
+        : `목표 ROAS ${fmt.int(target)}% 대비 ${fmt.int(ratio)}% · 노출 손실 ${fmt.ratio(lost)} (기준 확대 ${AD_PILOT.highEfficiencyRoasRatio * 100}% 이상 + 손실 ${AD_PILOT.lostShareTrigger * 100}% 이상 · 유지 100% 이상)`,
       landingMismatch: list.filter((k) => landingType(k.landing) !== c.landing).length,
       actualLandings: actual,
+      expandKeywords: expandKeywordsOf(list),
     };
   });
 }
 
 /** 최근 n일 CPC가 그 이전 기간 대비 +pct% 이상 오른 키워드 (경쟁 입찰 상승 신호) */
-export function keywordCpcSpikes(d: Dataset, days = 3, pct: number = AD_PILOT.anomalyHoldPct): { keyword: string; deltaPct: number }[] {
-  const out: { keyword: string; deltaPct: number }[] = [];
+export function keywordCpcSpikes(d: Dataset, days = 3, pct: number = AD_PILOT.anomalyHoldPct): { keyword: string; intent: IntentId; deltaPct: number }[] {
+  const out: { keyword: string; intent: IntentId; deltaPct: number }[] = [];
   for (const k of d.keywords) {
+    if (k.status === 'off') continue;
     const n = k.daily.length;
     if (n <= days + 2) continue;
     const recent = k.daily.slice(n - days);
     const before = k.daily.slice(0, n - days);
     const cpc = (rows: typeof recent) => safeDiv(sum(rows, (r) => r.cost), sum(rows, (r) => r.clicks));
     const dl = deltaPct(cpc(recent), cpc(before));
-    if (fin(dl) && dl >= pct) out.push({ keyword: k.text, deltaPct: dl });
+    if (fin(dl) && dl >= pct) out.push({ keyword: k.text, intent: k.intent, deltaPct: dl });
   }
   return out.sort((a, b) => b.deltaPct - a.deltaPct);
 }
@@ -1173,10 +1345,15 @@ export interface PilotRow {
   threshold: number;
   feasible: boolean;
   status: 'ok' | 'short' | 'off';
+  /** 이미 승인 흐름에 올라간 후보 (예산 고정) */
+  requested: boolean;
 }
 export interface PilotPlan {
   cap: number;
+  /** 배정 합계 (이미 요청한 금액 포함) */
   total: number;
+  /** 승인 흐름에 올라간 금액 합계 */
+  committedTotal: number;
   overCap: boolean;
   remaining: number;
   minConv: number;
@@ -1199,7 +1376,8 @@ export function defaultPilots(ranked: readonly MediaScore[]): PilotInput[] {
   return ranked.map((r) => ({ name: r.name, budget: r.rank <= PILOT_DEFAULTS.topN ? PILOT_DEFAULTS.budgetPerPilot : 0 }));
 }
 
-export function pilotPlan(d: Dataset, pilots: readonly PilotInput[], opts: { annualBudget?: number; marginalRoas?: number; precision?: number } = {}): PilotPlan {
+export function pilotPlan(d: Dataset, pilots: readonly PilotInput[], opts: { annualBudget?: number; marginalRoas?: number; precision?: number; committed?: Record<string, number> } = {}): PilotPlan {
+  const committed = opts.committed ?? {};
   const annual = opts.annualBudget ?? RFP.annualBudget;
   const cap = annual * NEW_MEDIA_PILOT.maxBudgetShare;
   const last30 = lastDays(d, 30);
@@ -1209,22 +1387,26 @@ export function pilotPlan(d: Dataset, pilots: readonly PilotInput[], opts: { ann
   const baseCpa = safeDiv(sum(daRows, (r) => r.cost), sum(daRows, (r) => r.conversions));
   const aov = safeDiv(sum(allRows, (r) => r.revenue), sum(allRows, (r) => r.conversions));
   const thr = fin(opts.marginalRoas ?? NaN) && (opts.marginalRoas as number) > 0 ? (opts.marginalRoas as number) : AD_PILOT.targetRoas;
-  const thresholdBasis = fin(opts.marginalRoas ?? NaN) && (opts.marginalRoas as number) > 0 ? '기존 매체 한계 ROAS (균등화 기준)' : `목표 ROAS ${AD_PILOT.targetRoas}% (한계 ROAS 계산 불가 시)`;
+  const thresholdBasis = fin(opts.marginalRoas ?? NaN) && (opts.marginalRoas as number) > 0 ? '기존 매체 한계 ROAS · 균등화 기준' : `목표 ROAS ${AD_PILOT.targetRoas}% (한계 ROAS 계산 불가 시)`;
   const minConv = requiredConversions(opts.precision ?? PILOT_DEFAULTS.precision);
   const rows: PilotRow[] = pilots.map((p) => {
-    const budget = Math.max(0, fin(p.budget) ? p.budget : 0);
+    const requested = fin(committed[p.name] ?? NaN) && committed[p.name] > 0;
+    const budget = requested ? committed[p.name] : Math.max(0, fin(p.budget) ? p.budget : 0);
     const cpa = baseCpa * (NEW_MEDIA_CPA_MULT[p.name] ?? 1);
     const expectedConv = safeDiv(budget, cpa);
     const feasible = budget > 0 && fin(expectedConv) && expectedConv >= minConv;
     return {
       name: p.name, budget, weeks: NEW_MEDIA_PILOT.weeks, cpa, expectedConv: budget > 0 ? expectedConv : 0, minConv,
       budgetForMin: fin(cpa) ? minConv * cpa : NaN, breakEvenConv: safeDiv((budget * thr) / 100, aov), threshold: thr, feasible,
-      status: budget <= 0 ? 'off' : feasible ? 'ok' : 'short',
+      status: budget <= 0 ? 'off' : feasible ? 'ok' : 'short', requested,
     };
   });
-  const total = sum(rows, (r) => r.budget);
+  const inRows = new Set(rows.map((r) => r.name));
+  const committedOther = sum(Object.entries(committed).filter(([n, v]) => !inRows.has(n) && fin(v) && v > 0), ([, v]) => v);
+  const total = sum(rows, (r) => r.budget) + committedOther;
+  const committedTotal = sum(rows.filter((r) => r.requested), (r) => r.budget) + committedOther;
   return {
-    cap, total, overCap: total > cap, remaining: cap - total, minConv, baseCpa, aov, threshold: thr, thresholdBasis, rows,
+    cap, total, committedTotal, overCap: total > cap + 1e-6, remaining: cap - total, minConv, baseCpa, aov, threshold: thr, thresholdBasis, rows,
     rule: `${NEW_MEDIA_PILOT.weeks}주 · 연 예산 ${Math.round(NEW_MEDIA_PILOT.maxBudgetShare * 100)}% 이내 · 증분 ROAS ${fmt.int(thr)}% 이상 확대 · 미달 중단 · 전환 ${fmt.int(minConv)}건 미만 판정 보류`,
   };
 }
@@ -1243,10 +1425,21 @@ export function coPromoDemand(d: Dataset) {
 
 /* ======================= p.42 캘린더 · p.30 성장 공식 ======================= */
 
+/** 분기 시작일 + 3개월 − 1일 */
+function quarterEnd(start: string): string {
+  const [y, mo] = start.split('-').map(Number);
+  const ny = mo + 3 > 12 ? y + 1 : y;
+  const nm = ((mo + 2) % 12) + 1;
+  return addDays(`${ny}-${String(nm).padStart(2, '0')}-01`, -1);
+}
+
 export function calendarView(d: Dataset) {
   return GROWTH_CALENDAR.map((q) => {
     const start = QUARTER_START[q.q] ?? '';
-    return { ...q, start, daysUntil: start ? daysBetween(d.today, start) : NaN, links: CALENDAR_LINKS[q.q] ?? [] };
+    const end = start ? quarterEnd(start) : '';
+    const daysUntil = start ? daysBetween(d.today, start) : NaN;
+    const status: 'upcoming' | 'current' | 'past' | 'unknown' = !start ? 'unknown' : d.today < start ? 'upcoming' : d.today > end ? 'past' : 'current';
+    return { ...q, start, end, daysUntil, status, links: CALENDAR_LINKS[q.q] ?? [] };
   });
 }
 
@@ -1264,17 +1457,17 @@ export function growthFormula(d: Dataset, model?: AllocationModel): FormulaPilla
   const f = funnelDiagnosis(d);
   const ds = daSaAnalysis(d);
   const ranked = scoreNewMedia();
-  const confirmed = MEDIA_PARTNERSHIPS.filter((p) => !p.placeholder).length;
+  const named = MEDIA_PARTNERSHIPS.filter((p) => !p.placeholder).length;
   const top = ranked[0];
+  const base = Object.fromEntries(GROWTH_FORMULA.map((g) => [g.id, g])) as Record<(typeof GROWTH_FORMULA)[number]['id'], (typeof GROWTH_FORMULA)[number]>;
+  const pillar = (id: keyof typeof base, value: string, foot: string): FormulaPillar => ({ id, title: base[id].title, detail: base[id].detail, tab: base[id].tab, route: base[id].route, value, foot });
+  const priGap = f.priority ? (f.priority.focus === 'own_mall' ? f.priority.gapPct : deltaPct(f.priority.bs.cur, f.priority.om.cur)) : NaN;
   return [
-    { id: 'time', title: '줄인 시간', detail: '반복 구간 축소 → 성장 실험에 재투입', tab: 'overview', route: 'reports', value: `주 ${fmt.int(sv.saved)}분`, foot: `SA 업무 ${fmt.int(sv.before)} → ${fmt.int(sv.after)}분 (${fmt.delta(-sv.pct, 0)}) · p.19 목표` },
-    { id: 'power', title: '매체 파워', detail: '매체 협력 → 최선의 구좌 확보', tab: 'partner', route: 'growth', value: `${confirmed}개 매체`, foot: `협력 구좌 확정 ${confirmed} · 입력 필요 ${MEDIA_PARTNERSHIPS.length - confirmed} · 네이버 3자 미팅 ${NAVER_TRIPARTITE.cadence}` },
-    { id: 'demand', title: '새 수요', detail: '신규 매체 발굴 · 브랜드 코프로모션', tab: 'demand', route: 'growth', value: fmt.krw(RFP.annualBudget * NEW_MEDIA_PILOT.maxBudgetShare), foot: `파일럿 한도 연 ${Math.round(NEW_MEDIA_PILOT.maxBudgetShare * 100)}% · 1순위 ${top ? `${top.name} ${fmt.int(top.total)}점` : '—'} · 코프로모션 ${CO_PROMOTIONS.length}개 구매 순간` },
-    {
-      id: 'basics', title: '기본기', detail: '캠페인 · 전환율 · 자사몰 · DA→SA', tab: 'alloc', route: 'growth',
-      value: fin(m.upliftOptimizedPct) ? fmt.delta(m.upliftOptimizedPct) : '—',
-      foot: `균등화 재배분 예상 매출 (시나리오) · DA→SA 최적 시차 ${ds.bestLag !== null ? `${ds.bestLag}일` : '미확인'} · ${f.priority ? `${f.priority.label} 격차 ${fmt.delta(f.priority.focus === 'own_mall' ? f.priority.gapPct : deltaPct(f.priority.bs.cur, f.priority.om.cur))}` : '퍼널 격차 기준 미달'}`,
-    },
+    pillar('time', `주 ${fmt.int(sv.saved)}분`, `SA 업무 ${fmt.int(sv.before)} → ${fmt.int(sv.after)}분 (${fmt.delta(-sv.pct, 0)}) · p.19 목표 · 온보딩 30일 내 실측 확정`),
+    pillar('power', `${named}개 매체`, `제안서 명시 관계 ${named} · 입력 필요 ${MEDIA_PARTNERSHIPS.length - named} · 구좌는 매체 승인 기준 · 네이버 3자 미팅 ${NAVER_TRIPARTITE.cadence}`),
+    pillar('demand', fmt.krw(RFP.annualBudget * NEW_MEDIA_PILOT.maxBudgetShare), `파일럿 한도 연 ${Math.round(NEW_MEDIA_PILOT.maxBudgetShare * 100)}% · 1순위 ${top && fin(top.total) ? `${top.name} ${fmt.int(top.total)}점` : '—'} · 코프로모션 ${CO_PROMOTIONS.length}개 구매 순간`),
+    pillar('basics', fin(m.upliftOptimizedPct) ? fmt.delta(m.upliftOptimizedPct) : '—',
+      `균등화 재배분 예상 매출 (시나리오) · DA→SA 최적 시차 ${ds.bestLag !== null ? `${ds.bestLag}일` : '미확인'} · ${f.priority ? `${f.priority.label} 격차 ${fmt.delta(priGap)} (기준 ${FUNNEL_RULES.gapPct}%)` : '퍼널 격차 기준 미달'}`),
   ];
 }
 
@@ -1291,6 +1484,19 @@ export function growthSignals(d: Dataset, model?: AllocationModel): GrowthSignal
       id: 'marginal_gap', tab: 'alloc', tone: sp.gapPct >= 50 ? 'serious' : sp.gapPct >= 20 ? 'warning' : 'neutral',
       title: `한계 ROAS 격차 ${fmt.int(sp.gapPct)}% — ${MEDIA[sp.maxMedia].name} ${fmt.roas(sp.max)} vs ${MEDIA[sp.minMedia].name} ${fmt.roas(sp.min)}`,
       basis: `가안 배분(p.37) 기준 · 균등화 시 예상 매출 ${fmt.delta(m.upliftOptimizedPct)} (${fmt.krw(m.upliftOptimized)}, 곡선 b ±0.1 범위 ${fmt.krw(m.sensitivity.low)}~${fmt.krw(m.sensitivity.high)}) · 시나리오`,
+    });
+  }
+  const bc = budgetConstraints(d, m);
+  if (bc.length) {
+    const hold = bc.filter((x) => x.verdict === 'hold');
+    const groups = (['raise', 'hold', 'bid'] as const)
+      .map((v) => ({ v, list: bc.filter((x) => x.verdict === v) }))
+      .filter((g) => g.list.length)
+      .map((g) => `${CONSTRAINT_LABEL[g.v]} ${g.list.map((x) => x.campaign).join(' · ')}`);
+    out.push({
+      id: 'budget_constraint', tab: 'alloc', tone: hold.length ? 'serious' : 'warning',
+      title: `오늘 일 예산 조기 소진 예상 ${bc.length}개 캠페인 — ${groups.join(' / ')}`,
+      basis: `예상 마감 ${resolveConfig().exhaustBeforeHour}시 전 (최근 28일 시간대 소진 곡선 · MILDO Board · AD Pilot과 같은 계산) · ${bc.map((x) => `${x.campaign} ${exhaustText(x.exhaustHour)} · 소진 배수 ${f2(x.paceIndex)}${x.holdKind === 'account' ? ' · 계정 잔액 1일치 미만' : x.holdKind === 'spike' ? ` · 최근 ${PACE_RULES.recentHours}시간 광고비 ${fmt.delta(x.recent.deltaPct, 0)}` : x.holdKind === 'cpc' ? ' · 키워드 CPC 급등' : ''}`).join(' / ')} · 증액 판단 기준 한계 ROAS ${fmt.roas(m.equalize.marginalRoas)}`,
     });
   }
   const ds = daSaAnalysis(d);
@@ -1322,12 +1528,14 @@ export function growthSignals(d: Dataset, model?: AllocationModel): GrowthSignal
       basis: `p.35 캠페인별 랜딩 기준 · 불일치 키워드 광고비 비중 ${fmt.ratio(f.landing.mismatchCostShare)} (최근 14일)${f.landing.soldout.length ? ` · ${f.landing.soldout.map((s) => `'${s.keyword}' ${s.option} 품절`).join(', ')}` : ''}`,
     });
   }
-  const camps = saCampaignPerformance(d).filter((c) => c.verdict === 'expand');
-  if (camps.length) {
+  const perf = saCampaignPerformance(d);
+  const camps = perf.filter((c) => c.verdict === 'expand');
+  const starKw = perf.flatMap((c) => c.expandKeywords.map((k) => ({ ...k, campaign: c.name })));
+  if (camps.length || starKw.length) {
     out.push({
       id: 'sa_expand', tab: 'target', tone: 'good',
-      title: `SA 확대 여지 ${camps.length}개 캠페인 — ${camps.map((c) => c.name).join(' · ')}`,
-      basis: `목표 대비 ${AD_PILOT.highEfficiencyRoasRatio * 100}% 이상 · 노출 손실 ${AD_PILOT.lostShareTrigger * 100}% 이상 (p.14 고효율 기준) · ${camps.map((c) => `${c.name} 손실 ${fmt.ratio(c.lostShare, 0)}`).join(', ')}`,
+      title: `SA 확대 여지 — 캠페인 ${camps.length}개${camps.length ? ` (${camps.map((c) => c.name).join(' · ')})` : ''} · 키워드 ${starKw.length}개`,
+      basis: `목표 ROAS 대비 ${AD_PILOT.highEfficiencyRoasRatio * 100}% 이상 · 노출 손실 ${AD_PILOT.lostShareTrigger * 100}% 이상 (p.14 고효율 기준, 브랜드 목표 ${AD_PILOT.brandTargetRoas}%) · ${starKw.slice(0, 4).map((k) => `${k.keyword} 손실 ${fmt.ratio(k.lostShare, 0)}`).join(', ')}${starKw.length > 4 ? ` 외 ${starKw.length - 4}개` : ''} · 확대분은 검색량 상한 안에서만 매출로 이어짐`,
     });
   }
   const ranked = scoreNewMedia();
@@ -1349,41 +1557,68 @@ export interface ChangePayload {
   module: string;
   kind: ChangeKind;
   target: string;
-  before: string;
-  after: string;
+  /** 결정적 키 — 중복 요청 방지 · 파일럿 한도 누적 계산에 쓴다 */
+  targetId: string;
+  before: string | number;
+  after: string | number;
   changePct?: number;
   reason: string;
   requestedBy: string;
   approver: ApprovalLevel;
 }
 const sharesText = (s: Shares) => MEDIA_IDS.map((m) => `${MEDIA[m].short} ${fmt.ratio(s[m])}`).join(' · ');
+export const PILOT_TARGET_PREFIX = 'growth-pilot:';
+/** 승인 흐름에서 아직 살아 있는 요청 (반려 · 롤백 제외) */
+const ACTIVE_STATUS: ReadonlySet<ChangeRequest['status']> = new Set(['pending', 'approved', 'applied', 'held']);
+
+/** 가안 대비 최대 비중 이동 (%p) */
+export function maxShareMove(shares: Shares): number {
+  return Math.max(0, ...MEDIA_IDS.map((m) => Math.abs((shares[m] ?? 0) - PROPOSAL_SHARES[m]) * 100).filter(fin));
+}
 
 /** 재배분안 → 예산 · 구조 변경은 'PM 제안 → 수면밀도 승인' (p.53) */
 export function reallocationChange(model: AllocationModel, which: 'optimized' | 'scenario', requestedBy: string): ChangePayload {
   const shares = which === 'optimized' ? model.equalize.shares : model.scenarioShares;
   const ev = which === 'optimized' ? model.optimized : model.scenario;
-  const maxMove = Math.max(...MEDIA_IDS.map((m) => Math.abs(shares[m] - PROPOSAL_SHARES[m]) * 100));
+  const after = sharesText(shares);
   return {
-    module: 'growth', kind: 'budget', target: `연간 매체 배분 (${fmt.krw(model.budget)}) · 월 재배분`,
-    before: sharesText(PROPOSAL_SHARES), after: sharesText(shares), changePct: round(maxMove, 1),
-    reason: `${which === 'optimized' ? '한계 ROAS 균등화안' : '시나리오 배분'} · 예상 매출 ${fmt.delta(deltaPct(ev.totalRevenue, model.baseline.totalRevenue))} (시나리오, TEST DATA) · 전체 ROAS ${fmt.roas(model.baseline.totalRoas)} → ${fmt.roas(ev.totalRoas)}${model.credit.on ? ' · DA→SA 기여 반영' : ''} · 곡선 가정 b ±0.1 민감도 확인`,
+    module: 'growth', kind: 'budget', target: `연간 매체 배분 (${fmt.krw(model.budget)}) · 월 재배분`, targetId: `growth-realloc:${Math.round(model.budget)}:${after}`,
+    before: sharesText(PROPOSAL_SHARES), after, changePct: round(maxShareMove(shares), 1),
+    reason: `${which === 'optimized' ? '한계 ROAS 균등화안' : '시나리오 배분'} · 예상 매출 ${fmt.delta(deltaPct(ev.totalRevenue, model.baseline.totalRevenue))} (시나리오, TEST DATA) · 전체 ROAS ${fmt.roas(model.baseline.totalRoas)} → ${fmt.roas(ev.totalRoas)}${model.credit.on ? ' · DA→SA 기여 반영' : ''} · 곡선 가정 b ±0.1 민감도 ${fmt.delta(model.sensitivity.lowPct)}~${fmt.delta(model.sensitivity.highPct)}`,
     requestedBy, approver: 'CLIENT',
   };
 }
+/** 신규 매체 파일럿 → 신규 캠페인 = 수면밀도 승인 (GFA 위임 범위 기준). after = 파일럿 예산(원) */
 export function pilotChange(row: PilotRow, requestedBy: string): ChangePayload {
   return {
-    module: 'growth', kind: 'test', target: `신규 매체 파일럿 · ${row.name}`, before: '미집행', after: `${row.weeks}주 · ${fmt.krw(row.budget)}`,
-    reason: `p.38 파일럿 규칙 · 예상 전환 ${fmt.int(row.expectedConv)}건 (필요 ${fmt.int(row.minConv)}건) · 증분 ROAS ${fmt.int(row.threshold)}% 이상 확대 · 미달 중단`,
+    module: 'growth', kind: 'test', target: `신규 매체 파일럿 · ${row.name} · ${row.weeks}주`, targetId: `${PILOT_TARGET_PREFIX}${row.name}`, before: '미집행', after: Math.round(row.budget),
+    reason: `p.38 파일럿 규칙 · ${row.weeks}주 ${fmt.krw(row.budget)} · 예상 전환 ${fmt.int(row.expectedConv)}건 (판정 필요 ${fmt.int(row.minConv)}건${row.status === 'short' ? ' — 표본 부족 예상' : ''}) · 증분 ROAS ${fmt.int(row.threshold)}% 이상 확대 · 미달 중단 · CPA 가정 데모`,
     requestedBy, approver: 'CLIENT',
   };
 }
 export function holdoutChange(h: HoldoutResult, mdePct: number, requestedBy: string): ChangePayload {
   return {
-    module: 'growth', kind: 'test', target: `DA→SA 홀드아웃 테스트 · ${h.unitLabel}`, before: 'GFA 전 지역 · 전 타겟 집행',
+    module: 'growth', kind: 'test', target: `DA→SA 홀드아웃 테스트 · ${h.unitLabel}`, targetId: `growth-holdout:${h.unit}:${h.metric}`, before: 'GFA 전 지역 · 전 타겟 집행',
     after: `${h.unitLabel} 홀드아웃 ${fmt.ratio(h.unit === 'period' ? 0.5 : h.holdoutShare, 0)} · ${fmt.int(h.recommendedDays)}일`,
     reason: `METHOD 2 · ${h.metricLabel} 최소 검출 효과 ${fmt.int(mdePct)}% · 그룹당 필요 ${fmt.int(h.requiredDays)}일 · 미집행 광고비 ${fmt.krw(h.unspentSpend)} · 예상 매출 영향 ${fmt.krw(h.revenueAtRisk)} (추정)`,
     requestedBy, approver: 'CLIENT',
   };
+}
+
+/** 같은 대상(targetId)의 살아 있는 growth 요청 — 중복 생성 방지 */
+export function activeDuplicate(changes: readonly ChangeRequest[] | undefined, targetId: string): ChangeRequest | null {
+  return (changes ?? []).find((c) => c.module === 'growth' && c.targetId === targetId && ACTIVE_STATUS.has(c.status)) ?? null;
+}
+/** 승인 흐름에 올라간 파일럿 예산 (후보명 → 원) — 연 예산 5% 한도는 이미 요청한 금액까지 합산한다 */
+export function pilotCommitments(changes: readonly ChangeRequest[] | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const c of changes ?? []) {
+    if (c.module !== 'growth' || c.kind !== 'test' || !c.targetId?.startsWith(PILOT_TARGET_PREFIX) || !ACTIVE_STATUS.has(c.status)) continue;
+    const name = c.targetId.slice(PILOT_TARGET_PREFIX.length);
+    const v = typeof c.after === 'number' ? c.after : Number(String(c.after).replace(/[^\d.]/g, ''));
+    if (fin(v) && v > 0) out[name] = (out[name] ?? 0) + v;
+  }
+  return out;
 }
 
 /* ======================= AI 프롬프트 (버튼 클릭 시에만 사용) ======================= */

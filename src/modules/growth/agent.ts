@@ -8,7 +8,8 @@ import { MEDIA, MEDIA_IDS, NEW_MEDIA_PILOT } from '@/data/constants';
 import type { ModuleAgentKit, ToolContext } from '../types';
 import { HOLDOUT_UNITS, type HoldoutUnitId } from './data';
 import {
-  CAMPAIGN_VERDICT_LABEL, DEFAULT_WEIGHTS, PROPOSAL_SHARES, allocationModel, daSaAnalysis, defaultPilots, funnelDiagnosis, holdoutDesign, pilotChange, pilotPlan,
+  CAMPAIGN_VERDICT_LABEL, CONSTRAINT_LABEL, DEFAULT_WEIGHTS, PROPOSAL_SHARES, activeDuplicate, allocationModel, budgetConstraints, daSaAnalysis, defaultPilots, exhaustText,
+  funnelDiagnosis, holdoutDesign, maxShareMove, pilotChange, pilotCommitments, pilotPlan,
   reallocationChange, rfpSegmentSummary, saCampaignPerformance, scoreNewMedia, targetGroupView, type AllocationInput, type CriterionId,
 } from './engine';
 import { allocationBrief, campaignBrief, daSaBrief, funnelBrief, newMediaBrief, overviewBrief } from './briefs';
@@ -45,7 +46,7 @@ export const agentKit: ModuleAgentKit = {
   tools: (ctx: ToolContext): AgentTool[] => [
     {
       name: 'growth_reallocate',
-      description: '연 예산 배분(기본 p.37 가안)을 넣으면 매체별 반응 곡선(로그-로그 적합 · b 식별 여부) 기준 예상 매출 · ROAS · 한계 ROAS와 한계 효율 균등화 재배분안(가드레일 · 재배분 폭 · 볼륨 한계 적용), b ±0.1 민감도를 반환합니다. 예측이 아닌 시나리오입니다.',
+      description: '연 예산 배분(기본 p.37 가안)을 넣으면 매체별 반응 곡선(로그-로그 적합 · b 식별 여부) 기준 예상 매출 · ROAS · 한계 ROAS와 한계 효율 균등화 재배분안(가드레일 · 재배분 폭 · 볼륨 한계 적용), b ±0.1 민감도, 오늘 일 예산 조기 소진 예상 캠페인(Board · AD Pilot과 같은 28일 시간대 곡선)의 예산 제약 판정(증액 후보 · 보류 · 입찰 조정)을 반환합니다. 예측이 아닌 시나리오입니다.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -79,6 +80,10 @@ export const agentKit: ModuleAgentKit = {
             민감도b01_증분pct: [r2(m.sensitivity.lowPct), r2(m.sensitivity.highPct)], 방향유지: m.sensitivity.stable,
           },
           메모: m.equalize.note,
+          오늘예산제약: budgetConstraints(ctx.state.data, m).map((x) => ({
+            캠페인: x.campaign, 소진율pct: r0(x.pacePct), 소진배수: r2(x.paceIndex), 예상마감: exhaustText(x.exhaustHour), 피크전마감: x.missesPeak, 최근2시간광고비pct: r0(x.recent.deltaPct),
+            캠페인ROAS: r0(x.campaignRoas), 매체한계ROAS: r0(x.marginalRoas), 판정: CONSTRAINT_LABEL[x.verdict], 보류사유: x.holdKind, 근거: x.basis,
+          })),
         };
       },
     },
@@ -173,12 +178,13 @@ export const agentKit: ModuleAgentKit = {
         }
         const ranked = scoreNewMedia(w);
         const m = allocationModel(ctx.state.data);
-        const plan = pilotPlan(ctx.state.data, defaultPilots(ranked), { marginalRoas: m.equalize.marginalRoas });
+        const plan = pilotPlan(ctx.state.data, defaultPilots(ranked), { marginalRoas: m.equalize.marginalRoas, committed: pilotCommitments(ctx.state.changes) });
         return {
           출처: '제안서 p.38 · 데모 평가 · TEST DATA', 가중치: w,
           순위: ranked.map((r) => ({ 순위: r.rank, 후보: r.name, 점수: r0(r.total), 접점: r.touch, 가설: r.hypothesis })),
           파일럿: { 한도: r0(plan.cap), 합계: r0(plan.total), 한도초과: plan.overCap, 판정기준ROAS: r0(plan.threshold), 기준근거: plan.thresholdBasis, 필요전환: plan.minConv, 규칙: plan.rule,
-            후보: plan.rows.map((r) => ({ 후보: r.name, 예산: r0(r.budget), CPA가정: r0(r.cpa), 예상전환: r1(r.expectedConv), 상태: r.status })) },
+            승인흐름금액: r0(plan.committedTotal),
+            후보: plan.rows.map((r) => ({ 후보: r.name, 예산: r0(r.budget), CPA가정: r0(r.cpa), 예상전환: r1(r.expectedConv), 상태: r.status, 요청됨: r.requested })) },
         };
       },
     },
@@ -197,7 +203,14 @@ export const agentKit: ModuleAgentKit = {
       execute: (inp) => {
         const which = inp.which === 'scenario' ? 'scenario' : 'optimized';
         const m = allocationModel(ctx.state.data, allocInput(inp));
-        const c = ctx.actions.addChange({ ...reallocationChange(m, which, `MILDO Agent (${ctx.state.role})`), status: 'pending' });
+        if (!m.baseline.valid) return { 생성: false, 사유: '반응 곡선을 적합할 데이터가 없습니다' };
+        if (which === 'optimized' && !m.equalize.feasible) return { 생성: false, 사유: m.equalize.note };
+        const shares = which === 'optimized' ? m.equalize.shares : m.scenarioShares;
+        if (maxShareMove(shares) <= 0.05) return { 생성: false, 사유: '가안(p.37)과 같은 배분 — 변경 없음' };
+        const payload = reallocationChange(m, which, `MILDO Agent (${ctx.state.role})`);
+        const dup = activeDuplicate(ctx.state.changes, payload.targetId);
+        if (dup) return { 생성: false, 사유: '같은 배분안이 이미 승인 흐름에 있습니다', changeId: dup.id, 상태: dup.status };
+        const c = ctx.actions.addChange({ ...payload, status: 'pending' });
         return { 생성: true, changeId: c.id, 상태: 'pending', 승인주체: '수면밀도', 대상: c.target, 변경후: c.after };
       },
     },
@@ -210,15 +223,20 @@ export const agentKit: ModuleAgentKit = {
         required: ['name', 'budget'],
       },
       execute: (inp) => {
-        const cand = NEW_MEDIA_PILOT.candidates.find((c) => c.name === inp.name || c.name.includes(String(inp.name ?? '')));
-        if (!cand) return { 생성: false, 사유: '알 수 없는 후보' };
+        const q = typeof inp.name === 'string' ? inp.name.trim() : '';
+        const cand = q ? NEW_MEDIA_PILOT.candidates.find((c) => c.name === q) ?? NEW_MEDIA_PILOT.candidates.find((c) => c.name.includes(q)) : undefined;
+        if (!cand) return { 생성: false, 사유: '알 수 없는 후보', 후보: NEW_MEDIA_PILOT.candidates.map((c) => c.name) };
+        const budget = Number(inp.budget);
+        if (!Number.isFinite(budget) || budget <= 0) return { 생성: false, 사유: '예산이 0 이하' };
+        // 연 예산 5% 한도는 이미 승인 흐름에 올라간 파일럿 금액까지 합산한다
+        const committed = pilotCommitments(ctx.state.changes);
+        if (committed[cand.name]) return { 생성: false, 사유: `${cand.name} 파일럿이 이미 승인 흐름에 있습니다 (${r0(committed[cand.name])}원)` };
         const m = allocationModel(ctx.state.data);
-        const plan = pilotPlan(ctx.state.data, [{ name: cand.name, budget: Number(inp.budget) }], { marginalRoas: m.equalize.marginalRoas });
+        const plan = pilotPlan(ctx.state.data, [{ name: cand.name, budget }], { marginalRoas: m.equalize.marginalRoas, committed });
         const row = plan.rows[0];
-        if (!row || row.budget <= 0) return { 생성: false, 사유: '예산이 0 이하' };
-        if (plan.overCap) return { 생성: false, 사유: `연 예산 5% 한도(${r0(plan.cap)}원) 초과` };
+        if (plan.overCap) return { 생성: false, 사유: `연 예산 5% 한도(${r0(plan.cap)}원) 초과 — 기존 요청 ${r0(plan.committedTotal)}원 + 이번 ${r0(budget)}원` };
         const c = ctx.actions.addChange({ ...pilotChange(row, `MILDO Agent (${ctx.state.role})`), status: 'pending' });
-        return { 생성: true, changeId: c.id, 상태: 'pending', 예상전환: r1(row.expectedConv), 필요전환: row.minConv, 표본충족: row.feasible };
+        return { 생성: true, changeId: c.id, 상태: 'pending', 예상전환: r1(row.expectedConv), 필요전환: row.minConv, 표본충족: row.feasible, 남은한도: r0(plan.remaining) };
       },
     },
   ],
@@ -226,7 +244,7 @@ export const agentKit: ModuleAgentKit = {
     { id: 'growth_alloc', match: /재배분|예산\s?배분|배분\s?(가안|시뮬)|한계\s?(효율|ROAS)|반응\s?곡선/i, build: (ctx) => allocationBrief(ctx.state.data) },
     { id: 'growth_dasa', match: /DA\s?(→|->|에서)?\s?SA|브랜드\s?검색|시차\s?상관|홀드아웃|DA\s?기여|기여\s?분석/i, build: (ctx) => daSaBrief(ctx.state.data) },
     { id: 'growth_funnel', match: /퍼널|전환\s?개선|자사몰|브랜드스토어\s?전환|장바구니|이탈|잠식/, build: (ctx) => funnelBrief(ctx.state.data) },
-    { id: 'growth_new_media', match: /신규\s?매체|파일럿|코프로모션|당근|유튜브|YouTube/i, build: (ctx) => newMediaBrief(ctx.state.data) },
+    { id: 'growth_new_media', match: /신규\s?매체|파일럿|코프로모션|당근|유튜브|YouTube/i, build: (ctx) => newMediaBrief(ctx.state.data, undefined, undefined, undefined, pilotCommitments(ctx.state.changes)) },
     { id: 'growth_campaign', match: /타겟\s?그룹|SA\s?캠페인|캠페인\s?구조|구매\s?의도|SKU\s?확장/i, build: (ctx) => campaignBrief(ctx.state.data) },
     { id: 'growth_overview', match: /매출\s?성장|성장\s?(공식|과제|캘린더)/, build: (ctx) => overviewBrief(ctx.state.data) },
   ],

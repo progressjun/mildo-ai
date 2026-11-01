@@ -1,6 +1,6 @@
 /* 운영 프로세스: 감지 → 배정 → 조치 → 보고 (라이브 데모 13:00–15:00) — 이슈와 변경 요청을 하나의 타임라인으로 */
 import { useMemo, useState } from 'react';
-import { SLA } from '@/data/constants';
+import { LIVE_DEMO, SLA } from '@/data/constants';
 import { AiInsight } from '@/ui/AiInsight';
 import { Icon } from '@/ui/Icon';
 import { Button, Card, CopyButton, Empty, Pill, Segmented, Src } from '@/ui/primitives';
@@ -20,10 +20,11 @@ export function TimelineTab({ ctx, onOpen, onDraft }: { ctx: FlowCtx; onOpen: (i
   const feed = events.filter((e) => (stage === 'all' || e.stage === stage) && (source === 'all' || e.source === source)).slice(0, 80);
   const sc = stageCounts(cases);
   const visible = cases.filter((c) => showDone || c.current !== 'done');
+  const demoSeg = LIVE_DEMO.find((x) => x.route === 'flow');
 
   return (
     <div className="stack-lg">
-      <Card tone="dark" title="운영 프로세스 · 감지 → 배정 → 조치 → 보고" sub="MILDO Alert가 감지한 이슈가 담당 배정 · 변경 승인 · 결과 보고까지 어디에 있는지 한 줄로 봅니다"
+      <Card tone="dark" title="운영 프로세스 · 감지 → 배정 → 조치 → 보고" sub={`MILDO Alert가 감지한 이슈가 담당 배정 · 변경 승인 · 결과 보고까지 어디에 있는지 한 줄로 봅니다${demoSeg ? ` · 라이브 데모 ${demoSeg.from}–${demoSeg.to} '${demoSeg.title}'` : ''}`}
         actions={<><Src kind="PROPOSAL" page="p.49" /><Src kind="PROPOSAL" page="p.60" /><Src kind="DEMO" /></>}>
         <div className="flow-pipe">
           {OPS_STAGES.map((s, k) => (

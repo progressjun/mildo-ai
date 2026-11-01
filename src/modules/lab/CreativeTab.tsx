@@ -6,7 +6,7 @@ import { useAi } from '@/ai/useAi';
 import { AI_ERROR_COPY, AiError } from '@/ai/claude';
 import { Button, Card, CopyButton, Pill, Segmented, Src } from '@/ui/primitives';
 import { CREATIVE_RULES, HYP_IDS, HYPOTHESES, SA_CHAR_LIMITS, type HypId } from './data';
-import { copyPrompt, generateSaCopies, parseAiCopies, REVIEW_LEVEL_META, reviewCopy, type AdCopy, type ReviewLevel } from './engine';
+import { copyPrompt, generateSaCopies, parseAiCopies, REVIEW_LEVEL_META, reviewCopy, type ReviewLevel } from './engine';
 import { setLab } from './store';
 import { CardVerdictPill, ReviewPill, type LabModel } from './parts';
 import type { CardDraft } from './CardsTab';
@@ -23,16 +23,17 @@ export function CreativeTab({ m, onMakeCard, onOpenCards }: { m: LabModel; onMak
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const rule = useMemo(() => generateSaCopies(d, campaign, hyp), [d, campaign, hyp]);
-  const aiRows = lab.aiCopies.filter((c) => c.campaign === campaign && c.hypothesis === hyp);
-  const rows = [...rule, ...aiRows];
+  const rows = useMemo(() => [...rule, ...lab.aiCopies.filter((c) => c.campaign === campaign && c.hypothesis === hyp)], [rule, lab.aiCopies, campaign, hyp]);
   const baseA = useMemo(() => generateSaCopies(d, campaign, 'A')[0], [d, campaign]);
   const creativeCards = cards.filter((c) => c.variable === '메시지');
 
-  const levelOf = (c: AdCopy): ReviewLevel => {
-    const a = reviewCopy(c.title, d, { limit: SA_CHAR_LIMITS.title }).level;
-    const b = reviewCopy(c.description, d, { limit: SA_CHAR_LIMITS.description }).level;
-    return REVIEW_LEVEL_META[a].rank >= REVIEW_LEVEL_META[b].rank ? a : b;
-  };
+  // 제목 · 설명을 각각 글자수 기준으로 검수하고, 더 엄한 판정을 행 판정으로 쓴다
+  const reviewed = useMemo(() => rows.map((c) => {
+    const rt = reviewCopy(c.title, d, { limit: SA_CHAR_LIMITS.title });
+    const rd = reviewCopy(c.description, d, { limit: SA_CHAR_LIMITS.description });
+    const lv: ReviewLevel = REVIEW_LEVEL_META[rt.level].rank >= REVIEW_LEVEL_META[rd.level].rank ? rt.level : rd.level;
+    return { c, lv, notes: [...rt.findings, ...rd.findings].filter((f) => f.level !== 'pass').map((f) => `${f.match} · ${REVIEW_LEVEL_META[f.level].label} · ${f.suggestion}`) };
+  }), [rows, d]);
 
   const runAi = async () => {
     setNote('');
@@ -69,7 +70,7 @@ export function CreativeTab({ m, onMakeCard, onOpenCards }: { m: LabModel; onMak
       </div>
       <div className="xs muted">예시 카피 — 소재 제작이나 DA 기획안이 아닌 테스트 설계 예시입니다. 수치 주장은 근거 확인 후 사용하고, 의료 효능 암시 표현은 검수 단계에서 제외합니다 (p.27).</div>
 
-      <Card tone="dark" title="테스트 규칙" sub="VisualTune OS로 승인된 제품 자산의 베리에이션을 만들고, 기능 · 신뢰 · 혜택 가설을 한 번에 한 변수씩 비교합니다" actions={<Src kind="PROPOSAL" page="p.27" />}>
+      <Card tone="dark" title="테스트 규칙" sub="VisualTune OS로 승인된 제품 자산의 베리에이션을 만들고, 기능 · 신뢰 · 혜택 가설을 한 번에 한 변수씩 비교합니다" actions={<><Src kind="PROPOSAL" page="p.27" />{creativeCards.length ? <Src kind="DEMO" title="진행 카드 판정은 TEST DATA" /> : null}</>}>
         <div className="lab-rules">
           {CREATIVE_RULES.map((r) => <div key={r.id} className="lab-rule"><strong>{r.label}</strong><span className="lab-sub">{r.detail}</span></div>)}
         </div>
@@ -90,7 +91,7 @@ export function CreativeTab({ m, onMakeCard, onOpenCards }: { m: LabModel; onMak
       </Card>
 
       <Card title="SA 광고 문안 생성기" sub={`네이버 SA 캠페인 5종(p.35) × 가설 → 파워링크 제목 ${SA_CHAR_LIMITS.title}자 · 설명 ${SA_CHAR_LIMITS.description}자 (공백 포함 · 매체 최신 정책 확인) · 모든 문안 자동 검수`}
-        actions={<><Src kind="PROPOSAL" page="p.27 · p.35" /><Button size="sm" variant="accent" icon="sparkle" disabled={!ai.connected || busy} title={ai.connected ? undefined : 'AI 미연결 — 규칙 기반 문안만 생성'} onClick={runAi}>{busy ? '생성 중…' : 'AI로 문안 생성'}</Button></>}>
+        actions={<><Src kind="PROPOSAL" page="p.27 · p.35" /><Src kind="DEMO" title="기획전 가격 · 재고는 TEST DATA에서 계산" /><Button size="sm" variant="accent" icon="sparkle" disabled={!ai.connected || busy} title={ai.connected ? undefined : 'AI 미연결 — 규칙 기반 문안만 생성'} onClick={runAi}>{busy ? '생성 중…' : 'AI로 문안 생성'}</Button></>}>
         <div className="row" style={{ gap: 12 }}>
           <Segmented options={INTENT_IDS.map((i) => ({ id: i, label: SA_CAMPAIGNS[i].name }))} value={campaign} onChange={setCampaign} label="캠페인" />
           <Segmented options={HYP_IDS.map((h) => ({ id: h, label: `${h} · ${HYPOTHESES[h].name}` }))} value={hyp} onChange={setHyp} label="가설" />
@@ -100,11 +101,7 @@ export function CreativeTab({ m, onMakeCard, onOpenCards }: { m: LabModel; onMak
           <table className="tbl">
             <thead><tr><th>제목</th><th className="r">제목 자수</th><th>설명</th><th className="r">설명 자수</th><th>검수</th><th>출처</th><th /></tr></thead>
             <tbody>
-              {rows.map((c) => {
-                const lv = levelOf(c);
-                const rt = reviewCopy(c.title, d, { limit: SA_CHAR_LIMITS.title });
-                const rd = reviewCopy(c.description, d, { limit: SA_CHAR_LIMITS.description });
-                const notes = [...rt.findings, ...rd.findings].filter((f) => f.level !== 'pass').map((f) => `${f.match} · ${f.suggestion}`);
+              {reviewed.map(({ c, lv, notes }) => {
                 return (
                   <tr key={c.id}>
                     <td><strong className="small">{c.title}</strong></td>

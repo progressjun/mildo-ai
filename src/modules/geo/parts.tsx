@@ -45,11 +45,12 @@ export function EngineCell({ cell, rounds }: { cell?: GeoCell; rounds?: number }
 
 export function LiveCell({ rec }: { rec?: LiveRecord }) {
   if (!rec) return <span className="geo-cell live" title="Claude 라이브 진단 전">미진단</span>;
-  const title = `${rec.mentioned ? `수면밀도 ${rec.position}번째 언급` : rec.ambiguous ? `단독 '밀도' ${rec.ambiguous}회 · 확인 필요` : '수면밀도 미언급'} · 등장 순서 ${rec.order.join(' → ') || '없음'}`;
-  const cls = rec.mentioned ? (rec.position === 1 ? 'geo-cell live first' : 'geo-cell live on') : rec.ambiguous ? 'geo-cell live amb' : 'geo-cell live';
+  const ownedCites = rec.citations.filter((c) => c.owned).length;
+  const title = `${rec.mentioned ? `수면밀도 ${rec.position}번째 언급` : rec.ambiguous ? `단독 '밀도' ${rec.ambiguous}회 · 확인 필요` : ownedCites ? `본문 미언급 · 자사 URL 인용 ${ownedCites}건` : '수면밀도 미언급'} · 등장 순서 ${rec.order.join(' → ') || '없음'}`;
+  const cls = rec.mentioned ? (rec.position === 1 ? 'geo-cell live first' : 'geo-cell live on') : rec.ambiguous || ownedCites ? 'geo-cell live amb' : 'geo-cell live';
   return (
-    <span className={cls} title={title}>
-      {rec.mentioned ? `${rec.position}번째` : rec.ambiguous ? '확인' : '—'}
+    <span className={cls} title={title} aria-label={title}>
+      {rec.mentioned ? `${rec.position}번째` : rec.ambiguous ? '확인' : ownedCites ? '인용만' : '—'}
       {rec.competitors.length ? <span className="c">· 경{rec.competitors.length}</span> : null}
     </span>
   );

@@ -9,7 +9,7 @@ import { APPROVER_LABEL, decisionIndexOf, fmtDuration, leadState, promoReport, R
 import type { FlowCtx } from './useFlow';
 
 export function SystemTab({ ctx, onTab }: { ctx: FlowCtx; onTab: (t: string) => void }) {
-  const { summary, checks, data, state, changes, clock, incidents } = ctx;
+  const { summary, checks, data, state, changes, clock, incidents, apCfg } = ctx;
   const reportsReady = useMemo(() => (data.promotions ?? []).filter((p) => promoReport(data, p, { changes, incidents }).ready).length, [data, changes, incidents]);
   const rows = segmentRows({ summary, checks, reportsReady, comments: state.comments.length });
   const byDecision = DECISION_MATRIX.map((d, k) => {
@@ -105,7 +105,7 @@ export function SystemTab({ ctx, onTab }: { ctx: FlowCtx; onTab: (t: string) => 
               </tbody>
             </table>
           </div>
-          <div className="xs muted">입찰 변경은 위임 범위와 별도로 일 조정 폭 상한 20% · 브랜드 키워드 별도 기준(목표 ROAS 800%)을 적용합니다 (p.14).</div>
+          <div className="xs muted">입찰 변경은 위임 범위와 별도로 일 조정 폭 상한 {apCfg.dailyChangeCapPct}% · 브랜드 키워드 별도 기준(목표 ROAS {apCfg.brandTargetRoas}%)을 적용합니다 (p.14 · AD Pilot 공식 기준).</div>
         </Card>
         <Card title="역할별 처리 권한" sub="승인 · 반려 · 반영 · 롤백 모두 같은 권한 규칙" actions={<><Pill tone="accent">현재 {state.role}</Pill></>}>
           <div className="table-wrap">

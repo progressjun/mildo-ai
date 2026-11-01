@@ -82,7 +82,7 @@ export default function View() {
         sources={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.29 · p.9" /><span className="xs muted">정기 진단 {vis.date ? fmtDate(vis.date) : '—'} 기준 · 질의 {snap.queries.length}개 × 엔진 {snap.engines.length}개 · 기준일 {fmtDate(d.today)} {d.currentHour}:30 · 측정 지표 {GEO_METRICS}</span></>}
       />
 
-      <Card tone="dark" title="GEO · AI 검색 대응 네 축" sub="각 축의 현재 상태 · 판정 기준 (축을 누르면 해당 탭으로 이동)" actions={<Src kind="PROPOSAL" page="p.29" />}>
+      <Card tone="dark" title="GEO · AI 검색 대응 네 축" sub="각 축의 현재 상태 · 판정 기준 (축을 누르면 해당 탭으로 이동)" actions={<><Src kind="PROPOSAL" page="p.29" /><Src kind="DEMO" /></>}>
         <div className="geo-axes">
           {GEO_AXES.map((ax) => {
             const st = axes[ax.id];
@@ -106,8 +106,8 @@ export default function View() {
           <div className="geo-kpi"><Stat label="평균 언급 순서" value={Number.isFinite(o.avgPosition) ? `${fmt.dec1(o.avgPosition)}번째` : '—'} foot={<span className="muted">첫 번째 언급 {fmt.pct(o.firstRate * 100, 0)}</span>} /></div>
           <div className="geo-kpi"><Stat label="자사 인용 수" value={`${o.ownedCitations}건`} foot={<span className="muted">전체 인용 {o.citations} · {fmt.pct(o.ownedShare * 100, 0)}{o.prevOwnedCitations !== null ? ` · 직전 ${o.prevOwnedCitations}` : ''}</span>} /></div>
           <div className="geo-kpi"><Stat label="경쟁 6개사 대비 점유" value={fmt.pct(o.sov * 100, 1)} foot={<span className="muted">최다 {vis.competitors[0]?.name ?? '—'} {vis.competitors[0]?.mentions ?? 0}셀</span>} /></div>
-          <div className="geo-kpi"><Stat label="확보 질의" value={`${o.covered}/${vis.queries.length}`} foot={<span className="muted">기준 ≥{GEO_RULES.coveredEngines}/5 엔진 · 미노출 {o.none}</span>} /></div>
-          <div className="geo-kpi"><Stat label="경쟁사 우위 질의" value={vis.gaps.length} foot={<span className="muted">경쟁사 ≥{GEO_RULES.gapCompetitorEngines} · 자사 ≤{GEO_RULES.gapBrandMax} 엔진</span>} /></div>
+          <div className="geo-kpi"><Stat label="검색 커버리지 · 확보 질의" value={`${o.covered}/${vis.queries.length}`} foot={<span className="muted">{fmt.pct(vis.queries.length ? (o.covered / vis.queries.length) * 100 : 0, 0)} · 기준 질의별 ≥{Math.min(GEO_RULES.coveredEngines, snap.engines.length)}/{snap.engines.length} 엔진 언급 · 미노출 {o.none}</span>} /></div>
+          <div className="geo-kpi"><Stat label="경쟁사 우위 질의" value={vis.gaps.length} foot={<span className="muted">기준 경쟁사 ≥{GEO_RULES.gapCompetitorEngines} · 자사 ≤{GEO_RULES.gapBrandMax} 엔진</span>} /></div>
           <div className="geo-kpi"><Stat label={<>Claude 라이브 <Src kind="LIVE" /></>} value={ls.count ? fmt.pct(ls.rate * 100, 0) : '—'} foot={<span className="muted">{ls.count ? `${ls.mentioned}/${ls.count} 질의 언급` : '진단 기록 없음'}</span>} /></div>
         </div>
       </Card>

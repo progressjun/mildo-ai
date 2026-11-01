@@ -1,5 +1,8 @@
 /* MILDO Flow 전용 스타일 — 접두사 flow-. 색은 토큰 변수만 사용 (상태색은 아이콘 · 라벨과 함께) */
 
+/* ---------- 헤더 역할 전환 ---------- */
+.flow-role { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
 /* ---------- 요약 스트립 (블랙 패널) ---------- */
 .flow-hero { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; padding: 14px; }
 .flow-hero-item {
@@ -134,6 +137,9 @@
   .flow-pipe { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .flow-pipe-arrow { display: none; }
 }
+.flow-bulk-row { display: flex; flex-direction: column; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.flow-bulk-row:last-of-type { border-bottom: none; }
+
 @media (max-width: 900px) {
   .flow-hero, .flow-board, .flow-pipe, .flow-stages, .flow-checklist, .flow-channels { grid-template-columns: 1fr; }
   .flow-queue-row { flex-direction: column; align-items: stretch; }

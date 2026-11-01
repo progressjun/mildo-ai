@@ -8,13 +8,15 @@ import { Button, Callout, Card, NumberInput, Pill, ProgressBar, Src, Stat } from
 import { HBarChart } from '@/ui/charts';
 import { AiInsight } from '@/ui/AiInsight';
 import { CO_PROMO_PRINCIPLES, NEW_MEDIA_CPA_MULT, NEW_MEDIA_SCORES, PILOT_DEFAULTS } from './data';
-import { DEFAULT_WEIGHTS, coPromoDemand, defaultPilots, growthPrompt, pilotChange, pilotPlan, scoreNewMedia, type CriterionId, type ScoreTable } from './engine';
+import { DEFAULT_WEIGHTS, coPromoDemand, defaultPilots, growthPrompt, pilotChange, pilotCommitments, pilotPlan, scoreNewMedia, type CriterionId, type ScoreTable } from './engine';
 import { newMediaBrief } from './briefs';
 import { Kv, Verdict } from './parts';
 
 const STATUS: Record<'ok' | 'short' | 'off', { label: string; tone: 'good' | 'warning' | 'neutral' }> = {
   ok: { label: '판정 가능', tone: 'good' }, short: { label: '표본 부족', tone: 'warning' }, off: { label: '미배정', tone: 'neutral' },
 };
+/** 후보명(공백 · 기호 포함) 대신 p.38 후보 순서로 input id를 만든다 */
+const candIdx = (name: string) => Math.max(0, NEW_MEDIA_PILOT.candidates.findIndex((c) => c.name === name));
 
 export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: number }) {
   const { state } = useStore();
@@ -24,22 +26,22 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
   const ranked = useMemo(() => scoreNewMedia(weights, scores), [weights, scores]);
   const [budgets, setBudgets] = useState<Record<string, number>>(() => Object.fromEntries(defaultPilots(scoreNewMedia()).map((p) => [p.name, p.budget])));
   const pilots = useMemo(() => ranked.map((r) => ({ name: r.name, budget: budgets[r.name] ?? 0 })), [ranked, budgets]);
-  const plan = useMemo(() => pilotPlan(d, pilots, { marginalRoas }), [d, pilots, marginalRoas]);
+  // 이미 승인 흐름에 올라간 파일럿은 금액을 고정하고 한도 합계에 넣는다 (탭을 다시 열어도 유지)
+  const committed = useMemo(() => pilotCommitments(state.changes), [state.changes]);
+  const plan = useMemo(() => pilotPlan(d, pilots, { marginalRoas, committed }), [d, pilots, marginalRoas, committed]);
   const co = useMemo(() => coPromoDemand(d), [d]);
-  const [sent, setSent] = useState<Record<string, string>>({});
   const wsum = NEW_MEDIA_PILOT.criteria.reduce((a, c) => a + (weights[c.id] || 0), 0);
 
   const request = (name: string) => {
     const row = plan.rows.find((r) => r.name === name);
-    if (!row || row.budget <= 0 || plan.overCap) return;
+    if (!row || row.requested || row.budget <= 0 || plan.overCap) return;
     const c = addChange({ ...pilotChange(row, state.role) });
-    setSent({ ...sent, [name]: c.id });
-    toast({ tone: 'info', title: '신규 매체 파일럿 승인 요청을 만들었습니다', body: `${c.target} · 수면밀도 승인 대기`, route: 'flow' });
+    toast({ tone: 'info', title: '신규 매체 파일럿 승인 요청을 만들었습니다', body: `${c.target} · ${fmt.krw(row.budget)} · 수면밀도 승인 대기`, route: 'flow' });
   };
 
   return (
     <div className="stack-lg">
-      <Card title={<>신규 매체 발굴 · 채널 선정 기준 <Src kind="PROPOSAL" page="p.38" /></>}
+      <Card title={<>신규 매체 발굴 · 채널 선정 기준 <Src kind="PROPOSAL" page="p.38" /><Src kind="DEMO" title="후보 점수는 데모 평가 · 매체 미팅 후 확정" /></>}
         sub="수면밀도 타겟 데이터로 채널 선정 기준을 먼저 세우고, 소액 파일럿으로 검증한 뒤 확대 · 점수(1~5)는 데모 평가 — 온보딩 중 매체 미팅 후 확정 · 가중치 편집 시 순위 재계산">
         <div className="table-wrap">
           <table className="tbl">
@@ -65,7 +67,7 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
                   {NEW_MEDIA_PILOT.criteria.map((c) => (
                     <td key={c.id} className="c">
                       <div className="growth-mini-input" style={{ margin: '0 auto' }}>
-                        <NumberInput id={`growth-s-${r.name}-${c.id}`} value={scores[r.name]?.[c.id] ?? 0} step={1} min={1} max={5}
+                        <NumberInput id={`growth-s-${candIdx(r.name)}-${c.id}`} value={scores[r.name]?.[c.id] ?? 0} step={1} min={1} max={5}
                           onChange={(v) => setScores({ ...scores, [r.name]: { ...(scores[r.name] ?? ({} as Record<CriterionId, number>)), [c.id]: clamp(Math.round(v), 1, 5) } })} />
                       </div>
                     </td>
@@ -92,7 +94,7 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
         sub={`파일럿 규칙: 연 예산의 ${Math.round(NEW_MEDIA_PILOT.maxBudgetShare * 100)}% 이내 · ${NEW_MEDIA_PILOT.weeks}주 · ${NEW_MEDIA_PILOT.rule} · 판정 기준 증분 ROAS = ${plan.thresholdBasis}`}>
         <div className="grid g-4">
           <Stat label={<>파일럿 한도 <Src kind="PROPOSAL" page="p.38" /></>} value={fmt.krw(plan.cap)} foot={<span className="xs muted">연 {fmt.krw(plan.cap / NEW_MEDIA_PILOT.maxBudgetShare)} × {Math.round(NEW_MEDIA_PILOT.maxBudgetShare * 100)}%</span>} />
-          <Stat label="배정 합계" value={fmt.krw(plan.total)} foot={<ProgressBar value={plan.total} max={plan.cap} tone={plan.overCap ? 'critical' : 'ink'} label="파일럿 예산 사용률" />} />
+          <Stat label="배정 합계" value={fmt.krw(plan.total)} foot={<span className="stack-sm" style={{ gap: 2 }}><ProgressBar value={plan.total} max={plan.cap} tone={plan.overCap ? 'critical' : 'ink'} label="파일럿 예산 사용률" /><span className="xs muted">승인 흐름 {plan.committedTotal > 0 ? fmt.krw(plan.committedTotal) : '없음'} · 남은 한도 {fmt.krw(Math.max(0, plan.remaining))}</span></span>} />
           <Stat label="판정 기준 증분 ROAS" value={fmt.roas(plan.threshold)} foot={<span className="xs muted">이 값 이상 확대 · 미달 중단</span>} />
           <Stat label="판정에 필요한 전환" value={`${fmt.int(plan.minConv)}건`} foot={<span className="xs muted">포아송 상대오차 ±{Math.round(PILOT_DEFAULTS.precision * 100)}% · 신뢰수준 {Math.round(PILOT_DEFAULTS.confidence * 100)}%</span>} />
         </div>
@@ -101,7 +103,7 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
           <table className="tbl">
             <thead>
               <tr>
-                <th>후보</th><th className="r">4주 예산</th><th className="r">CPA 가정</th><th className="r">예상 전환</th><th className="r">필요 예산 (표본)</th><th className="r">손익분기 전환</th><th>판정 · 기준</th><th />
+                <th>후보</th><th className="r">4주 예산</th><th className="r">CPA 가정</th><th className="r">예상 전환</th><th className="r">필요 예산 (표본)</th><th className="r">기준 ROAS 달성 전환</th><th>판정 · 기준</th><th />
               </tr>
             </thead>
             <tbody>
@@ -109,15 +111,17 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
                 <tr key={r.name}>
                   <td><strong>{r.name}</strong><div className="xs muted">순위 {ranked.find((x) => x.name === r.name)?.rank ?? '—'}</div></td>
                   <td className="r" style={{ minWidth: 170 }}>
-                    <NumberInput id={`growth-pb-${r.name}`} value={r.budget} step={5_000_000} min={0} suffix={fmt.krw(r.budget)} onChange={(v) => setBudgets({ ...budgets, [r.name]: Math.max(0, v) })} />
+                    {r.requested
+                      ? <span className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><strong className="num">{fmt.krw(r.budget)}</strong><span className="xs muted">승인 흐름 · 금액 고정</span></span>
+                      : <NumberInput id={`growth-pb-${candIdx(r.name)}`} value={r.budget} step={5_000_000} min={0} suffix={fmt.krw(r.budget)} onChange={(v) => setBudgets({ ...budgets, [r.name]: Math.max(0, v) })} />}
                   </td>
                   <td className="r">{fmt.won(r.cpa)}<div className="xs muted">DA 평균 × {NEW_MEDIA_CPA_MULT[r.name] ?? 1}</div></td>
                   <td className="r"><strong>{fmt.dec1(r.expectedConv)}</strong></td>
                   <td className="r">{fmt.krw(r.budgetForMin)}</td>
-                  <td className="r">{fmt.dec1(r.breakEvenConv)}<div className="xs muted">증분 ROAS {fmt.roas(r.threshold)} 기준</div></td>
+                  <td className="r">{fmt.dec1(r.breakEvenConv)}<div className="xs muted">증분 ROAS {fmt.roas(r.threshold)} · 객단가 기준</div></td>
                   <td><Verdict tone={STATUS[r.status].tone} label={STATUS[r.status].label} basis={r.status === 'off' ? '예산 미배정' : `예상 ${fmt.dec1(r.expectedConv)} vs 필요 ${fmt.int(r.minConv)}건`} /></td>
                   <td className="r">
-                    {sent[r.name] ? <a className="xs" href="#flow">요청됨</a> : (
+                    {r.requested ? <a className="xs" href="#flow">요청됨 · MILDO Flow</a> : (
                       <Button size="sm" icon="send" disabled={r.budget <= 0 || plan.overCap} onClick={() => request(r.name)} title={plan.overCap ? '파일럿 한도 초과' : r.budget <= 0 ? '예산 미배정' : undefined}>승인 요청</Button>
                     )}
                   </td>
@@ -156,7 +160,7 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
       </Card>
 
       <AiInsight title="새 수요 해석" sub="증분 매출 기준 · 기존 매체 한계 ROAS 대비 기회비용" buildPrompt={() => growthPrompt('demand', d, { 점수: ranked.map((r) => ({ 후보: r.name, 점수: Math.round(r.total) })), 파일럿: plan.rows.map((r) => ({ 후보: r.name, 예산: r.budget, 예상전환: Math.round(r.expectedConv), 상태: r.status })), 판정기준ROAS: Math.round(plan.threshold), 한도: plan.cap, 코프로모션: co.map((c) => ({ 순간: c.moment, 월검색량: c.monthlySearch })) })}
-        fallback={() => newMediaBrief(d, weights, pilots, scores)} />
+        fallback={() => newMediaBrief(d, weights, pilots, scores, committed)} />
     </div>
   );
 }

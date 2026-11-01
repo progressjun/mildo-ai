@@ -1,10 +1,10 @@
 /* SEO · 구조화 데이터 — 제품페이지 진단기 (HTML 붙여넣기 → DOMParser/정규식 추출 → 항목별 판정 · 점수) */
 import type { Dataset } from '@/core/types';
-import { fmt, fmtDate } from '@/core/util';
+import { fmt } from '@/core/util';
 import { SALES_CHANNELS } from '@/data/constants';
 import { Button, Callout, Card, CopyButton, DataTable, DownloadButton, Field, Pill, ProgressBar, Src, type Column } from '@/ui/primitives';
 import { AUDIT_RULES } from './data';
-import { auditMarkdown, clip, type AuditCheck, type PageAudit } from './engine';
+import { auditMarkdown, clip, dateLabel, type AuditCheck, type PageAudit } from './engine';
 import { ReviewHits, StatusPill, VerdictBadge } from './parts';
 
 export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
@@ -43,7 +43,7 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
         </Card>
 
         <div className="stack-lg">
-          <Card title="진단 점수" sub="항목별 가중치 × (통과 1 · 개선 0.5 · 실패 0) · 해당 없음 제외" actions={<Src kind="PROPOSAL" page="p.29" />}>
+          <Card title="진단 점수" sub="항목별 가중치 × (통과 1 · 개선 0.5 · 실패 0) · 해당 없음 제외 · 진단 항목은 p.29 SEO · 구조화 데이터 범위" actions={<><Src kind="PROPOSAL" page="p.29" />{sampleKind === 'defect' || sampleKind === 'fixed' ? <Src kind="DEMO" title="샘플은 시연용 테스트 데이터의 상품 · 옵션 · 프로모션으로 생성" /> : null}</>}>
             <div className="row-between">
               <div className="geo-score"><span className="geo-score-num">{audit.empty ? '—' : audit.score}</span><span className="muted">/ 100</span></div>
               <VerdictBadge v={audit.grade} />
@@ -71,12 +71,12 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
               <div className="stack-sm">
                 <div className="small">일치 상품 <strong>{audit.matched.product}</strong>{audit.matched.channel ? ` · ${SALES_CHANNELS[audit.matched.channel].name}` : ' · 채널 미확인(canonical)'}</div>
                 {audit.matched.promo ? (
-                  <div className="small">진행 프로모션 <strong>{audit.matched.promo}</strong> {audit.matched.discountRate}% · {fmtDate(d.today)} 기준</div>
+                  <div className="small">진행 프로모션 <strong>{audit.matched.promo}</strong> {audit.matched.discountRate}% · {dateLabel(d.today)} 기준</div>
                 ) : <div className="small muted">진행 중 프로모션 없음 → 정가 기준 대조</div>}
                 {audit.checks.filter((c) => c.axis === '운영 데이터 대조').map((c) => (
                   <div key={c.id} className="row" style={{ gap: 6, alignItems: 'flex-start' }}>
                     <StatusPill status={c.status} />
-                    <span className="small">{c.label} · {c.measured}</span>
+                    <span className="small">{c.label} · {c.measured} <span className="geo-basis">· 기준 {c.basis}</span></span>
                   </div>
                 ))}
               </div>
@@ -94,6 +94,7 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
       <Card title="항목별 판정" sub={`${audit.checks.length}개 항목 · ${audit.axes.map((a) => `${a.axis} ${audit.checks.filter((c) => c.axis === a.axis).length}`).join(' · ')}`}
         actions={
           <>
+            {sampleKind === 'defect' || sampleKind === 'fixed' ? <Src kind="DEMO" title="샘플은 시연용 테스트 데이터의 상품 · 옵션 · 프로모션으로 생성" /> : null}
             <CopyButton text={() => auditMarkdown(audit, label)} label="진단 결과 복사" />
             <DownloadButton filename={`searchtune-audit-${d.today}.md`} data={() => auditMarkdown(audit, label)} label=".md 다운로드" />
           </>

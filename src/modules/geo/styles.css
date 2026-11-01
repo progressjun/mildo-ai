@@ -93,3 +93,8 @@
   .geo-axes, .geo-kpis, .geo-topics { grid-template-columns: 1fr; }
   .geo-axis-bars { grid-template-columns: 90px 1fr 48px; }
 }
+
+/* ---------- 원인 후보 (페이드 지면 상세) ---------- */
+.geo-cause { display: grid; grid-template-columns: 120px 1fr 32px; gap: 2px 10px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.geo-cause:last-child { border-bottom: 0; }
+.geo-cause .num { text-align: right; }

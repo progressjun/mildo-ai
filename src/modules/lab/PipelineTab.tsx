@@ -5,7 +5,7 @@ import { fmt, fmtDate } from '@/core/util';
 import { Button, Callout, Card, type Column, DataTable, NumberInput, Pill, ProgressBar, Src } from '@/ui/primitives';
 import { LAB_DEFAULT_CRITERIA } from './data';
 import {
-  bulkCheck, canApprove, decisionPayload, groupPools, INTENT_NAME, isRegistration, KW_VERDICT_META, pipelineSummary, registrationPayload, SOURCE_LABEL,
+  bulkCheck, canApprove, decisionPayload, groupPools, INTENT_NAME, isRegistration, KW_VERDICT_META, pipelineSummary, registrationPayload, relatedCandidatesFor, SOURCE_LABEL,
   type LabCriteria, type PipelineItem,
 } from './engine';
 import { setLab } from './store';
@@ -28,11 +28,14 @@ const CRIT_FIELDS: { key: keyof LabCriteria; label: string; suffix: string; step
 ];
 
 const active = (c?: ChangeRequest) => !!c && c.status !== 'rejected' && c.status !== 'rolled_back';
+const MODULE_LABEL: Record<string, string> = { lab: 'MILDO Lab', adpilot: 'AD Pilot', watch: 'MILDO Watch', growth: '매출 성장', gfa: 'GFA Control', flow: 'MILDO Flow' };
+const KIND_LABEL: Partial<Record<ChangeRequest['kind'], string>> = { keyword_add: '키워드 등록 · 이관', keyword_exclude: '제외 키워드', setting: '설정 · 재테스트', test: '테스트', bid: '입찰', budget: '예산', status: '상태', gfa: 'GFA', alert_rule: '알림 기준' };
 
 function ItemCard({ i, m }: { i: PipelineItem; m: LabModel }) {
   const j = i.judgement;
   const { actions, state } = m;
   const canDecide = i.step >= 3 && !active(i.decision) && i.source !== 'request';
+  const related = j.verdict === 'expand' && i.source !== 'request' ? relatedCandidatesFor(i.phrase, m.disc.all, 3) : [];
   return (
     <div className={`lab-item v-${j.verdict}`}>
       <div className="row-between" style={{ alignItems: 'flex-start', gap: 6 }}>
@@ -57,6 +60,19 @@ function ItemCard({ i, m }: { i: PipelineItem; m: LabModel }) {
       {i.source !== 'request' ? <span className="lab-sub">다음: {j.action}</span> : null}
       {j.cautions.map((c) => <span key={c} className="lab-sub">주의 · {c}</span>)}
       {i.notes.filter((n) => !n.startsWith('직전 14일')).slice(0, 2).map((n) => <span key={n} className="lab-sub">{n}</span>)}
+      {related.length ? (
+        <div className="stack-sm" style={{ gap: 4 }}>
+          <span className="lab-sub">연관 키워드 추가 발굴 · 같은 토픽 미등록 후보</span>
+          <div className="row" style={{ gap: 4 }}>
+            {related.map((c) => (
+              <Button key={c.id} size="sm" icon="plus" title={`${SOURCE_LABEL[c.source]} · ${c.score}점 · 테스트 그룹 등록 요청`}
+                onClick={() => { actions.addChange(registrationPayload(c, state.role)); actions.toast({ tone: 'good', title: `연관 후보 등록 요청 · ${c.phrase}`, body: '담당 AE 승인 대기', route: 'flow' }); }}>
+                {c.phrase} · {c.score}점
+              </Button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {i.registration ? <ChangeActions c={i.registration} compact /> : null}
       {i.decision && active(i.decision) ? (
         <div className="stack-sm" style={{ gap: 2 }}>
@@ -86,7 +102,7 @@ export function PipelineTab({ m }: { m: LabModel }) {
   const decidable = by(4).filter((i) => !active(i.decision) && i.source !== 'request');
   const approvedDecisions = pipeline.map((i) => i.decision).filter((c): c is ChangeRequest => !!c && c.status === 'approved');
   const bc = bulkCheck(decidable.length);
-  const history = state.changes.filter((c) => c.module === 'lab' || isRegistration(c));
+  const history = state.changes.filter((c) => c.module === 'lab' || isRegistration(c) || c.kind === 'test');
 
   const bulkRequest = (force = false) => {
     if (bc.level === 'block') return;
@@ -102,7 +118,7 @@ export function PipelineTab({ m }: { m: LabModel }) {
 
   const histCols: Column<ChangeRequest>[] = [
     { key: 'at', label: '요청', sort: (c) => c.createdAt, render: (c) => <span className="small nowrap">{fmtDate(c.createdAt.slice(0, 10))} · {c.requestedBy}</span> },
-    { key: 'target', label: '대상', render: (c) => <div><strong className="small">{c.target}</strong><div className="lab-sub">{c.module} · {c.kind}</div></div> },
+    { key: 'target', label: '대상', render: (c) => <div><strong className="small">{c.target}</strong><div className="lab-sub">{MODULE_LABEL[c.module] ?? c.module} · {KIND_LABEL[c.kind] ?? c.kind}</div></div> },
     { key: 'change', label: '변경', render: (c) => <span className="small">{String(c.before)} → <strong>{String(c.after)}</strong></span> },
     { key: 'reason', label: '사유', render: (c) => <span className="lab-basis">{c.reason}</span> },
     { key: 'status', label: '상태 · 승인', render: (c) => <ChangeActions c={c} /> },
@@ -195,7 +211,7 @@ export function PipelineTab({ m }: { m: LabModel }) {
             ))}
           </div>
         </Card>
-        <Card className="span-2" title={`Lab 요청 · 승인 · 반영 이력 · ${history.length}건`} sub="등록 요청 · 판정 반영 · 테스트 카드 모두 MILDO Flow와 같은 이력(state.changes)에 남습니다" actions={<a className="btn sm" href="#flow">MILDO Flow 열기</a>}>
+        <Card className="span-2" title={`Lab 요청 · 승인 · 반영 이력 · ${history.length}건`} sub="등록 요청 · 판정 반영 · 테스트 카드 · 다른 모듈 테스트 요청 모두 MILDO Flow와 같은 이력(state.changes)에 남습니다" actions={<a className="btn sm" href="#flow">MILDO Flow 열기</a>}>
           <DataTable rows={history} columns={histCols} rowKey={(c) => c.id} maxHeight={360} empty="아직 Lab 요청이 없습니다. 발굴 탭이나 STEP 1 추천 후보에서 등록 요청을 만드세요." />
           {history.length ? <div className="row xs muted" style={{ gap: 6 }}><span>승인 대기 {history.filter((c) => c.status === 'pending').length}건</span>{history.slice(0, 1).map((c) => <span key={c.id} className="row" style={{ gap: 4 }}>최근 <ChangeStatusPill c={c} /><ApproverPill level={c.approver} /></span>)}</div> : null}
         </Card>

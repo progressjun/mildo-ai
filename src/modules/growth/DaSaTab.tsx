@@ -8,7 +8,7 @@ import { Button, Callout, Card, DataTable, Empty, Field, NumberInput, Pill, Segm
 import { LineChart } from '@/ui/charts';
 import { AiInsight } from '@/ui/AiInsight';
 import { DA_SA_METHODS, DA_SA_PATH, HOLDOUT_UNITS, type HoldoutUnitId } from './data';
-import { f2, growthPrompt, holdoutChange, holdoutDesign, type DaSaResult, type LagRow, type Method3Row } from './engine';
+import { activeDuplicate, f2, growthPrompt, holdoutChange, holdoutDesign, type DaSaResult, type LagRow, type Method3Row } from './engine';
 import { daSaBrief } from './briefs';
 import { Kv, Verdict } from './parts';
 
@@ -24,6 +24,7 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
   const [shareByUnit, setShareByUnit] = useState<Record<string, number>>(() => Object.fromEntries(HOLDOUT_UNITS.map((u) => [u.id, Math.round(u.holdoutShare * 100)])));
   const h = useMemo(() => holdoutDesign(d, { unit, metric, mdePct: mde, alpha: alphaPct / 100, power: powerPct / 100, holdoutShare: (shareByUnit[unit] ?? 30) / 100 }), [d, unit, metric, mde, alphaPct, powerPct, shareByUnit]);
 
+  const regionDefault = useMemo(() => holdoutDesign(d, { unit: 'region', metric: 'brand_search', mdePct: 10 }), [d]);
   const idxDays = 56;
   const idx = useMemo(() => {
     const n = ds.dates.length;
@@ -50,7 +51,7 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
     { key: 'adj', label: '보정 r · 브랜드 검색', align: 'right', render: (r) => <strong>{f2(r.adjusted)}</strong> },
     { key: 'sig', label: '판정', render: (r) => <Verdict tone={r.significant ? 'good' : 'neutral'} label={r.significant ? '유의' : '미달'} basis={`기준 r > ${f2(ds.threshold)}`} /> },
     { key: 'sa', label: '보정 r · SA 전환', align: 'right', render: (r) => f2(r.saAdjusted) },
-    { key: 'sasig', label: 'SA 판정', render: (r) => <Pill tone={r.saSignificant ? 'warning' : 'neutral'}>{r.saSignificant ? '유의' : '미달'}</Pill> },
+    { key: 'sasig', label: 'SA 판정', render: (r) => <Verdict tone={r.saSignificant ? 'good' : 'neutral'} label={r.saSignificant ? '유의' : '미달'} basis={`|r| > ${f2(ds.threshold)}`} /> },
     { key: 'n', label: '표본', align: 'right', render: (r) => fmt.int(r.n) },
   ];
   const m3Cols: Column<Method3Row>[] = [
@@ -62,8 +63,11 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
     { key: 'da', label: 'DA 경유 매출', align: 'right', sort: (r) => r.daRevenue, render: (r) => <strong>{fmt.krw(r.daRevenue)}</strong> },
   ];
 
+  const holdoutPayload = holdoutChange(h, mde, state.role);
+  const holdoutDup = activeDuplicate(state.changes, holdoutPayload.targetId);
   const requestHoldout = () => {
-    const c = addChange({ ...holdoutChange(h, mde, state.role) });
+    if (holdoutDup || !h.valid) return;
+    const c = addChange({ ...holdoutPayload });
     toast({ tone: 'info', title: '홀드아웃 테스트 승인 요청을 만들었습니다', body: `${c.target} · 수면밀도 승인 대기`, route: 'flow' });
   };
 
@@ -89,7 +93,7 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
               <span className="xs muted">{m.detail}</span>
               <span className="growth-method-result">
                 {m.id === 'm1' ? (ds.bestLag !== null ? `최적 시차 ${ds.bestLag}일 · r ${f2(ds.bestR)} · 브랜드 검색의 ${fmt.ratio(ds.daShareBrand, 0)} DA 경유 추정` : '유의한 시차 동행 없음')
-                  : m.id === 'm2' ? `지역 홀드아웃 · 그룹당 ${fmt.int(holdoutDesign(d, { unit: 'region', metric: 'brand_search', mdePct: 10 }).requiredDays)}일 (MDE 10%)`
+                  : m.id === 'm2' ? `지역 홀드아웃 · 권장 ${fmt.int(regionDefault.recommendedDays)}일 (그룹당 필요 ${fmt.int(regionDefault.requiredDays)}일 · 최소 검출 효과 10%)`
                     : `SA 매출 중 DA 경유 ${fmt.ratio(ds.method3.daShareOfSa)} · SA 경유 ROAS ${fmt.roas(ds.halo.haloRoas)}`}
               </span>
             </div>
@@ -126,7 +130,7 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
         <Callout tone={ds.saLink.significant ? 'good' : 'warning'} title={ds.saLink.significant ? 'SA 전환도 시차 동행' : 'SA 전환 동행은 유의 기준 미달'}>
           {ds.saLink.significant
             ? `GFA 광고비와 SA 전환의 보정 상관이 시차 ${ds.saLink.lag}일에서 유의 기준을 넘습니다. 브랜드 검색 증가가 전환으로 이어지는 경로가 시계열로도 관측됩니다.`
-            : `SA 전체 전환과의 보정 상관은 최대 |r| ${f2(ds.saLink.maxAbsR)}로 기준 ${f2(ds.threshold)}에 미달합니다. 브랜드 검색 증가가 SA 구매로 이어지는지는 시계열로 확인되지 않아 METHOD 2 홀드아웃으로 검증합니다. SA 브랜드 키워드별 일 전환 120일 이력은 데이터 연동 후 분리합니다.`}
+            : `SA 전체 전환과의 보정 상관은 최대 |r| ${f2(ds.saLink.maxAbsR)}로 기준 ${f2(ds.threshold)}에 미달합니다. 브랜드 검색 증가가 SA 구매로 이어지는지는 시계열로 확인되지 않아 METHOD 2 홀드아웃으로 검증합니다. SA 브랜드 키워드 전환은 최근 14일 일별만 있어 시계열은 SA 전체 전환으로 보고, 브랜드 키워드 일별 이력은 데이터 연동 후 분리합니다.`}
         </Callout>
       </Card>
 
@@ -148,7 +152,7 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
           {h.valid ? (
             <>
               <div className="grid g-3">
-                <Stat label={unit === 'period' ? 'ON · OFF 구간별 필요 일수' : '그룹당 필요 일수'} value={`${fmt.int(h.requiredDays)}일`} foot={<span className="xs muted">일 평균 {fmt.dec1(h.mu)} · 잔차 변동 ±{fmt.ratio(h.cv, 1)}</span>} />
+                <Stat label={unit === 'period' ? 'ON · OFF 구간별 필요 일수' : '그룹당 필요 일수'} value={`${fmt.int(h.requiredDays)}일`} foot={<span className="xs muted">최근 28일 일 평균 {fmt.dec1(h.mu)} · 잔차 변동 ±{fmt.ratio(h.cv, 1)}</span>} />
                 <Stat label="권장 테스트 기간" value={`${fmt.int(h.recommendedDays)}일`} foot={<span className="xs muted">최소 {unitDef.minDays}일 · 주 단위 올림</span>} />
                 <Stat label="28일 테스트 시 검출 가능 효과" value={fmt.pct(h.mdeAtDays)} foot={<span className="xs muted">이보다 작은 효과는 구분 불가</span>} />
               </div>
@@ -160,7 +164,9 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
               </div>
               <div className="row-between">
                 <span className="xs muted">{h.note}</span>
-                <Button size="sm" variant="primary" icon="send" onClick={requestHoldout}>홀드아웃 승인 요청 · 수면밀도</Button>
+                {holdoutDup
+                  ? <span className="xs muted">같은 단위 · 지표의 홀드아웃 요청이 승인 흐름에 있습니다 · <a href="#flow">MILDO Flow</a></span>
+                  : <Button size="sm" variant="primary" icon="send" onClick={requestHoldout}>홀드아웃 승인 요청 · 수면밀도</Button>}
               </div>
             </>
           ) : <Callout tone="warning">{h.note}</Callout>}

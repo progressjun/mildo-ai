@@ -1,18 +1,20 @@
 /* 성장 공식(p.30) · 성장 과제(데이터 판정) · 매체 역할 · 배분 가안(p.37) */
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useMemo, type ReactNode } from 'react';
 import type { Dataset } from '@/core/types';
 import { MEDIA, MEDIA_IDS } from '@/data/constants';
 import { fmt } from '@/core/util';
 import { Button, Card, Empty, Src } from '@/ui/primitives';
 import { AiInsight } from '@/ui/AiInsight';
-import { PROPOSAL_SHARES, growthFormula, growthPrompt, growthSignals, type AllocationModel } from './engine';
+import { PROPOSAL_SHARES, growthFormula, growthPrompt, type AllocationModel, type GrowthSignal } from './engine';
 import { overviewBrief } from './briefs';
 import { REBALANCE_RULES } from './data';
 import { BIND_LABEL, MediaLabel, SIGNAL_TONE, Verdict, type TabId } from './parts';
 
-export function OverviewTab({ d, model, onGo }: { d: Dataset; model: AllocationModel; onGo: (t: TabId) => void }) {
-  const formula = growthFormula(d, model);
-  const signals = growthSignals(d, model);
+export function OverviewTab({ d, model, signals, onGo }: { d: Dataset; model: AllocationModel; signals: GrowthSignal[]; onGo: (t: TabId) => void }) {
+  const formula = useMemo(() => growthFormula(d, model), [d, model]);
+  // 관측 ROAS 합계 = 최근 90일 매체 합계 (곡선 모델 값이 아님)
+  const valid = model.curves.filter((c) => c.valid);
+  const observedRoas = valid.length ? (valid.reduce((a, c) => a + c.avgDailyRevenue, 0) / valid.reduce((a, c) => a + c.avgDailyCost, 0)) * 100 : NaN;
   const srcFor: Record<string, ReactNode> = {
     time: <Src kind="PROPOSAL" page="p.19 · p.31" />,
     power: <Src kind="PROPOSAL" page="p.32–33" />,
@@ -94,9 +96,9 @@ export function OverviewTab({ d, model, onGo }: { d: Dataset; model: AllocationM
               <tr>
                 <td colSpan={4}>합계 (연 {fmt.krw(model.budget)})</td>
                 <td className="r">100%</td>
-                <td className="r">{fmt.roas(model.baseline.totalRoas)}</td>
+                <td className="r">{fmt.roas(observedRoas)}</td>
                 <td className="r">격차 {fmt.int(model.baseline.spread.gapPct)}%</td>
-                <td className="r">{fmt.delta(model.upliftOptimizedPct)}</td>
+                <td className="r">예상 매출 {fmt.delta(model.upliftOptimizedPct)}</td>
               </tr>
             </tfoot>
           </table>

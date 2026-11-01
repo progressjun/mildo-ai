@@ -9,7 +9,8 @@ import { AD_PILOT, MEDIA, MEDIA_IDS, NEW_MEDIA_PILOT, RFP } from '@/data/constan
 import { fmt } from '@/core/util';
 import { ALLOCATION_GUARDRAILS, CO_PROMO_PRINCIPLES, FUNNEL_RULES, REBALANCE_RULES } from './data';
 import {
-  CAMPAIGN_VERDICT_LABEL, PROPOSAL_SHARES, allocationModel, belowTargetKeywords, coPromoDemand, daSaAnalysis, defaultPilots, f2, funnelDiagnosis, growthSignals, keywordCpcSpikes,
+  CAMPAIGN_VERDICT_LABEL, CONSTRAINT_LABEL, PROPOSAL_SHARES, allocationModel, belowTargetKeywords, budgetConstraints, coPromoDemand, daSaAnalysis, defaultPilots, exhaustText, f2,
+  funnelDiagnosis, growthSignals, keywordCpcSpikes,
   holdoutDesign, pilotPlan, rfpSegmentSummary, saCampaignPerformance, scoreNewMedia, skuExpansionSummary, type AllocationInput, type AllocationModel,
   type CriterionId, type PilotInput, type ScoreTable,
 } from './engine';
@@ -53,10 +54,16 @@ export function allocationBrief(d: Dataset, input: AllocationInput = {}): Brief 
         ? `6개 매체 모두 로그-로그 적합 b의 95% 구간이 1을 포함하거나 넘습니다. 일 광고비 변동계수 ${fmt.ratio(Math.min(...cvs))}~${fmt.ratio(Math.max(...cvs))} 범위에서는 체감 형태가 관측되지 않습니다.`
         : `데이터로 체감이 확인된 매체 ${m.identifiedCount}개, 사전 가정 b를 쓴 매체 ${prior.length}개 (${prior.map((c) => MEDIA[c.media].short).join(' · ')}).`,
       `관측 평균 ROAS가 높은 SA · 버티컬은 한계 ROAS도 높고, 리마케팅 모수가 한정된 카카오는 평균 ROAS ${fmt.roas(m.curves.find((c) => c.media === 'kakao')?.roas ?? NaN)} 대비 한계 ROAS가 가장 낮습니다.`,
+      ...(() => {
+        const bc = budgetConstraints(d, m);
+        return bc.length
+          ? [`오늘 ${d.currentHour}시 기준 일 예산 조기 소진 예상 캠페인 ${bc.length}개 (최근 28일 시간대 소진 곡선 · MILDO Board · AD Pilot과 같은 계산): ${bc.map((x) => `${x.campaign} 소진 배수 ${f2(x.paceIndex)} · 예상 마감 ${exhaustText(x.exhaustHour)} → ${CONSTRAINT_LABEL[x.verdict]} (${x.basis})`).join(' / ')}.`]
+          : [];
+      })(),
     ],
     interpretation: [
       `균등화안 예상 연 매출 ${fmt.delta(m.upliftOptimizedPct)} (${fmt.krw(m.upliftOptimized)})은 사전 가정 b에 기대는 시나리오이며 예측이 아닙니다. b를 매체별 ±0.1 바꿔도 증분은 ${fmt.delta(m.sensitivity.lowPct)}~${fmt.delta(m.sensitivity.highPct)} 범위이고, 증감 방향은 ${m.sensitivity.stable ? '유지됩니다' : `${m.sensitivity.flipped.map((x) => MEDIA[x].short).join(' · ')}에서 바뀝니다`}.`,
-      `GFA는 직접 ROAS만 보면 감액 대상이지만, DA→SA 기여(METHOD 1 · 3 추정, SA 경유 ROAS ${fmt.roas(credit.credit.haloRoas)})를 반영하면 균등화안 GFA 비중이 ${fmt.ratio(plain.equalize.shares.naver_gfa)} → ${fmt.ratio(credit.equalize.shares.naver_gfa)}로 바뀝니다. 기여 추정치에 따라 결론이 뒤집히므로 GFA 감액은 홀드아웃 결과 전까지 보류하는 것이 안전합니다.`,
+      `GFA는 직접 ROAS만 보면 감액 대상이지만, DA→SA 기여(METHOD 1 · 3 추정, SA 경유 ROAS ${fmt.roas(credit.credit.haloRoas)})를 반영하면 균등화안 GFA 비중이 ${fmt.ratio(plain.equalize.shares.naver_gfa)} → ${fmt.ratio(credit.equalize.shares.naver_gfa)}로 바뀝니다. 기여 추정치에 따라 결론이 뒤집히므로 GFA 감액은 홀드아웃 결과 전까지 보류합니다.`,
     ],
     conditions: [
       `재배분 원칙: ${REBALANCE_RULES.principle} (p.37). 1회 재배분 폭 ±${REBALANCE_RULES.stepCapPct}% · 가드레일 ${MEDIA_IDS.map((x) => `${MEDIA[x].short} ${fmt.ratio(ALLOCATION_GUARDRAILS[x].min, 0)}~${fmt.ratio(ALLOCATION_GUARDRAILS[x].max, 0)}`).join(' · ')} (초기값 · 협의 후 확정).`,
@@ -192,6 +199,12 @@ export function campaignBrief(d: Dataset): Brief {
     patterns: valid.length ? [
       `브랜드 방어가 SA 키워드 매출의 ${fmt.ratio(brand?.revenueShare ?? NaN)}를 차지하고, 비브랜드 4개 캠페인 합계는 ${fmt.ratio(nonBrandShare)}입니다. 비브랜드 캠페인은 모두 목표 ROAS ${AD_PILOT.targetRoas}%를 넘지만 매출 규모는 검색량에 묶여 있습니다.`,
       `노출 손실: ${valid.map((c) => `${c.name} ${fmt.ratio(c.lostShare, 0)}`).join(' · ')}.`,
+      (() => {
+        const stars = valid.flatMap((c) => c.expandKeywords.map((k) => `${k.keyword}(${c.name} · 목표 대비 ${fmt.int(k.ratioPct)}% · 손실 ${fmt.ratio(k.lostShare, 0)})`));
+        return stars.length
+          ? `키워드 단위 확대 여지 ${stars.length}개: ${stars.slice(0, 5).join(' · ')}${stars.length > 5 ? ` 외 ${stars.length - 5}개` : ''}. 캠페인 합계가 기준에 못 미쳐도 키워드 단위로는 고효율 · 노출 손실 조건을 충족합니다.`
+          : '키워드 단위 확대 여지(목표 대비 130% 이상 · 노출 손실 25% 이상) 키워드가 없습니다.';
+      })(),
     ] : [],
     interpretation: valid.length ? [
       `판정은 ${valid.map((c) => `${c.name} ${CAMPAIGN_VERDICT_LABEL[c.verdict]}`).join(' · ')}입니다. 브랜드 방어의 확대 여지는 수요 창출이 아니라 이미 생긴 브랜드 수요의 점유 회수이므로, 신규 고객 확보는 문제 해결 · 생활 상황 캠페인의 구문형 확장(제품 1 × 문제 ${sku.problems} × 상황 ${sku.situations} × 비교 ${sku.criteria} = 진입점 ${sku.total}개, p.36)으로 접근합니다.`,
@@ -215,17 +228,17 @@ export function campaignBrief(d: Dataset): Brief {
   };
 }
 
-export function newMediaBrief(d: Dataset, weights?: Record<CriterionId, number>, pilots?: PilotInput[], scores?: ScoreTable): Brief {
+export function newMediaBrief(d: Dataset, weights?: Record<CriterionId, number>, pilots?: PilotInput[], scores?: ScoreTable, committed?: Record<string, number>): Brief {
   const ranked = scoreNewMedia(weights, scores);
   const model = allocationModel(d);
-  const plan = pilotPlan(d, pilots ?? defaultPilots(ranked), { marginalRoas: model.equalize.marginalRoas });
+  const plan = pilotPlan(d, pilots ?? defaultPilots(ranked), { marginalRoas: model.equalize.marginalRoas, committed });
   const active = plan.rows.filter((r) => r.budget > 0);
   const co = coPromoDemand(d);
   return {
     title: '신규 매체 발굴 · 코프로모션 (p.38–39)',
     facts: [
       `후보 점수 (기준 5개 가중 · 데모 평가): ${ranked.map((r) => `${r.name} ${fmt.int(r.total)}점`).join(' · ')}.`,
-      `파일럿 ${active.length}개 ${fmt.krw(plan.total)} / 한도 연 예산 ${Math.round(NEW_MEDIA_PILOT.maxBudgetShare * 100)}% ${fmt.krw(plan.cap)} (p.38). DA 평균 CPA ${fmt.won(plan.baseCpa)} · 객단가 ${fmt.won(plan.aov)} (최근 30일, TEST DATA).`,
+      `파일럿 ${active.length}개 ${fmt.krw(plan.total)} / 한도 연 예산 ${Math.round(NEW_MEDIA_PILOT.maxBudgetShare * 100)}% ${fmt.krw(plan.cap)} (p.38)${plan.committedTotal > 0 ? ` · 이 중 승인 흐름 ${fmt.krw(plan.committedTotal)}` : ''}. DA 평균 CPA ${fmt.won(plan.baseCpa)} · 객단가 ${fmt.won(plan.aov)} (최근 30일, TEST DATA).`,
     ],
     patterns: [
       `코프로모션 구매 순간별 관련 SA 검색 수요 (월간, TEST DATA): ${co.map((c) => `${c.moment} ${fmt.int(c.monthlySearch)}회`).join(' · ')}.`,
@@ -263,7 +276,7 @@ export function overviewBrief(d: Dataset): Brief {
     facts: sig.length ? sig.map((s) => `${s.title}. ${s.basis}.`) : ['성장 과제를 계산할 데이터가 없습니다.'],
     patterns: [],
     interpretation: sig.length ? [
-      '광고비를 늘리지 않고 바꿀 수 있는 항목(랜딩 분리 · 자사몰 장바구니 이탈 · 품절 랜딩)은 CAC를 직접 낮추는 경로이고, 재배분과 신규 매체는 곡선 · 기여 가정이 들어간 시나리오입니다. 앞의 것은 바로 실행, 뒤의 것은 테스트로 검증한 뒤 반영하는 순서가 안전합니다.',
+      '광고비를 늘리지 않고 바꿀 수 있는 항목(랜딩 분리 · 자사몰 장바구니 이탈 · 품절 랜딩)은 CAC를 직접 낮추는 경로이고, 재배분과 신규 매체는 곡선 · 기여 가정이 들어간 시나리오입니다. 앞의 것은 바로 실행하고, 뒤의 것은 테스트로 검증한 뒤 반영합니다.',
     ] : [],
     conditions: ['재배분 월 1회 · 분기 구조 리뷰 (p.37) · 파일럿 연 예산 5% 이내 · 4주 (p.38) · 2027 분기별 성장 캘린더는 협업 제안 가안 (p.42).'],
     counter: ['DA→SA 기여를 반영하면 GFA 감액 결론이 바뀌므로, 재배분은 홀드아웃 결과를 확인한 범위에서만 진행합니다.'],

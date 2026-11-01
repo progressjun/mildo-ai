@@ -12,12 +12,21 @@ import { funnelBrief } from './briefs';
 import { Kv, Verdict } from './parts';
 
 function ChannelCard({ c, days }: { c: ChannelFunnel; days: number }) {
-  const steps = [
-    { label: '유입', value: c.cur.visitors },
-    { label: '상품 상세', value: c.cur.detailViews },
-    { label: '장바구니', value: c.cur.carts },
-    { label: '구매', value: c.cur.orders },
+  const raw = [
+    { label: '유입', value: c.cur.visitors, prev: c.prev.visitors },
+    { label: '상품 상세', value: c.cur.detailViews, prev: c.prev.detailViews },
+    { label: '장바구니', value: c.cur.carts, prev: c.prev.carts },
+    { label: '구매', value: c.cur.orders, prev: c.prev.orders },
   ];
+  // 단계별 이탈 = 전 단계 대비 다음 단계로 넘어가지 않은 비율 (직전 기간 대비 %p 변화 병기)
+  const steps = raw.map((s, i) => {
+    if (i === 0) return { label: s.label, value: s.value, note: `직전 ${days}일 ${fmt.int(s.prev)} · ${fmt.delta(deltaPct(s.value, s.prev))}` };
+    const drop = raw[i - 1].value > 0 ? (1 - s.value / raw[i - 1].value) * 100 : NaN;
+    const prevDrop = raw[i - 1].prev > 0 ? (1 - s.prev / raw[i - 1].prev) * 100 : NaN;
+    const dd = drop - prevDrop;
+    const ddTxt = !Number.isFinite(dd) ? '' : Math.abs(dd) < 0.05 ? ' · 직전 대비 변화 없음' : ` · 직전 대비 ${dd > 0 ? '+' : ''}${fmt.dec1(dd)}%p`;
+    return { label: s.label, value: s.value, note: `이탈 ${fmt.pct(drop)}${ddTxt}` };
+  });
   return (
     <Card title={<>{c.name} 퍼널 <Src kind="DEMO" /></>} sub={`최근 ${days}일 · 직전 ${days}일 대비`}>
       {c.cur.visitors > 0 ? <Funnel steps={steps} format={(v) => fmt.int(v)} /> : <Empty title="퍼널 데이터 없음" />}
@@ -76,14 +85,15 @@ export function FunnelTab({ d, f }: { d: Dataset; f: FunnelDiagnosis }) {
               {f.stages.map((s) => (
                 <tr key={s.stage} className={f.priority?.stage === s.stage ? 'selected' : undefined}>
                   <td><strong>{s.label}</strong><div className="xs muted">{s.metricLabel}</div></td>
-                  <td className="small">{s.diag}{s.stage === 'detail' ? <div className="xs muted">체류 · 리뷰 조회 연동 전 담기율로 대체</div> : null}{s.stage === 'order' ? <div className="xs muted">결제 시작 이벤트 연동 전 방문 대비 구매</div> : null}</td>
+                  <td className="small">{s.diag}{s.stage === 'visit' ? <div className="xs muted">키워드별 유입 연동 전 채널 단위 도달률 · 키워드는 랜딩 점검으로 확인</div> : null}{s.stage === 'detail' ? <div className="xs muted">체류 · 리뷰 조회 연동 전 담기율로 대체</div> : null}{s.stage === 'order' ? <div className="xs muted">결제 시작 이벤트 연동 전 방문 대비 구매</div> : null}</td>
                   <td className="r">{fmt.pct(s.bs.cur)}<div className="xs"><Delta pct={s.bs.trendPct} /></div></td>
                   <td className="r">{fmt.pct(s.om.cur)}<div className="xs"><Delta pct={s.om.trendPct} /></div></td>
                   <td className="r"><strong className={Number.isFinite(s.gapPct) && s.gapPct <= FUNNEL_RULES.gapPct ? 'delta-down' : undefined}>{fmt.delta(s.gapPct)}</strong></td>
                   <td style={{ maxWidth: 320 }}>
                     <span className="stack-sm" style={{ gap: 2 }}>
                       <Verdict tone={s.focus ? (f.priority?.stage === s.stage ? 'serious' : 'warning') : 'neutral'}
-                        label={s.focus ? `${f.priority?.stage === s.stage ? '우선 개선' : '개선 필요'} · ${s.focus === 'own_mall' ? '자사몰' : '브랜드스토어'}` : '기준 내'} />
+                        label={s.focus ? `${f.priority?.stage === s.stage ? '우선 개선' : '개선 필요'} · ${s.focus === 'own_mall' ? '자사몰' : '브랜드스토어'}` : '기준 내'}
+                        basis={s.focus ? undefined : `채널 격차 ${fmt.delta(s.gapPct)} (기준 ${FUNNEL_RULES.gapPct}%) · 추세 ${fmt.delta(s.bs.trendPct)} / ${fmt.delta(s.om.trendPct)} (기준 ${FUNNEL_RULES.trendPct}%)`} />
                       {s.reasons.map((r) => <span key={r} className="xs muted">{r}</span>)}
                     </span>
                   </td>

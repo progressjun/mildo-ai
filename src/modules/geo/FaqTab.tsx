@@ -1,21 +1,21 @@
 /* AEO 콘텐츠 — 경도 · 소재 · 사이즈 · 선택 기준 FAQ 초안 (규칙 템플릿 + AI) → REVIEW_RULES 검수 → FAQPage JSON-LD */
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import type { Dataset } from '@/core/types';
 import { useAi } from '@/ai/useAi';
 import { AI_ERROR_COPY, type AiError } from '@/ai/claude';
-import { fmtDate, uid } from '@/core/util';
+import { uid } from '@/core/util';
 import { Button, Callout, Card, CopyButton, DownloadButton, Empty, Pill, Segmented, Src, Toggle } from '@/ui/primitives';
-import { AEO_TOPICS, type AeoTopicId } from './data';
+import { AEO_TOPICS, GEO_RULES, type AeoTopicId } from './data';
 import {
-  buildFaqDraft, faqAiPrompt, faqJsonLd, faqMarkdown, livePromotion, QUERY_BY_ID, sanitizeAiFaq, TOPIC_LABEL,
+  buildFaqDraft, dateLabel, faqAiPrompt, faqJsonLd, faqMarkdown, livePromotion, QUERY_BY_ID, sanitizeAiFaq, TOPIC_LABEL,
   type FaqItem, type FaqReviewed, type Visibility, type faqCoverage,
 } from './engine';
 import { ReviewHits, VerdictBadge } from './parts';
 
 type TopicFilter = 'all' | AeoTopicId;
 
-export function FaqTab({ d, items, onItems, reviewed, cov, vis }: {
-  d: Dataset; items: FaqItem[]; onItems: (v: FaqItem[]) => void; reviewed: FaqReviewed[]; cov: ReturnType<typeof faqCoverage>; vis: Visibility;
+export function FaqTab({ d, onItems, reviewed, cov, vis }: {
+  d: Dataset; items: FaqItem[]; onItems: Dispatch<SetStateAction<FaqItem[]>>; reviewed: FaqReviewed[]; cov: ReturnType<typeof faqCoverage>; vis: Visibility;
 }) {
   const ai = useAi();
   const [topic, setTopic] = useState<TopicFilter>('all');
@@ -29,13 +29,14 @@ export function FaqTab({ d, items, onItems, reviewed, cov, vis }: {
   const soldOut = (d.products[0]?.options ?? []).filter((o) => !o.inStock).map((o) => o.label);
   const promo = livePromotion(d, 'brandstore');
 
-  const patch = (id: string, p: Partial<FaqItem>) => onItems(items.map((i) => (i.id === id ? { ...i, ...p, source: i.source === 'rule' ? 'edited' : i.source } : i)));
-  const remove = (id: string) => onItems(items.filter((i) => i.id !== id));
+  // 함수형 업데이트 — AI 초안 생성 중에 편집한 내용이 응답 도착 시 덮어써지지 않도록
+  const patch = (id: string, p: Partial<FaqItem>) => onItems((cur) => cur.map((i) => (i.id === id ? { ...i, ...p, source: i.source === 'rule' ? 'edited' : i.source } : i)));
+  const remove = (id: string) => onItems((cur) => cur.filter((i) => i.id !== id));
   const restore = (id: string) => {
     const r = rule.find((x) => x.id === id);
-    if (r) onItems(items.map((i) => (i.id === id ? r : i)));
+    if (r) onItems((cur) => cur.map((i) => (i.id === id ? r : i)));
   };
-  const add = () => onItems([...items, { id: uid('faq'), topic: topic === 'all' ? 'criteria' : topic, q: '', a: '', source: 'edited', queries: [] }]);
+  const add = () => onItems((cur) => [...cur, { id: uid('faq'), topic: topic === 'all' ? 'criteria' : topic, q: '', a: '', source: 'edited', queries: [] }]);
 
   const generate = async () => {
     if (!ai.connected) return;
@@ -47,7 +48,7 @@ export function FaqTab({ d, items, onItems, reviewed, cov, vis }: {
       const got = sanitizeAiFaq(raw);
       if (!got.length) setNote('AI 응답에서 FAQ 문항을 읽지 못했습니다. 다시 시도하세요.');
       else {
-        onItems([...items.filter((i) => i.source !== 'ai'), ...got]);
+        onItems((cur) => [...cur.filter((i) => i.source !== 'ai'), ...got]);
         setNote(`AI 초안 ${got.length}개를 추가했습니다. 모든 문항은 같은 검수 규칙을 통과해야 게시 가능으로 표시됩니다.`);
       }
     } catch (e) {
@@ -71,7 +72,7 @@ export function FaqTab({ d, items, onItems, reviewed, cov, vis }: {
           ))}
         </div>
         <div className="stack-sm">
-          <span className="small">GEO 매트릭스에서 확보 기준(≥3/5 엔진) 미달 · 경쟁사 우위 질의 <strong>{cov.weak.length}개</strong> <span className="muted">· {fmtDate(vis.date ?? d.today)} 진단 (TEST DATA)</span></span>
+          <span className="small">GEO 매트릭스에서 확보 기준(≥{Math.min(GEO_RULES.coveredEngines, vis.engines.length || GEO_RULES.coveredEngines)}/{vis.engines.length} 엔진) 미달 · 경쟁사 우위 질의 <strong>{cov.weak.length}개</strong> <span className="muted">· {dateLabel(vis.date ?? d.today)} 진단 (TEST DATA)</span></span>
           <div className="geo-chips">
             {cov.covered.map((q) => <Pill key={q.query.id} tone="good" icon="check" title="게시 가능 FAQ로 대응">{q.query.text}</Pill>)}
             {cov.drafted.map((q) => <Pill key={q.query.id} tone="warning" title="초안은 있으나 입력 · 검수 남음">{q.query.text}</Pill>)}
@@ -84,13 +85,13 @@ export function FaqTab({ d, items, onItems, reviewed, cov, vis }: {
       {soldOut.length || promo ? (
         <Callout tone="info" title="운영 데이터 대조 (TEST DATA)">
           {soldOut.length ? `${soldOut.join(' · ')} 옵션 품절 — FAQ 답변에 재고 표현을 쓰지 않고 상품 페이지 확인으로 안내합니다. ` : ''}
-          {promo ? `${promo.name} ${promo.discountRate}% 진행 중(~${fmtDate(promo.end, false)}) — FAQ에는 정가만 쓰고 기획전 판매가는 상품 페이지로 안내합니다 (가격 불일치 방지).` : ''}
+          {promo ? `${promo.name} ${promo.discountRate}% 진행 중(~${dateLabel(promo.end, false)}) — FAQ에는 정가만 쓰고 기획전 판매가는 상품 페이지로 안내합니다 (가격 불일치 방지).` : ''}
         </Callout>
       ) : null}
 
       <div className="grid g-3">
         <Card className="span-2" title="FAQ 초안 · 검수" sub="규칙 기반 템플릿 · 사이즈 · 정가는 운영 데이터에서 · 확인되지 않은 사양은 [입력] 자리표시 (게시 보류)"
-          actions={<Button size="sm" icon="plus" onClick={add}>문항 추가</Button>}>
+          actions={<><Src kind="DEMO" title="사이즈 · 정가 · 재고는 시연용 테스트 데이터" /><Button size="sm" icon="plus" onClick={add}>문항 추가</Button></>}>
           <Segmented label="주제" value={topic} onChange={setTopic} options={[{ id: 'all', label: `전체 ${reviewed.length}` }, ...AEO_TOPICS.map((t) => ({ id: t.id, label: `${t.label} ${reviewed.filter((i) => i.topic === t.id).length}` }))]} />
           {shown.length ? shown.map((i) => (
             <div key={i.id} className={`geo-faq ${i.status.id}`}>
@@ -105,8 +106,8 @@ export function FaqTab({ d, items, onItems, reviewed, cov, vis }: {
                   {i.source !== 'rule' && !rule.some((r) => r.id === i.id) ? <Button size="sm" variant="ghost" icon="x" onClick={() => remove(i.id)}>삭제</Button> : null}
                 </div>
               </div>
-              <input className="input" aria-label="질문" value={i.q} placeholder="질문" onChange={(e) => patch(i.id, { q: e.target.value })} />
-              <textarea className="textarea" aria-label="답변" value={i.a} placeholder="답변 (소비자에게 보이는 문장)" onChange={(e) => patch(i.id, { a: e.target.value })} />
+              <input id={`geo-faq-q-${i.id}`} className="input" aria-label={`질문 · ${TOPIC_LABEL[i.topic]}`} value={i.q} placeholder="질문" onChange={(e) => patch(i.id, { q: e.target.value })} />
+              <textarea id={`geo-faq-a-${i.id}`} className="textarea" aria-label={`답변 · ${i.q || TOPIC_LABEL[i.topic]}`} value={i.a} placeholder="답변 (소비자에게 보이는 문장)" onChange={(e) => patch(i.id, { a: e.target.value })} />
               {i.placeholders.length ? <div className="geo-chips">{i.placeholders.map((p, k) => <Pill key={`${p}${k}`} tone="warning">{p}</Pill>)}</div> : null}
               <ReviewHits hits={i.hits} />
               {i.queries.length ? <div className="geo-basis">대응 질의: {i.queries.map((q) => QUERY_BY_ID[q]?.text).filter(Boolean).join(' · ')}</div> : null}

@@ -4,23 +4,30 @@ import type { ApprovalLevel, ChangeRequest } from '@/core/types';
 import { toCsv } from '@/core/download';
 import { AiInsight } from '@/ui/AiInsight';
 import { Button, Callout, Card, DataTable, DownloadButton, Empty, Pill, Segmented, Src, type Column } from '@/ui/primitives';
-import { MODULE_LABEL, STATUS_META, STATUS_ORDER } from './data';
+import { KIND_LABEL, MODULE_LABEL, STATUS_META, STATUS_ORDER } from './data';
 import {
-  APPROVER_LABEL, bulkGuard, canAct, executionCheck, filterChanges, fmtStamp, fmtValue, groupByStatus, kindLabel, leadState, moduleLabel,
+  APPROVER_LABEL, bulkGuard, canAct, executionCheck, filterChanges, fmtDuration, fmtStamp, fmtValue, groupByStatus, kindLabel, leadState, moduleLabel,
   pendingBrief, roleScopeLabel, sortByCreatedDesc, type ChangeFilter,
 } from './engine';
 import { ApproverBadge, ChangeValue, ConfirmButton, LeadBadge, ModuleTag, SeedTag, StatusPill } from './parts';
 import type { FlowCtx } from './useFlow';
 
 export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: string) => void; onNew: () => void }) {
-  const { changes, state, clock, summary, act, bulk, data, incidents, missingSeeds, loadSeeds } = ctx;
+  const { changes, state, clock, summary, act, bulk, data, incidents, missingSeeds, loadSeeds, bulkAlerts, apCfg } = ctx;
   const [filter, setFilter] = useState<ChangeFilter>({ scope: 'all', module: 'all', approver: 'all', kind: 'all', q: '' });
   const [view, setView] = useState<'board' | 'table'>('board');
   const list = useMemo(() => sortByCreatedDesc(filterChanges(changes, filter, state.role, clock), clock.toMs), [changes, filter, state.role, clock]);
   const cols = useMemo(() => groupByStatus(list), [list]);
   const q = summary.queue;
   const modules = useMemo(() => [...new Set(changes.map((c) => c.module))], [changes]);
-  const approveGuard = bulkGuard(q.approve, 'approve');
+  const kinds = useMemo(() => [...new Set(changes.map((c) => c.kind))], [changes]);
+  const approveGuard = bulkGuard(q.approve, 'approve', apCfg);
+  /** 대량 변경 감지에 걸린 요청 id → 감지 제목 */
+  const bulkOf = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const b of bulkAlerts) for (const id of b.related) if (!m.has(id)) m.set(id, b.title);
+    return m;
+  }, [bulkAlerts]);
 
   const columns: Column<ChangeRequest>[] = [
     { key: 'createdAt', label: '요청 시각', render: (c) => <span className="num nowrap">{fmtStamp(clock.toMs(c.createdAt))}</span>, sort: (c) => clock.toMs(c.createdAt) || 0 },
@@ -88,7 +95,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
             ))}
           </div>
           <div className="small ink2">
-            결정까지 평균 <strong className="num">{Number.isFinite(summary.avgDecisionMin) ? `${Math.round(summary.avgDecisionMin)}분` : '—'}</strong> · p.53 소요 기준 충족 <strong className="num">{Number.isFinite(summary.metRate) ? `${Math.round(summary.metRate * 100)}%` : '—'}</strong> ({summary.decided}건) · 기준 초과 대기 <strong className="num">{summary.overdue.length}</strong>건
+            결정까지 평균 <strong className="num">{fmtDuration(summary.avgDecisionMin)}</strong> · p.53 소요 기준 충족 <strong className="num">{Number.isFinite(summary.metRate) ? `${Math.round(summary.metRate * 100)}%` : '—'}</strong> ({summary.decided}건) · 기준 초과 대기 <strong className="num">{summary.overdue.length}</strong>건
           </div>
           {missingSeeds.length ? (
             <Callout tone="info" title="시연용 이력이 비어 있습니다">
@@ -106,6 +113,33 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
           <Segmented label="보기" value={view} onChange={setView} options={[{ id: 'board', label: '보드' }, { id: 'table', label: '표' }]} />
           <DownloadButton filename={`mildo-flow-history-${data.today}.csv`} data={csv} mime="text/csv;charset=utf-8" label="CSV" />
         </>}>
+        {bulkAlerts.length ? (
+          <Callout tone="critical" title={`대량 변경 실수 감지 ${bulkAlerts.length}건 · MILDO Alert 기준 (p.45)`}>
+            <div className="stack-sm" style={{ gap: 6 }}>
+              {bulkAlerts.map((b) => (
+                <div key={b.id} className="flow-bulk-row">
+                  <span className="row" style={{ gap: 6 }}>
+                    <span className={`sev ${b.severity}`}>{b.severity}</span>
+                    <strong className="small">{b.title}</strong>
+                    <span className="xs">{b.logged ? 'MILDO Alert 이슈 적재됨' : 'MILDO Alert 이슈 적재 대기'}</span>
+                  </span>
+                  <span className="xs">근거 · {b.basis}</span>
+                  <span className="row" style={{ gap: 4 }}>
+                    {b.related.slice(0, 8).map((id) => {
+                      const x = changes.find((c) => c.id === id);
+                      return x ? <Button key={id} size="sm" variant="ghost" onClick={() => onOpen(id)}>{x.target} · {STATUS_META[x.status].short}</Button> : null;
+                    })}
+                    {b.related.length > 8 ? <span className="xs">외 {b.related.length - 8}건</span> : null}
+                    <a className="btn sm ghost" href="#alert">Alert</a>
+                  </span>
+                </div>
+              ))}
+              <span className="xs">기준: 같은 요청자 짧은 시간 내 다건 변경 · 입찰 일 조정 폭 상한 초과 · 30% 초과 예산의 수면밀도 승인 누락. 잘못 반영된 건은 상세에서 최신 건부터 롤백합니다.</span>
+            </div>
+          </Callout>
+        ) : (
+          <div className="xs muted">대량 변경 감시 (MILDO Alert 기준 · p.45): 감지 없음 — 같은 요청자 다건 변경 · 입찰 상한 초과 · 승인 라우팅 불일치를 상시 점검합니다.</div>
+        )}
         <div className="flow-filters">
           <input className="input" aria-label="검색" placeholder="대상 · 사유 · 요청자 검색" value={filter.q ?? ''} onChange={(e) => setFilter((f) => ({ ...f, q: e.target.value }))} />
           <Segmented label="범위" value={filter.scope ?? 'all'} onChange={(v) => setFilter((f) => ({ ...f, scope: v }))}
@@ -120,6 +154,11 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
             <option value="PM">PM</option>
             <option value="CLIENT">수면밀도</option>
           </select>
+          <select className="select" aria-label="유형" value={filter.kind} onChange={(e) => setFilter((f) => ({ ...f, kind: e.target.value }))}>
+            <option value="all">유형 전체</option>
+            {kinds.map((k) => <option key={k} value={k}>{KIND_LABEL[k] ?? k}</option>)}
+          </select>
+          {list.length !== changes.length ? <span className="xs muted num">{list.length}/{changes.length}건 표시</span> : null}
         </div>
         {view === 'board' ? (
           <div className="flow-board">
@@ -135,7 +174,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
                   const mine = (c.status === 'pending' || c.status === 'approved' || c.status === 'held') && canAct(state.role, c.approver).ok;
                   return (
                     <button key={c.id} type="button" className={`flow-card${l.overdue ? ' overdue' : mine ? ' mine' : ''}`} onClick={() => onOpen(c.id)}>
-                      <span className="row" style={{ gap: 4 }}><ModuleTag module={c.module} /><SeedTag c={c} />{mine ? <Pill tone="accent">내 차례</Pill> : null}</span>
+                      <span className="row" style={{ gap: 4 }}><ModuleTag module={c.module} /><SeedTag c={c} />{mine ? <Pill tone="accent">내 차례</Pill> : null}{bulkOf.has(c.id) ? <Pill tone="critical" icon="alert" title={bulkOf.get(c.id)}>대량 변경</Pill> : null}</span>
                       <span className="flow-card-target">{c.target}</span>
                       <ChangeValue c={c} />
                       <ApproverBadge c={c} />

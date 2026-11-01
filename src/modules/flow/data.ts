@@ -46,7 +46,7 @@ export const LEAD_RULES: Record<string, { minutes?: number; endHour?: number; la
   '월간 리뷰': { minutes: 30 * 1440, label: '월간 리뷰 · 30일 내', note: '월간 리뷰 주기 (p.53)' },
 };
 
-/** p.53 커뮤니케이션 채널 */
+/** p.53 커뮤니케이션 채널 (채널명 · 주기: p.53 · p.17 리포트 주기, 용도: p.17 리포트 내용 · p.53 결정 유형 주기에서 정리) */
 export const COMM_CHANNELS = [
   { name: '전용 메신저 채널', use: '승인 요청 · 이슈 알림 · 일간 리포트', cadence: '상시' },
   { name: '주간 미팅', use: '키워드 테스트 결과 · 알림 기준 · 개선 제안', cadence: '주 1회' },
@@ -72,8 +72,7 @@ export const REQUEST_TYPES: {
   { id: 'strategy', label: '전략 방향 · 월 예산 재배분', kind: 'setting', needsPct: false, fixed: 'CLIENT', basis: '전략 방향 → 수면밀도 (월간 리뷰)', page: 'p.53' },
 ];
 
-/** 일괄 처리 한 번에 허용하는 최대 건수 (운영 기본값 · 대량 변경 실수 방지 p.45) */
-export const FLOW_BULK_LIMIT = 8;
+/* 일괄 처리 건수 기준은 AD Pilot 공식 기준(bulkWarnCount · bulkBlockCount, p.45 · 모듈 가정)을 그대로 쓴다 — engine.bulkGuard */
 /** 계정 잔액 확보 목표 (MILDO Alert 계정 점검 기준과 같은 3일치) */
 export const RUNWAY_TARGET_DAYS = 3;
 /** 프로모션 리포트에서 효율 · 잠식 판단을 쓰는 최소 변화폭 (±%, 운영 기본값) — 미만이면 '판단 근거 부족' */

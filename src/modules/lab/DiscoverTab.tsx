@@ -135,7 +135,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
           <button key={s} type="button" className="lab-source" aria-pressed={source === s} onClick={() => setSource(s)}>
             <span className="small">{s === 'all' ? '전체 (중복 제거)' : SOURCE_LABEL[s]}</span>
             <span className="lab-source-n">{s === 'all' ? disc.all.length : counts[s]}</span>
-            <span className="lab-sub">{s === 'all' ? `이미 등록 키워드 ${disc.excludedExisting}개 제외` : SOURCE_BASIS[s]}</span>
+            <span className="lab-sub">{s === 'all' ? `등록 구문 ${disc.excludedRegistered + disc.excludedExisting}개 제외 (파이프라인에서 판정)` : SOURCE_BASIS[s]}</span>
             <span className="row" style={{ gap: 4 }}>
               {s === 'search_term' ? <Src kind="DEMO" /> : s === 'sku48' ? <Src kind="PROPOSAL" page="p.36" /> : s === 'ai_expand' ? <Src kind="AI" /> : s === 'all' ? <Src kind="PROPOSAL" page="p.26" /> : <Src kind="DEMO" title="데모 스냅샷 · 실제 검색량 아님" />}
             </span>
@@ -231,7 +231,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
             </select>
           </Field>
           <Field label="구문 검색" id="lab-q"><input id="lab-q" className="input" value={query} placeholder="예: 신혼" onChange={(e) => setQuery(e.target.value)} /></Field>
-          <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} />미등록만</label>
+          <label className="row small" style={{ gap: 6 }} htmlFor="lab-only-new"><input id="lab-only-new" type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} />미등록만</label>
           <Button size="sm" onClick={() => setSelected(new Set(rows.filter((c) => c.tier === 'priority' && (c.status === 'new' || c.status === 'rejected') && c.purchase).slice(0, 5).map((c) => c.id)))}>우선 등급 상위 5개 선택</Button>
           {selRows.length ? <span className={`small ${check.level === 'ok' ? 'muted' : 'accent'}`}>{check.reason}</span> : null}
         </div>

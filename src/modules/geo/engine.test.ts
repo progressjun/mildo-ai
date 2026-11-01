@@ -14,6 +14,12 @@ import {
   parsePrice, productFromLd, queryVerdict, reviewFaq, reviewFaqItem, reviewLevelOf, reviewText, sampleProductHtml, sanitizeAiFaq, scoreChecks,
   visibilityBrief, visibilitySummary, type GeoSnapshot, type LiveRecord,
 } from './engine';
+import { dateLabel, findRegistration, keywordInfo, maskUrls, parseNumInput, registrationRequest, shiftCauses, visibilityMarkdown, visibilityRows } from './engine';
+import { keywordAnomaly } from '@/modules/adpilot/engine';
+import type { ChangeRequest } from '@/core/types';
+import { COMPETITOR_COLOR } from './data';
+import { CAUSE_CANDIDATES } from '@/data/constants';
+import { addDays } from '@/core/util';
 
 const fresh = (): Dataset => generateDemoData();
 const empty = (): Dataset => ({
@@ -555,12 +561,34 @@ describe('진단 전후 지표 (p.29 공란)', () => {
     expect(caseMetrics({ ...EMPTY_CASE, beforeRate: NaN as unknown as number }).rateDeltaPp).toBeNull();
   });
 
+  it('범위 점검: 언급률 0~100% · 인용 수 0 이상 정수가 아니면 완료로 보지 않는다', () => {
+    const ok = { brand: 'A', beforeLabel: '', afterLabel: '', engines: '', beforeRate: 0, afterRate: 100, beforeCites: 0, afterCites: 3 };
+    expect(caseMetrics(ok)).toMatchObject({ complete: true, invalid: [] });
+    const bad = caseMetrics({ ...ok, afterRate: 140, beforeCites: -2, afterCites: 2.5 });
+    expect(bad.complete).toBe(false);
+    expect(bad.invalid).toEqual(['진단 후 언급률(0~100%)', '진단 전 인용 수(0 이상 정수)', '진단 후 인용 수(0 이상 정수)']);
+  });
+
+  it('숫자 입력 파싱: 소수점 입력 중 · 콤마 · 단위 · 빈 값 · 비수치', () => {
+    expect(parseNumInput('41.')).toBe(41);
+    expect(parseNumInput('41.5')).toBe(41.5);
+    expect(parseNumInput('1,234건')).toBe(1234);
+    expect(parseNumInput(' 37 % ')).toBe(37);
+    expect(parseNumInput('')).toBeNull();
+    expect(parseNumInput('-')).toBeNull();
+    expect(parseNumInput('abc')).toBeNull();
+  });
+
   it('데모 스냅샷 값 채우기 = 첫 회차 vs 최신 회차 (TEST DATA 표기)', () => {
     const snap = buildGeoSnapshot(DEMO.today);
     const c = demoCaseFromSnapshot(snap);
     expect(c.beforeLabel).toBe('2026-10-05');
     expect(c.afterLabel).toBe('2026-10-26');
-    expect(c.engines).toContain('TEST DATA');
+    expect(c.demo).toBe(true);
+    // 삽입 문구 자체에 TEST DATA 표기 — 측정 범위 칸을 고쳐도 사라지지 않는다
+    expect(caseMetrics(c).text).toContain('TEST DATA');
+    expect(caseMetrics({ ...c, engines: '직접 입력' }).text).toContain('TEST DATA');
+    expect(caseMetrics({ ...c, demo: false }).text).not.toContain('TEST DATA');
     expect(c.beforeRate).toBeCloseTo(visibilitySummary(snap, 0).overall.rate * 100, 1);
     expect(c.afterCites).toBe(visibilitySummary(snap).overall.ownedCitations);
     expect(demoCaseFromSnapshot({ kind: 'DEMO', rounds: [], queries: [], engines: [] })).toEqual(EMPTY_CASE);
@@ -596,5 +624,226 @@ describe('브리프 · 프롬프트 (출력 규칙)', () => {
     expect(b.conditions.join(' ')).toContain('온보딩 중 확정');
     expect(b.counter.length).toBeGreaterThan(0);
     expect(b.actions.join(' ')).toMatch(/담당 AE|PM/);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+describe('성과 급변 원인 후보 (CAUSE_CANDIDATES) — 데이터 근거 순위', () => {
+  const kwOf = (d: Dataset, text: string) => keywordInfo(d, d.keywords.find((k) => k.text === text)!);
+
+  it("'매트리스 추천': CPC 급등 · 클릭 유지 → '경쟁사 입찰 상승'이 1순위, 보류 판정 상세에 근거와 함께 표시", () => {
+    const kw = kwOf(DEMO, '매트리스 추천');
+    expect(Math.abs(kw.clicksChangePct)).toBeLessThanOrEqual(20);
+    const causes = shiftCauses(DEMO, kw);
+    expect(causes.map((c) => c.label).sort()).toEqual([...CAUSE_CANDIDATES].sort());
+    expect(causes[0].label).toBe('경쟁사 입찰 상승');
+    expect(causes[0].score).toBeGreaterThanOrEqual(60);
+    expect(causes[0].basis).toMatch(/CPC \+\d+%/);
+    for (let i = 1; i < causes.length; i++) expect(causes[i - 1].score).toBeGreaterThanOrEqual(causes[i].score);
+    const row = paidSurfaceRows(DEMO, buildGeoSnapshot(DEMO.today)).find((r) => r.query.text === '매트리스 추천')!;
+    expect(row.causes[0].label).toBe('경쟁사 입찰 상승');
+    expect(row.action.detail).toContain('경쟁사 입찰 상승');
+    expect(row.action.basis).toMatch(/전환 [-−]\d+%/);
+  });
+
+  it('급변 신호가 없는 키워드는 원인 후보 없음 · NaN 입력도 빈 목록', () => {
+    expect(shiftCauses(DEMO, kwOf(DEMO, '퀸 매트리스'))).toEqual([]);
+    expect(shiftCauses(DEMO, { cpcChangePct: NaN, convChangePct: NaN, clicksChangePct: NaN, soldOutOption: null, landing: '' })).toEqual([]);
+    expect(shiftCauses(empty(), { cpcChangePct: 80, convChangePct: NaN, clicksChangePct: NaN, soldOutOption: null, landing: '' })[0].label).toBe('경쟁사 입찰 상승');
+  });
+
+  it('데이터를 바꾸면 순위가 바뀐다: 클릭 급감 → 집계 지연 · 최근 3일 프로모션 시작 → 프로모션 변경 근거', () => {
+    const d = fresh();
+    const k = d.keywords.find((x) => x.text === '매트리스 추천')!;
+    // 최근 3일 클릭 · 비용 · 전환을 80% 줄이면 CPC는 그대로, 클릭 급감 패턴
+    k.daily = k.daily.map((r, i) => (i >= k.daily.length - 3 ? { ...r, clicks: Math.round(r.clicks * 0.2), cost: Math.round((r.cost / 1.7) * 0.2), conversions: r.conversions * 0.2, revenue: r.revenue * 0.2 } : r));
+    const causes = shiftCauses(d, keywordInfo(d, k));
+    expect(causes[0].label).toBe('매체 장애 · 집계 지연');
+    const base = kwOf(DEMO, '매트리스 추천');
+    const d2 = fresh();
+    d2.promotions.push({ id: 'p_new', name: '테스트 기획전', channel: 'brandstore', start: addDays(d2.today, -1), end: addDays(d2.today, 5), discountRate: 10, status: 'live' });
+    const promo = shiftCauses(d2, { ...base, landing: 'https://brand.naver.com/mildo/products' }).find((c) => c.label === '가격 · 프로모션 변경')!;
+    expect(promo.score).toBe(45);
+    expect(promo.basis).toContain('테스트 기획전 시작');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+describe('표시 규칙 · 내보내기', () => {
+  it('경쟁사 색은 RFP 6개사에 고정 (중복 없음 · accent/핑크 계열 미사용)', () => {
+    expect(Object.keys(COMPETITOR_COLOR).sort()).toEqual([...RFP.competitors].sort());
+    const colors = Object.values(COMPETITOR_COLOR);
+    expect(new Set(colors).size).toBe(colors.length);
+    expect(colors).not.toContain('--accent');
+    expect(colors).not.toContain('--series-5');
+  });
+
+  it('화면 가격 측정값은 옵션 id가 아니라 옵션명으로 표시', () => {
+    const a = auditHtml(sampleProductHtml(DEMO, 'defect'), DEMO);
+    const m = check(a, 'price_match').measured;
+    expect(m).toContain('(퀸)');
+    expect(m).not.toContain('(q)');
+  });
+
+  it('정기 진단 마크다운 · CSV 행: TEST DATA/LIVE 구분 · 질의 수 · 번호 매기기 · NaN 없음', () => {
+    const vis = visibilitySummary(buildGeoSnapshot(DEMO.today));
+    const live: LiveRecord = { ...parseAiAnswer('수면밀도와 지누스를 비교하면'), queryId: 'q14', query: '매트리스 추천', at: '2026-10-31T15:00:00Z', backend: 'artifact' };
+    const md = visibilityMarkdown(vis, { q14: live });
+    expect(md).toContain('TEST DATA');
+    expect(md).toContain('Claude (LIVE)');
+    expect(md).toContain('노출 순위 보장이 아닌 정기 진단 · 개선 방식으로 운영합니다.');
+    expect(md.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| 질의') && !l.startsWith('| ---'))).toHaveLength(vis.queries.length);
+    expect(md).not.toMatch(NUMBERED);
+    expect(md).not.toMatch(NO_BAD_TEXT);
+    const rows = visibilityRows(vis, { q14: live });
+    expect(rows).toHaveLength(vis.queries.length);
+    expect(rows.find((r) => r.질의 === '매트리스 추천')!['Claude(LIVE)']).toBe('1번째');
+    expect(rows.find((r) => r.질의 !== '매트리스 추천')!['Claude(LIVE)']).toBe('미진단');
+    expect(JSON.stringify(rows)).not.toMatch(NO_BAD_TEXT);
+    const emptyVis = visibilitySummary({ kind: 'DEMO', rounds: [], queries: GEO_QUERIES, engines: GEO_ENGINES });
+    expect(visibilityMarkdown(emptyVis)).toContain('진단 스냅샷이 없습니다');
+    expect(visibilityRows(emptyVis).every((r) => r.판정 === '데이터 없음')).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+describe('성과 급변 판정 — 표본 기준 · AD Pilot과 같은 판정', () => {
+  const snap = buildGeoSnapshot(DEMO.today);
+
+  it('데모 키워드 전체: 급변 판정 · CPC 변화율이 AD Pilot keywordAnomaly와 같다 (같은 숫자 · 같은 기준)', () => {
+    for (const k of DEMO.keywords) {
+      const g = keywordShift(k);
+      const a = keywordAnomaly(k, DEMO);
+      expect(g.triggered, k.text).toBe(a.triggered);
+      if (Number.isFinite(a.cpcDelta)) expect(g.cpcChangePct, k.text).toBeCloseTo(a.cpcDelta, 6);
+      if (Number.isFinite(a.convDelta)) expect(g.convChangePct, k.text).toBeCloseTo(a.convDelta, 6);
+    }
+    expect(DEMO.keywords.filter((k) => keywordShift(k).triggered).map((k) => k.text)).toEqual(['매트리스 추천']);
+  });
+
+  it("표본 부족 전환 급등('통기성 좋은 매트리스' 전환 +80%대)은 급변이 아니며 원인 후보도 만들지 않는다", () => {
+    const k = DEMO.keywords.find((x) => x.text === '통기성 좋은 매트리스')!;
+    const sh = keywordShift(k);
+    expect(Math.abs(sh.convChangePct)).toBeGreaterThanOrEqual(50);
+    expect(sh.convEligible).toBe(false);
+    expect(sh.triggered).toBe(false);
+    expect(sh.basis).toContain('표본 부족');
+    const row = paidSurfaceRows(DEMO, snap).find((r) => r.kw?.text === '통기성 좋은 매트리스')!;
+    expect(row.causes).toEqual([]);
+    expect(row.signals.map((s) => s.id)).not.toContain('shift');
+    expect(row.action.id).not.toBe('hold');
+  });
+
+  it('전환만 급락(클릭 · CPC 유지)해도 보류 — 원인 후보 1순위는 랜딩 오류 · 품절 (기대 전환 1건 미만이면 판정 안 함)', () => {
+    const d = fresh();
+    const thin = d.keywords.find((x) => x.text === '퀸 매트리스')!;
+    thin.daily = thin.daily.map((r, i) => (i >= thin.daily.length - 3 ? { ...r, conversions: 0, revenue: 0 } : r));
+    expect(keywordShift(thin).expectedConv).toBeLessThan(1);
+    expect(keywordShift(thin).triggered).toBe(false);
+    const k = d.keywords.find((x) => x.text === '밀도매트리스 후기')!;
+    k.daily = k.daily.map((r, i) => (i >= k.daily.length - 3 ? { ...r, conversions: r.conversions * 0.3, revenue: r.revenue * 0.3 } : r));
+    const sh = keywordShift(k);
+    expect(sh.cpcHit).toBe(false);
+    expect(sh.convHit).toBe(true);
+    expect(sh.triggered).toBe(true);
+    const row = paidSurfaceRows(d, snap).find((r) => r.kw?.text === '밀도매트리스 후기')!;
+    expect(row.action.id).toBe('hold');
+    expect(row.action.basis).toMatch(/전환 -\d+%/);
+    expect(row.signals.find((s) => s.id === 'shift')?.label).toContain('전환');
+    expect(row.causes[0].label).toBe('랜딩 오류 · 품절');
+    expect(keywordAnomaly(k, d).triggered).toBe(true);
+  });
+
+  it('최근 3일 노출 0 → 수집 데이터 이상으로 보류', () => {
+    const d = fresh();
+    const k = d.keywords.find((x) => x.text === '신혼 매트리스')!;
+    k.daily = k.daily.map((r, i) => (i >= k.daily.length - 3 ? { impressions: 0, clicks: 0, cost: 0, conversions: 0, revenue: 0 } : r));
+    const sh = keywordShift(k);
+    expect(sh.collection).toBe(true);
+    expect(sh.triggered).toBe(true);
+    expect(sh.basis).toContain('노출 0');
+    const row = paidSurfaceRows(d, snap).find((r) => r.kw?.text === '신혼 매트리스')!;
+    expect(row.action.id).toBe('hold');
+    expect(row.signals.find((s) => s.id === 'shift')?.label).toContain('수집 데이터 이상');
+  });
+
+  it('비정상 값(음수 · NaN)이 섞여도 예외 없이 수집 이상으로 판정', () => {
+    const k = { ...DEMO.keywords[0], daily: DEMO.keywords[0].daily.map((r, i) => (i === 2 ? { ...r, cost: -5, clicks: NaN } : r)) };
+    const sh = keywordShift(k);
+    expect(sh.collection).toBe(true);
+    expect(sh.basis).not.toMatch(NO_BAD_TEXT);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+describe('SA 테스트 그룹 등록 요청 — 모듈 간 중복 방지 · 승인 주체', () => {
+  const rows = paidSurfaceRows(DEMO, buildGeoSnapshot(DEMO.today));
+  const ch = (p: Partial<ChangeRequest>): ChangeRequest => ({
+    id: 'c', createdAt: '2026-10-31T06:00:00Z', module: 'adpilot', kind: 'keyword_add', target: '', before: '', after: '', reason: '', requestedBy: 'PM', approver: 'AE', status: 'pending', history: [], ...p,
+  });
+
+  it('AD Pilot · MILDO Lab에서 올린 같은 검색어를 찾는다 · 반려/롤백 · 다른 검색어는 제외', () => {
+    const t = '매트리스 경도 고르는 법';
+    expect(findRegistration([ch({ target: `${t} → PROBLEM_TEST 등록`, targetId: `term:${t}` })], t)?.module).toBe('adpilot');
+    expect(findRegistration([ch({ module: 'lab', target: t, targetId: 'labreg:매트리스경도고르는법' })], t)?.module).toBe('lab');
+    expect(findRegistration([ch({ module: 'geo', target: t })], t)?.module).toBe('geo');
+    expect(findRegistration([ch({ target: t, status: 'rejected' }), ch({ target: t, status: 'rolled_back' })], t)).toBeUndefined();
+    expect(findRegistration([ch({ target: '매트리스 경도 → PROBLEM_TEST 등록', targetId: 'term:매트리스 경도' })], t)).toBeUndefined();
+    expect(findRegistration([ch({ kind: 'bid', target: t })], t)).toBeUndefined();
+    expect(findRegistration(undefined, t)).toBeUndefined();
+    expect(findRegistration([ch({ target: t })], '')).toBeUndefined();
+  });
+
+  it('페이로드: AD Pilot 형식(term:… · <의도>_TEST) · 일반 검색어는 담당 AE, 브랜드 검색어는 PM · 후보 아니면 null', () => {
+    const problem = registrationRequest(rows.find((r) => r.term?.term === '매트리스 경도 고르는 법')!, 'PM')!;
+    expect(problem).toMatchObject({ module: 'geo', kind: 'keyword_add', targetId: 'term:매트리스 경도 고르는 법', approver: 'AE', requestedBy: 'PM' });
+    expect(String(problem.after)).toMatch(/^PROBLEM_TEST/);
+    expect(problem.reason).toContain('TEST DATA');
+    const brand = registrationRequest(rows.find((r) => r.term?.term === '밀도 매트리스 경도')!, 'AE')!;
+    expect(brand.approver).toBe('PM');
+    expect(String(brand.after)).toMatch(/^BRAND_TEST/);
+    expect(registrationRequest(rows.find((r) => r.action.id === 'landing')!, 'PM')).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+describe('라이브 파싱 — URL은 언급이 아니라 인용', () => {
+  it('자사 URL만 있으면 미언급 · 자사 인용만 판정, 경쟁사 도메인도 언급으로 세지 않는다', () => {
+    const r = parseAiAnswer('추천 제품 목록은 https://mildo.kr/guide 와 zinus.com 에서 볼 수 있습니다.');
+    expect(r.mentioned).toBe(false);
+    expect(r.competitors).toEqual([]);
+    expect(r.citations.some((c) => c.domain === 'mildo.kr' && c.owned)).toBe(true);
+    expect(liveVerdict(r)).toMatchObject({ id: 'cited', label: '자사 인용만' });
+    expect(liveVerdict(r).basis).toContain('자사 URL 인용 1건');
+  });
+
+  it('본문 언급의 순서 · 발췌는 URL을 가려도 원문 위치 그대로', () => {
+    const t = '참고 https://www.zinus.com/kr 지누스와 수면밀도를 비교하면 www.mildo.kr 에서';
+    expect(maskUrls(t)).toHaveLength(t.length);
+    const r = parseAiAnswer(t);
+    expect(r.order).toEqual(['지누스', BRAND]);
+    expect(r.position).toBe(2);
+    expect(r.excerpt).toContain('수면밀도');
+    expect(r.citations.map((c) => c.domain)).toEqual(['zinus.com', 'mildo.kr']);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+describe('표시 보조', () => {
+  it('dateLabel: 날짜 없음 · 형식 오류는 — (NaN 표기 방지)', () => {
+    expect(dateLabel('2026-10-26')).toBe('10/26(월)');
+    expect(dateLabel('2026-10-26', false)).toBe('10/26');
+    for (const v of ['', null, undefined, 'bad', '2026-1-5']) expect(dateLabel(v as string)).toBe('—');
+  });
+
+  it('의도별 집계는 스냅샷의 질의 정의를 따른다 (기본 질의 id와 겹쳐도 이중 집계 없음)', () => {
+    const qs: GeoQuery[] = [{ id: 'q01', text: '커스텀', intent: 'life', qMult: 1, topics: [] }];
+    const s: GeoSnapshot = {
+      kind: 'DEMO', queries: qs, engines: GEO_ENGINES.slice(0, 1),
+      rounds: [{ index: 0, date: '2026-10-26', cells: [{ queryId: 'q01', engine: 'chatgpt', mentioned: true, position: 1, order: [BRAND], competitors: [], citations: [] }] }],
+    };
+    const v = visibilitySummary(s);
+    expect(v.byIntent.find((b) => b.intent === 'life')).toMatchObject({ total: 1, mentioned: 1 });
+    expect(v.byIntent.find((b) => b.intent === 'brand')).toMatchObject({ total: 0 }); // GEO_QUERIES의 q01은 brand
   });
 });

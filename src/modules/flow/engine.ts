@@ -11,13 +11,20 @@ import type {
   AdAccount, ApprovalLevel, Campaign, ChangeRequest, Dataset, Incident, Keyword, MediaId, Promotion, SalesChannelId,
 } from '@/core/types';
 import {
-  AD_PILOT, ANOMALY_THRESHOLDS, DECISION_MATRIX, FLOW_SEGMENTS, GFA_DELEGATION, MEDIA, MEDIA_IDS, REVIEW_RULES, SALES_CHANNELS,
+  AD_PILOT, ANOMALY_THRESHOLDS, DECISION_MATRIX, FLOW_SEGMENTS, GFA_DELEGATION, MEDIA, MEDIA_IDS, REVIEW_RULES, SALES_CHANNEL_IDS, SALES_CHANNELS, SLA,
 } from '@/data/constants';
 import { monthlyPacing } from '@/core/selectors';
 import { addDays, fmt, fmtDate, isOffDay, mean, parseDate, sum, weekday, WEEKDAY_KO } from '@/core/util';
 import type { Brief } from '@/ai/prompts';
+// 반영 단계 검증은 AD Pilot · GFA Control과 같은 함수로 (같은 요청은 어느 화면에서 반영해도 같은 결과)
 import {
-  CHECK_GROUPS, DEFAULT_PROMO_UPLIFT_PCT, FLOW_BULK_LIMIT, KIND_LABEL, LEAD_RULES, MATERIAL_PCT, MODULE_LABEL, PRICE_TOLERANCE_PCT, PROMO_CHANNEL_SCOPE, PROMO_CREATIVES, REQUEST_TYPES,
+  adpilotProposals, gfaOverview, hourlyCostCurve, officialConfig, validateAdpilotExecution, validateGfaExecution,
+  type AdPilotConfig, type AdPilotProposal, type GfaAccountView,
+} from '@/modules/adpilot/engine';
+// 대량 변경 실수 감지 (p.45) — MILDO Alert와 같은 기준 · 같은 이슈 id
+import { activeConfig, detectBulkChange } from '@/modules/alert/engine';
+import {
+  CHECK_GROUPS, DEFAULT_PROMO_UPLIFT_PCT, KIND_LABEL, LEAD_RULES, MATERIAL_PCT, MODULE_LABEL, PRICE_TOLERANCE_PCT, PROMO_CHANNEL_SCOPE, PROMO_CREATIVES, REQUEST_TYPES,
   RUNWAY_TARGET_DAYS, SEED_PREFIX, STATUS_META, STATUS_ORDER, type CheckGroup, type FlowStatus, type PromoCreative, type RequestType,
 } from './data';
 
@@ -145,8 +152,10 @@ function lastHistory(c: ChangeRequest, re: RegExp) {
 function firstHistory(c: ChangeRequest, re: RegExp) {
   return (c.history ?? []).find((h) => re.test(h.action));
 }
-const DECISION_RE = /^(일괄 )?(승인|반려)$|^보류$/;
-const APPLY_RE = /반영/;
+/** p.53 소요 판정의 '결정' = 승인 · 반려 (보류는 결정 유예라 대기 시간이 계속 흐른다) */
+const DECISION_RE = /^(일괄 )?(승인|반려)$/;
+/** 반영 시각: '반영' · '일괄 반영' · '실행 · 반영' · '재실행 · 반영' (AD Pilot의 '반영 보류'는 제외) */
+const APPLY_RE = /반영(?!\s*보류)/;
 
 export function appliedIso(c: ChangeRequest): string {
   return lastHistory(c, APPLY_RE)?.at ?? c.createdAt ?? '';
@@ -221,10 +230,14 @@ export function effectiveBid(k: Keyword, changes: readonly ChangeRequest[]): num
   }
   return bid;
 }
+/** MILDO Alert 이슈 드로어의 키워드 일시 중지 요청 (targetId 'alert:<이슈>:pause', 대상 '<키워드> 키워드') */
+const isAlertKeywordPause = (c: ChangeRequest, k: Keyword) =>
+  c.module === 'alert' && /^alert:.+:pause$/.test(c.targetId ?? '') && c.target === `${k.text} 키워드`;
 export function effectiveKeywordStatus(k: Keyword, changes: readonly ChangeRequest[]): 'on' | 'off' | 'test' {
   let st: 'on' | 'off' | 'test' = k.status;
   for (const c of appliedSorted(changes)) {
-    if (c.module === 'adpilot' && c.kind === 'status' && c.targetId === k.id) st = String(c.after) === 'off' ? 'off' : k.status === 'test' ? 'test' : 'on';
+    if (c.kind !== 'status') continue;
+    if ((c.module === 'adpilot' && c.targetId === k.id) || isAlertKeywordPause(c, k)) st = String(c.after) === 'off' ? 'off' : k.status === 'test' ? 'test' : 'on';
   }
   return st;
 }
@@ -248,11 +261,17 @@ export function effectiveBudget(cmp: Campaign, changes: readonly ChangeRequest[]
 export function topupTargetId(acc: Pick<AdAccount, 'id'>) {
   return `alert:account:${acc.id}:topup`;
 }
+/** 이 계정의 충전 요청인지 — MILDO Alert 계정 점검('alert:account:<계정>:topup')과 이슈 드로어('alert:<이슈>:topup', 대상 '<계정명> …') 두 형식 */
+export function isTopupFor(acc: Pick<AdAccount, 'id' | 'name'>, c: Pick<ChangeRequest, 'targetId' | 'target'>): boolean {
+  const tid = c.targetId ?? '';
+  if (tid === topupTargetId(acc)) return true;
+  return /^alert:.+:topup$/.test(tid) && !tid.startsWith('alert:account:') && (c.target ?? '').startsWith(`${acc.name} `);
+}
 /** 반영된 충전 요청 반영 후 잔액 (MILDO Alert 충전 요청과 같은 targetId) */
 export function effectiveBalance(acc: AdAccount, changes: readonly ChangeRequest[]): number {
   let bal = acc.balance;
   for (const c of appliedSorted(changes)) {
-    if (c.targetId === topupTargetId(acc)) {
+    if (isTopupFor(acc, c)) {
       const v = toNum(c.after);
       if (finite(v)) bal = v;
     }
@@ -315,7 +334,7 @@ export function dataGuards(data: Dataset): DataGuard[] {
         });
       }
     }
-    // 데이터 급변: 최근 2시간 광고비 vs 최근 4주 같은 요일 · 같은 시간 평균
+    // 데이터 급변: 최근 2시간 광고비 vs 최근 4주 같은 요일 · 같은 시간 평균 (p.44 · p.47 기준 ±50%, 증감 양방향)
     const hrs = [H - 1, H].filter((h) => h >= 0);
     const now = sum(hrs, (h) => idx.get(`${data.today}|${m}|${h}`)?.cost ?? 0);
     const prev: number[] = [];
@@ -325,9 +344,9 @@ export function dataGuards(data: Dataset): DataGuard[] {
       if (rows.length === hrs.length) prev.push(sum(rows, (r) => r.cost));
     }
     const base = prev.length ? mean(prev) : NaN;
-    if (finite(base) && base > 0 && now > 0) {
+    if (finite(base) && base >= 10_000) {
       const pct = (now / base - 1) * 100;
-      if (pct >= costDanger) {
+      if (Math.abs(pct) >= costDanger) {
         out.push({
           media: m, kind: 'spend_spike', label: '광고비 급변',
           basis: `오늘 ${hrs[0]}~${H}시 광고비 ${fmt.krw(now)} · 동요일 · 동시간 평균 ${fmt.krw(base)} 대비 ${fmt.delta(pct, 0)} (기준 ±${costDanger}%)`,
@@ -358,23 +377,22 @@ export function guardsFor(data: Dataset, incidents: readonly Incident[], media: 
 /* ================================================================== */
 
 const curveCache = new WeakMap<Dataset, Map<string, { cum: number[]; peak: number }>>();
-/** 매체별 시간대 누적 광고비 비중(0~23시 종료 시점) + 매출 비중 최대 시간 */
+/**
+ * 매체별 시간대 누적 광고비 비중(0~23시 종료 시점) + 매출 비중 최대 시간.
+ * 누적 곡선은 AD Pilot · Board · Alert · 커맨드 센터와 같은 함수(최근 28일 hourlyCostCurve)를 쓴다 — 예상 마감 시각이 화면마다 같아야 한다.
+ */
 export function hourProfile(data: Dataset, media: MediaId): { cum: number[]; peak: number } {
   let byData = curveCache.get(data);
   if (!byData) { byData = new Map(); curveCache.set(data, byData); }
   const hit = byData.get(media);
   if (hit) return hit;
-  const cost = new Array(24).fill(0);
   const rev = new Array(24).fill(0);
   const from = addDays(data.today, -28);
   for (const r of data.mediaHourly ?? []) {
-    if (r.media !== media || r.date >= data.today || r.date < from) continue;
-    cost[r.hour] += r.cost;
-    rev[r.hour] += r.revenue;
+    if (r.media !== media || r.date >= data.today || r.date < from || !(r.hour >= 0 && r.hour <= 23)) continue;
+    rev[r.hour] += finite(r.revenue) ? r.revenue : 0;
   }
-  const total = sum(cost, (x) => x);
-  let acc = 0;
-  const cum = total > 0 ? cost.map((x) => { acc += x; return acc / total; }) : Array.from({ length: 24 }, (_, h) => (h + 1) / 24);
+  const cum = data.mediaHourly?.length ? hourlyCostCurve(data, media, 28) : Array.from({ length: 24 }, (_, h) => (h + 1) / 24);
   const maxRev = Math.max(...rev);
   const peak = maxRev > 0 ? rev.indexOf(maxRev) : 21;
   const out = { cum, peak };
@@ -435,7 +453,11 @@ export function decisionIndexOf(c: Pick<ChangeRequest, 'kind' | 'approver' | 'ta
 export function decisionOf(c: Pick<ChangeRequest, 'kind' | 'approver' | 'targetId' | 'target'>) {
   const index = decisionIndexOf(c);
   const row = DECISION_MATRIX[index];
-  return { index, row, rule: LEAD_RULES[row.lead] ?? LEAD_RULES['당일'] };
+  // p.53 '예산 · 구조 변경'은 PM 제안 → 수면밀도 승인이지만, p.15 위임 범위(±10~30% · ON/OFF) 안의 건은 PM이 결정한다
+  const delegated = index === 1 && c.approver === 'PM'
+    ? 'p.15 위임 범위(일 예산 ±10~30% · 광고그룹 ON/OFF) 안이라 PM이 결정 — 범위 밖은 수면밀도 승인'
+    : null;
+  return { index, row, rule: LEAD_RULES[row.lead] ?? LEAD_RULES['당일'], delegated };
 }
 export function leadDeadlineMs(c: Pick<ChangeRequest, 'kind' | 'approver' | 'targetId' | 'target'>, createdMs: number): number {
   if (!finite(createdMs)) return NaN;
@@ -538,41 +560,138 @@ export function availableActions(c: ChangeRequest, role: string, changes: readon
 
 /* ---------- 실행 점검 (p.15 04: 지원 API 범위 내 실행, 오류 시 보류 · 보고) ---------- */
 
+/*
+ * 다른 모듈의 반영 검증 입력 — 같은 (data, changes, incidents) 참조면 다시 계산하지 않는다 (승인 대기 목록 · 미리보기가 렌더마다 부름).
+ * 계산 실패 시 null → 실행 점검은 '검증 불가' 주의로 남긴다 (화면이 깨지지 않게).
+ */
+let apMemo: { data: Dataset; changes: readonly ChangeRequest[]; incidents: readonly Incident[]; value: AdPilotProposal[] | null } | null = null;
+/** AD Pilot 조정 후보 + MILDO Alert 연계 보류 (공식 기준 = 반영된 AD Pilot 설정) */
+export function adpilotHolds(data: Dataset, changes: readonly ChangeRequest[], incidents: readonly Incident[]): AdPilotProposal[] | null {
+  if (apMemo && apMemo.data === data && apMemo.changes === changes && apMemo.incidents === incidents) return apMemo.value;
+  let value: AdPilotProposal[] | null;
+  try {
+    value = adpilotProposals(data, officialConfig(changes), incidents, changes);
+  } catch {
+    value = null;
+  }
+  apMemo = { data, changes, incidents, value };
+  return value;
+}
+let gfaMemo: { data: Dataset; changes: readonly ChangeRequest[]; value: GfaAccountView[] | null } | null = null;
+/** GFA Control 다계정 점검 (AD Pilot 화면과 같은 gfaOverview) */
+export function gfaViews(data: Dataset, changes: readonly ChangeRequest[]): GfaAccountView[] | null {
+  if (gfaMemo && gfaMemo.data === data && gfaMemo.changes === changes) return gfaMemo.value;
+  let value: GfaAccountView[] | null;
+  try {
+    value = gfaOverview(data, changes);
+  } catch {
+    value = null;
+  }
+  gfaMemo = { data, changes, value };
+  return value;
+}
+/** AD Pilot 공식 기준 (SAFETY 상한 · 대량 변경 기준 — 승인 · 반영된 설정 변경 포함) */
+export function adpilotConfigOf(changes: readonly ChangeRequest[]): AdPilotConfig {
+  return officialConfig(changes ?? []);
+}
+/** 'flow:promo:<id>:budget' 같은 프로모션 단위 요청 → 프로모션 */
+export function promoOfChange(data: Dataset, c: Pick<ChangeRequest, 'targetId'>): Promotion | undefined {
+  const m = (c.targetId ?? '').match(/^flow:promo:([^:]+):budget$/);
+  return m ? (data?.promotions ?? []).find((p) => p.id === m[1]) : undefined;
+}
+
 export interface ExecCheck { ok: boolean; blocks: string[]; warnings: string[]; passes: string[] }
+/**
+ * 반영 전 실행 점검. 통과하지 못하면 반영하지 않고 보류로 기록한다 (p.15 04).
+ *  - GFA Control 요청(module gfa): AD Pilot 화면과 같은 validateGfaExecution (계정별 잔액 · 자동충전 · 제재 · 지원 API 범위)
+ *  - AD Pilot 입찰 · 예산(module adpilot): validateAdpilotExecution (매체 급변 · 전환 추적 단절 · MILDO Alert 연계 보류 · 최대 입찰가)
+ *  - 그 밖의 증액 · ON · 신규 캠페인: 해당 매체 계정 잔액 1일치 · 자동충전 · 제재 (p.44)
+ *  - 공통: 데이터 가드(전환 추적 단절 p.45 · 광고비 급변 p.44), 입찰 일 조정 폭 상한 (p.14), 30% 초과 예산의 수면밀도 승인 (p.15)
+ */
 export function executionCheck(data: Dataset, changes: readonly ChangeRequest[], incidents: readonly Incident[], c: ChangeRequest): ExecCheck {
   const blocks: string[] = [];
   const warnings: string[] = [];
   const passes: string[] = [];
-  if (c.status !== 'approved') blocks.push('승인된 건만 반영할 수 있습니다');
+  const approved = c.status === 'approved';
+  if (!approved) blocks.push('승인된 건만 반영할 수 있습니다');
+  const tid = c.targetId ?? '';
   const media = mediaOfChange(data, c);
   const inc = isSpendIncrease(c);
-  const acc = accountOfChange(data, c) ?? (media ? data?.accounts?.find((a) => a.media === media) : undefined);
-  if (acc && c.kind !== 'setting') {
-    const runway = runwayOf(acc, changes);
-    if (acc.status === 'restricted') blocks.push(`${acc.name} 계정 제재 상태 — 실행 보류 · 보고`);
-    else if (inc && (runway < 1 || acc.autoCharge === 'failed')) {
-      if (runway < 1) blocks.push(`${acc.name} 잔액 ${runway.toFixed(2)}일치 (1일치 미만) · 자동충전 ${AUTO_CHARGE_LABEL[acc.autoCharge]} — 증액 · ON 실행 보류 (충전 확인 후 재실행)`);
-      else warnings.push(`${acc.name} 자동충전 ${AUTO_CHARGE_LABEL[acc.autoCharge]} — 결제 수단 확인 필요 (잔액 ${finite(runway) ? `${runway.toFixed(1)}일치` : '소진 기준 없음'})`);
-    } else if (finite(runway)) passes.push(`${acc.name} 잔액 ${runway.toFixed(1)}일치`);
-    else passes.push(`${acc.name} 후불 결제`);
-  }
-  if (c.kind === 'bid' || c.kind === 'budget' || c.kind === 'status' || c.kind === 'gfa') {
-    for (const g of guardsFor(data, incidents, media)) {
-      const what = g.kind === 'tracking_break' ? '전환 추적 단절 의심 — 자동 조정 보류 (p.45)' : '데이터 급변 — 원인 확인 전 조정 보류 (p.44)';
-      if (inc) blocks.push(`${mediaName(media)} ${what} · ${g.basis}`);
-      else warnings.push(`${mediaName(media)} ${what} · 감액 · 중지는 실행 가능 · ${g.basis}`);
+  const promo = promoOfChange(data, c);
+  // 오픈 전 기획전의 기간 예산은 지금 집행되지 않으므로 계정 · 데이터 이상은 '오픈 전 해소' 주의로 둔다
+  const deferred = !!promo && promoPhase(promo, data.today) === 'pre';
+  const spendKind = c.kind === 'bid' || c.kind === 'budget' || c.kind === 'status' || c.kind === 'gfa' || tid.startsWith('flow:new:');
+  const cfg = adpilotConfigOf(changes);
+  const pushRisk = (text: string) => (inc && !deferred ? blocks : warnings).push(deferred ? `${text} — 오픈 전 정상화 확인` : text);
+
+  /* ---- GFA Control: AD Pilot 화면과 같은 실행 검증 ---- */
+  if (c.module === 'gfa') {
+    if (approved) {
+      const views = gfaViews(data, changes);
+      const v = views ? validateGfaExecution(views, c) : null;
+      if (!v) warnings.push('GFA Control 실행 검증을 계산하지 못했습니다 — 계정 상태를 직접 확인하세요');
+      else (v.ok ? passes : blocks).push(`GFA Control 실행 검증 · ${v.reason} (p.15 04)`);
+    }
+  } else if (spendKind) {
+    /* ---- 계정 잔액 · 결제 (p.44) ---- */
+    const one = accountOfChange(data, c) ?? (media ? data?.accounts?.find((a) => a.media === media) : undefined);
+    const accs = promo ? promoAccounts(data, promo) : one ? [one] : [];
+    for (const acc of accs) {
+      const runway = runwayOf(acc, changes);
+      if (acc.status === 'restricted') { blocks.push(`${acc.name} 계정 제재 상태 — 실행 보류 · 보고`); continue; }
+      if (inc && runway < 1) pushRisk(`${acc.name} 잔액 ${runway.toFixed(2)}일치 (1일치 미만) · 자동충전 ${AUTO_CHARGE_LABEL[acc.autoCharge]} — 증액 · ON 실행 보류 (충전 확인 후 재실행)`);
+      else if (inc && acc.autoCharge === 'failed') warnings.push(`${acc.name} 자동충전 ${AUTO_CHARGE_LABEL[acc.autoCharge]} — 결제 수단 확인 필요 (잔액 ${finite(runway) ? `${runway.toFixed(1)}일치` : '소진 기준 없음'})`);
+      else if (finite(runway)) passes.push(`${acc.name} 잔액 ${runway.toFixed(1)}일치`);
+      else passes.push(acc.balance < 0 ? `${acc.name} 후불 결제` : `${acc.name} 일 평균 소진 없음 — 잔액 일수 판단 불가`);
+      if (acc.status === 'review' && inc) warnings.push(`${acc.name} 계정 상태 '${ACCOUNT_STATUS_LABEL[acc.status]}' — 증액분이 노출되지 않을 수 있음`);
     }
   }
+
+  /* ---- AD Pilot: 매체 · 키워드 보류 (같은 검증 함수) ---- */
+  let apChecked = false;
+  if (c.module === 'adpilot' && (c.kind === 'bid' || c.kind === 'budget') && approved && !tid.startsWith('seed:')) {
+    const holds = adpilotHolds(data, changes, incidents);
+    if (!holds) warnings.push('AD Pilot 보류 판정을 계산하지 못했습니다 — AD Pilot 화면에서 확인하세요');
+    else {
+      const v = validateAdpilotExecution(data, c, holds);
+      apChecked = true;
+      (v.ok ? passes : blocks).push(`AD Pilot 실행 검증 · ${v.reason}`);
+    }
+  }
+
+  /* ---- 데이터 가드 (전환 추적 단절 · 광고비 급변) ---- */
+  if (spendKind) {
+    const medias = promo ? (PROMO_CHANNEL_SCOPE[promo.channel]?.media ?? []) : media ? [media] : [];
+    for (const m of medias) {
+      for (const g of guardsFor(data, incidents, m)) {
+        const what = g.kind === 'tracking_break' ? '전환 추적 단절 의심 — 자동 조정 보류 (p.45)' : '데이터 급변 — 원인 확인 전 조정 보류 (p.44)';
+        if (inc) pushRisk(`${mediaName(m)} ${what} · ${g.basis}`);
+        else warnings.push(`${mediaName(m)} ${what} · 감액 · 중지는 실행 가능 · ${g.basis}`);
+      }
+    }
+  }
+
+  /* ---- 자동 조정 보류 해제 요청 (MILDO Alert 'alert:<이슈>:release') ---- */
+  const rel = tid.match(/^alert:(.+):release$/);
+  if (rel) {
+    const i = (incidents ?? []).find((x) => x.id === rel[1]) as (Incident & { holdMedia?: MediaId }) | undefined;
+    const m = i?.holdMedia ?? (i?.media && (MEDIA_IDS as string[]).includes(i.media) ? (i.media as MediaId) : undefined);
+    const still = m ? dataGuards(data).filter((g) => g.media === m) : [];
+    if (still.length) warnings.push(`${mediaName(m ?? null)} ${still[0].label} 패턴이 데이터에서 계속 관측됩니다 (${still[0].basis}) — 해제하면 자동 입찰이 이상 데이터로 움직일 수 있어 정상화 확인 후 반영 (p.45)`);
+  }
+
+  /* ---- SAFETY · 승인 라우팅 ---- */
   if (c.kind === 'bid') {
     const pct = c.changePct ?? NaN;
-    if (finite(pct) && Math.abs(pct) > AD_PILOT.dailyChangeCapPct) blocks.push(`입찰 변경 폭 ${fmt.delta(pct, 0)} > 일 조정 폭 상한 ${AD_PILOT.dailyChangeCapPct}% (p.14 SAFETY)`);
+    if (finite(pct) && Math.abs(pct) > cfg.dailyChangeCapPct) blocks.push(`입찰 변경 폭 ${fmt.delta(pct, 0)} > 일 조정 폭 상한 ${cfg.dailyChangeCapPct}% (p.14 SAFETY)`);
     const k = keywordOfChange(data, c);
     const after = toNum(c.after);
-    if (k && finite(after) && after > k.maxBid) blocks.push(`입찰가 ${fmt.won(after)} > 최대 입찰가 ${fmt.won(k.maxBid)}`);
+    if (!apChecked && k && finite(after) && after > k.maxBid) blocks.push(`입찰가 ${fmt.won(after)} > 최대 입찰가 ${fmt.won(k.maxBid)}`);
   }
   const pct = c.changePct ?? NaN;
-  if ((c.kind === 'budget' || c.kind === 'gfa') && finite(pct) && Math.abs(pct) > 30 && c.approver !== 'CLIENT') blocks.push(`예산 변경 폭 ${fmt.delta(pct, 0)} — 30% 초과는 수면밀도 승인 필요 (p.15)`);
-  if (!blocks.length) passes.push('지원 API 범위 내 실행 (데모: 로컬 상태 반영)');
+  const pmMax = GFA_DELEGATION[1].maxPct;
+  if ((c.kind === 'budget' || c.kind === 'gfa') && finite(pct) && Math.abs(pct) > pmMax && c.approver !== 'CLIENT') blocks.push(`예산 변경 폭 ${fmt.delta(pct, 0)} — ${pmMax}% 초과는 수면밀도 승인 필요 (p.15)`);
+  if (!blocks.length && !passes.some((p) => /실행 검증/.test(p))) passes.push('지원 API 범위 내 실행 (데모: 로컬 상태 반영)');
   return { ok: blocks.length === 0, blocks, warnings, passes };
 }
 
@@ -657,19 +776,54 @@ export function flowSummary(changes: readonly ChangeRequest[], role: string, now
   };
 }
 
-/** 일괄 처리 점검 — 한 번에 FLOW_BULK_LIMIT건 초과 또는 상한 초과 입찰 포함 시 차단 (대량 변경 실수 방지 p.45) */
-export function bulkGuard(list: readonly ChangeRequest[], action: 'approve' | 'apply'): { ok: boolean; level: 'ok' | 'warn' | 'block'; reasons: string[] } {
+export type BulkThresholds = Pick<AdPilotConfig, 'bulkWarnCount' | 'bulkBlockCount' | 'dailyChangeCapPct'>;
+/**
+ * 일괄 처리 점검 (대량 변경 실수 방지 p.45) — AD Pilot 공식 기준과 같은 건수 기준을 쓴다
+ * (기본 경고 5건 이상 · 차단 15건 이상 · 입찰 일 조정 폭 상한 20%, 승인된 AD Pilot 설정 변경이 있으면 그 값).
+ */
+export function bulkGuard(list: readonly ChangeRequest[], action: 'approve' | 'apply', th: BulkThresholds = adpilotConfigOf([])): { ok: boolean; level: 'ok' | 'warn' | 'block'; reasons: string[] } {
   const reasons: string[] = [];
   let level: 'ok' | 'warn' | 'block' = 'ok';
+  const verb = action === 'approve' ? '승인' : '반영';
   if (!list.length) return { ok: false, level: 'block', reasons: ['처리할 건이 없습니다'] };
-  if (list.length > FLOW_BULK_LIMIT) { level = 'block'; reasons.push(`한 번에 ${list.length}건 > 일괄 처리 상한 ${FLOW_BULK_LIMIT}건 (운영 기본값) — 나눠서 처리`); }
-  const capped = list.filter((c) => c.kind === 'bid' && Math.abs(c.changePct ?? 0) > AD_PILOT.dailyChangeCapPct);
-  if (capped.length) { level = 'block'; reasons.push(`일 조정 폭 상한 ${AD_PILOT.dailyChangeCapPct}% 초과 입찰 ${capped.length}건 포함`); }
-  const big = list.filter((c) => (c.kind === 'budget' || c.kind === 'gfa') && Math.abs(c.changePct ?? 0) > 10);
-  if (level !== 'block' && big.length) { level = 'warn'; reasons.push(`±10% 초과 예산 변경 ${big.length}건 포함 — 건별 근거 확인 권장`); }
-  if (level !== 'block' && list.length >= 5) { level = 'warn'; reasons.push(`${list.length}건 동시 ${action === 'approve' ? '승인' : '반영'} — MILDO Alert 대량 변경 감시 대상`); }
-  if (!reasons.length) reasons.push(`${list.length}건 · 상한 이내`);
+  if (list.length >= th.bulkBlockCount) { level = 'block'; reasons.push(`한 번에 ${list.length}건 — 기준 ${th.bulkBlockCount}건 이상 차단 (AD Pilot 대량 변경 기준 · p.45), 나눠서 ${verb}`); }
+  const capped = list.filter((c) => c.kind === 'bid' && Math.abs(c.changePct ?? 0) > th.dailyChangeCapPct);
+  if (capped.length) { level = 'block'; reasons.push(`일 조정 폭 상한 ${th.dailyChangeCapPct}% 초과 입찰 ${capped.length}건 포함 (p.14)`); }
+  const big = list.filter((c) => (c.kind === 'budget' || c.kind === 'gfa') && Math.abs(c.changePct ?? 0) > GFA_DELEGATION[0].maxPct);
+  if (level !== 'block' && big.length) { level = 'warn'; reasons.push(`±${GFA_DELEGATION[0].maxPct}% 초과 예산 변경 ${big.length}건 포함 — 건별 근거 확인`); }
+  if (level !== 'block' && list.length >= th.bulkWarnCount) { level = 'warn'; reasons.push(`${list.length}건 동시 ${verb} — 기준 ${th.bulkWarnCount}건 이상, 2단계 확인 (p.45)`); }
+  if (!reasons.length) reasons.push(`${list.length}건 · 기준 ${th.bulkWarnCount}건 미만`);
   return { ok: level !== 'block', level, reasons };
+}
+
+/* ---------- 대량 변경 실수 감지 (MILDO Alert detectBulkChange · p.45) ---------- */
+
+export interface BulkAlert {
+  id: string;
+  severity: Incident['severity'];
+  title: string;
+  /** 판정 기준 · 관측값 (배지 옆 근거) */
+  basis: string;
+  related: string[];
+  /** MILDO Alert 이슈로 이미 적재됐는지 */
+  logged: boolean;
+}
+/** state.changes 기준 대량 변경 감지 — Alert와 같은 함수 · 같은 기준(승인된 Alert 기준 변경 포함) · 같은 이슈 id */
+export function bulkChangeAlerts(changes: readonly ChangeRequest[], today: string, incidents: readonly Incident[] = []): BulkAlert[] {
+  let found: ReturnType<typeof detectBulkChange> = [];
+  try {
+    found = detectBulkChange(changes ?? [], { today, config: activeConfig([...(changes ?? [])]) });
+  } catch {
+    found = [];
+  }
+  return found.map((b) => ({
+    id: b.id,
+    severity: b.severity,
+    title: b.title,
+    basis: (b.evidence ?? []).filter((e) => e.threshold).map((e) => `${e.label} ${e.unit === 'int' ? `${fmt.int(e.observed)}건` : e.unit === 'pct' ? fmt.pct(e.observed, 0) : fmt.dec1(e.observed)} · 기준 ${e.threshold}`).join(' · ') || b.basis,
+    related: b.related ?? [],
+    logged: (incidents ?? []).some((i) => i.id === b.id),
+  }));
 }
 
 /* ================================================================== */
@@ -705,9 +859,11 @@ export function routeRequest(type: RequestType, pct?: number): RouteResult {
     if (type === 'new_campaign') delegationIndex = 2;
     basis.push(`${def.basis} (${def.page})`);
   }
-  const decisionIndex = decisionIndexOf({ kind: def.kind, approver, targetId: type === 'strategy' ? 'flow:strategy' : '', target: '' });
-  const row = DECISION_MATRIX[decisionIndex];
+  const dec = decisionOf({ kind: def.kind, approver, targetId: type === 'strategy' ? 'flow:strategy' : '', target: '' });
+  const decisionIndex = dec.index;
+  const row = dec.row;
   basis.push(`결정 유형 '${row.type}' · 결정자 ${row.decider} · 소요 ${row.lead} (p.53)`);
+  if (dec.delegated) basis.push(dec.delegated);
   return { approver, label: APPROVER_LABEL[approver], delegationIndex, decisionIndex, basis };
 }
 
@@ -794,7 +950,8 @@ export function planRequest(data: Dataset, changes: readonly ChangeRequest[], in
     const k = data?.keywords?.find((x) => x.id === d.targetId);
     if (!k) errors.push('키워드를 선택하세요');
     if (!finite(pct) || pct === 0) errors.push('변경 폭(%)을 입력하세요');
-    if (finite(pct) && Math.abs(pct) > AD_PILOT.dailyChangeCapPct) errors.push(`일 조정 폭 상한 ${AD_PILOT.dailyChangeCapPct}% 초과 (p.14 SAFETY) — 여러 날로 나눠 요청하세요`);
+    const cap = adpilotConfigOf(changes).dailyChangeCapPct;
+    if (finite(pct) && Math.abs(pct) > cap) errors.push(`일 조정 폭 상한 ${cap}% 초과 (p.14 SAFETY) — 여러 날로 나눠 요청하세요`);
     if (k) {
       const cur = effectiveBid(k, changes);
       target = `${k.text} 입찰가`;
@@ -1004,7 +1161,8 @@ function hostOf(url: string): string {
   const m = url.match(/^https?:\/\/([^/]+)/);
   return m ? m[1] : '';
 }
-function fixStateOf(changes: readonly ChangeRequest[], targetId: string, kind?: ChangeRequest['kind']) {
+/** 같은 대상 · 유형의 진행 중(반려 · 롤백 제외) 최신 요청 상태 */
+export function fixStateOf(changes: readonly ChangeRequest[], targetId: string, kind?: ChangeRequest['kind']) {
   const list = (changes ?? []).filter((c) => c.targetId === targetId && (!kind || c.kind === kind) && c.status !== 'rejected' && c.status !== 'rolled_back');
   const latest = list.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))[0];
   return latest ? { id: latest.id, status: latest.status } : null;
@@ -1219,7 +1377,7 @@ export function checkPromotion(
           if (a.autoCharge === 'ok') conds.push({ level: 'info', text: `잔액 ${runway.toFixed(1)}일치 < ${coverLabel} · 자동충전 정상` });
           else if (a.autoCharge !== 'failed') { conds.push({ level: 'warn', text: `잔액 ${runway.toFixed(1)}일치 < ${coverLabel} · 자동충전 ${AUTO_CHARGE_LABEL[a.autoCharge]}` }); fix = fix ?? mkFix(); }
         }
-        if (!conds.length) conds.push({ level: 'pass', text: `잔액 ${fmt.krw(bal)} · ${runway.toFixed(1)}일치 ≥ ${coverLabel}` });
+        if (!conds.length) conds.push({ level: 'pass', text: finite(runway) ? `잔액 ${fmt.krw(bal)} · ${runway.toFixed(1)}일치 ≥ ${coverLabel}` : `잔액 ${fmt.krw(bal)} · 일 평균 소진 없음 (소진 기준 없음)` });
       }
       const level = worst(conds.map((c) => c.level));
       add({ id: `balance_${a.id}`, group: '결제 잔액', label: a.name, level, detail: conds.map((c) => c.text).join(' · '),
@@ -1266,7 +1424,50 @@ export interface PromoMetricRow {
   delta: number;
   unit: 'krw' | 'won' | 'roas' | 'pct' | 'ratio' | 'int' | 'x';
   invert?: boolean;
+  /** 비율(ratio) 지표의 변화 (%p) — 비중은 상대 증감이 아니라 %p로 비교 */
+  pp?: number;
 }
+/** %p 표기 ('+0.8%p') */
+export function fmtPp(pp: number | undefined): string {
+  return pp !== undefined && finite(pp) ? `${pp > 0 ? '+' : ''}${pp.toFixed(1)}%p` : '—';
+}
+/** 지표 행 변화 표기: 비율은 %p, 나머지는 상대 증감 % */
+export function fmtRowDelta(r: Pick<PromoMetricRow, 'unit' | 'delta' | 'pp'>): string {
+  return r.unit === 'ratio' ? fmtPp(r.pp) : fmt.delta(r.delta);
+}
+/** 판매 채널 비중 (프로모션 기간 vs 직전 동기간) */
+export interface ChannelMixRow {
+  channel: SalesChannelId;
+  name: string;
+  colorVar: string;
+  isPromo: boolean;
+  cur: number;
+  prev: number;
+  curShare: number;
+  prevShare: number;
+  /** 비중 변화 (%p) */
+  shareDeltaPp: number;
+  delta: number;
+}
+export function channelMix(data: Dataset, promoChannel: SalesChannelId, cur: { from: string; to: string } | null, prev: { from: string; to: string } | null): ChannelMixRow[] {
+  const revOf = (r: { from: string; to: string } | null, ch: SalesChannelId) =>
+    r ? sum((data?.salesDaily ?? []).filter((x) => x.channel === ch && x.date >= r.from && x.date <= r.to), (x) => x.revenue) : NaN;
+  const curRev = SALES_CHANNEL_IDS.map((ch) => revOf(cur, ch));
+  const prevRev = SALES_CHANNEL_IDS.map((ch) => revOf(prev, ch));
+  const curTotal = sum(curRev, (v) => (finite(v) ? v : 0));
+  const prevTotal = sum(prevRev, (v) => (finite(v) ? v : 0));
+  return SALES_CHANNEL_IDS.map((ch, k) => {
+    const curShare = finite(curRev[k]) && curTotal > 0 ? curRev[k] / curTotal : NaN;
+    const prevShare = finite(prevRev[k]) && prevTotal > 0 ? prevRev[k] / prevTotal : NaN;
+    return {
+      channel: ch, name: SALES_CHANNELS[ch]?.name ?? ch, colorVar: SALES_CHANNELS[ch]?.colorVar ?? '--series-1', isPromo: ch === promoChannel,
+      cur: curRev[k], prev: prevRev[k], curShare, prevShare,
+      shareDeltaPp: finite(curShare) && finite(prevShare) ? (curShare - prevShare) * 100 : NaN,
+      delta: pctDelta(curRev[k], prevRev[k]),
+    };
+  });
+}
+
 export interface PromoReport {
   promotion: Promotion;
   channelName: string;
@@ -1275,6 +1476,7 @@ export interface PromoReport {
   period: { from: string; to: string; days: number } | null;
   prev: { from: string; to: string; days: number } | null;
   rows: PromoMetricRow[];
+  mix: ChannelMixRow[];
   daily: { idx: number; curDate: string | null; prevDate: string; cur: number; prev: number }[];
   brief: Brief;
   next: string[];
@@ -1353,7 +1555,9 @@ export function promoReport(data: Dataset, p: Promotion, ctx: { changes?: readon
   const cur = period ? aggregate(data, p, period.from, period.to) : empty;
   const base = prev ? aggregate(data, p, prev.from, prev.to) : empty;
   const per = (v: number, days: number | undefined) => (days && days > 0 ? v / days : NaN);
-  const row = (key: string, label: string, c: number, pv: number, unit: PromoMetricRow['unit'], invert = false): PromoMetricRow => ({ key, label, cur: c, prev: pv, delta: pctDelta(c, pv), unit, invert });
+  const row = (key: string, label: string, c: number, pv: number, unit: PromoMetricRow['unit'], invert = false): PromoMetricRow => ({
+    key, label, cur: c, prev: pv, delta: pctDelta(c, pv), unit, invert, pp: unit === 'ratio' && finite(c) && finite(pv) ? (c - pv) * 100 : undefined,
+  });
   const rows: PromoMetricRow[] = [
     row('chRevenue', `${channelName} 매출`, cur.chRevenue, base.chRevenue, 'krw'),
     row('chDaily', `${channelName} 일 평균 매출`, per(cur.chRevenue, period?.days), per(base.chRevenue, prev?.days), 'krw'),
@@ -1368,6 +1572,7 @@ export function promoReport(data: Dataset, p: Promotion, ctx: { changes?: readon
     row('others', '다른 채널 매출 (잠식 점검)', cur.others, base.others, 'krw'),
     row('brandSearch', '브랜드 검색량 (일 평균)', cur.brandSearch, base.brandSearch, 'int'),
   ];
+  const mix = channelMix(data, p.channel, period, prev);
   const daily: PromoReport['daily'] = [];
   if (prev) {
     const n = period ? period.days : prev.days;
@@ -1469,7 +1674,11 @@ export function promoReport(data: Dataset, p: Promotion, ctx: { changes?: readon
   md.push('### 확정 팩트');
   md.push(`| 지표 | ${period ? '프로모션 기간' : '오픈 전'} | 직전 동기간 | 증감 |`);
   md.push('|---|---|---|---|');
-  for (const r of rows) md.push(`| ${r.label} | ${fmtMetric(r.unit, r.cur)} | ${fmtMetric(r.unit, r.prev)} | ${fmt.delta(r.delta)} |`);
+  for (const r of rows) md.push(`| ${r.label} | ${fmtMetric(r.unit, r.cur)} | ${fmtMetric(r.unit, r.prev)} | ${fmtRowDelta(r)} |`);
+  md.push('');
+  md.push(`| 판매 채널 비중 | ${period ? '프로모션 기간' : '오픈 전'} | 직전 동기간 | 비중 변화 | 매출 증감 |`);
+  md.push('|---|---|---|---|---|');
+  for (const m of mix) md.push(`| ${m.name}${m.isPromo ? ' (기획전)' : ''} | ${fmt.ratio(m.curShare)} | ${fmt.ratio(m.prevShare)} | ${fmtPp(m.shareDeltaPp)} | ${fmt.delta(m.delta)} |`);
   md.push('');
   md.push(...facts.map((f) => `${f}\n`));
   if (patterns.length) { md.push('### 반복 관측 패턴'); md.push(...patterns.map((x) => `${x}\n`)); }
@@ -1483,7 +1692,23 @@ export function promoReport(data: Dataset, p: Promotion, ctx: { changes?: readon
   md.push('### 다음 액션');
   md.push('다음 기획에 즉시 반영할 항목입니다.\n');
   md.push(...next.map((x) => `- ${x}`));
-  return { promotion: p, channelName, phase, ready: !!period, period, prev, rows, daily, brief, next, markdown: md.join('\n') };
+  return { promotion: p, channelName, phase, ready: !!period, period, prev, rows, mix, daily, brief, next, markdown: md.join('\n') };
+}
+
+/** 리포트의 '다음 기획에 즉시 반영' 항목 → 승인 요청 입력 (예산 · 구조 변경: PM 제안 → 수면밀도 승인, 당일 p.53) */
+export function promoNextInput(r: Pick<PromoReport, 'promotion' | 'next' | 'channelName'>): ChangeInput | null {
+  const items = (r?.next ?? []).filter((x) => x && !/반영할 이상 항목이 없습니다/.test(x));
+  if (!items.length) return null;
+  return {
+    module: 'flow', kind: 'setting',
+    target: `${r.promotion.name} 결과 → 다음 기획 반영`,
+    targetId: `flow:promo:${r.promotion.id}:next`,
+    before: '현재 기획안',
+    after: `반영 항목 ${items.length}건`,
+    reason: `프로모션 리포트(${r.channelName}) 다음 기획 반영: ${items.join(' / ')}`.slice(0, 600),
+    requestedBy: 'MILDO Flow 리포트',
+    approver: 'CLIENT',
+  };
 }
 
 /* ================================================================== */
@@ -1559,7 +1784,8 @@ export function linkedChanges(data: Dataset, i: Incident, changes: readonly Chan
   const out: { change: ChangeRequest; inferred: boolean }[] = [];
   for (const c of changes ?? []) {
     const tid = c.targetId ?? '';
-    if (tid.startsWith(`alert:${i.id}`) || tid.includes(`inc:${i.id}`) || (c.reason ?? '').includes(i.id)) { out.push({ change: c, inferred: false }); continue; }
+    // 명시 연결: MILDO Alert 이슈 드로어 요청('alert:<이슈 id>:…') · 사유에 이슈 id 기록 (Flow 조치 요청)
+    if (tid === `alert:${i.id}` || tid.startsWith(`alert:${i.id}:`) || tid.includes(`inc:${i.id}`) || (c.reason ?? '').includes(i.id)) { out.push({ change: c, inferred: false }); continue; }
     const created = toMs(c.createdAt);
     if (!finite(created) || (finite(det) && created < det - 6 * 3_600_000)) continue;
     // 같은 대상(캠페인 · 키워드 · 계정 이름) 또는 매체 단위 이슈(대상 = 매체명)의 같은 매체 변경
@@ -1597,6 +1823,8 @@ export function incidentStagePatch(i: Incident, step: 'ack' | 'action' | 'report
 /** 이슈 → 바로 만들 수 있는 조치 요청 (계정 충전 · 품절 키워드 중지 · 조기 소진 예산) */
 export function incidentFix(data: Dataset, i: Incident, changes: readonly ChangeRequest[] = []): { label: string; input: ChangeInput; state: { id: string; status: FlowStatus } | null } | null {
   const t = i.target ?? '';
+  // MILDO Alert 이슈 드로어에서 같은 조치를 이미 요청했으면 그 진행 상태를 보여 준다 (중복 요청 방지)
+  const viaAlert = (suffix: string) => fixStateOf(changes, `alert:${i.id}:${suffix}`);
   const acc = data?.accounts?.find((a) => a.name === t);
   if (acc && acc.balance >= 0) {
     const bal = effectiveBalance(acc, changes);
@@ -1604,13 +1832,13 @@ export function incidentFix(data: Dataset, i: Incident, changes: readonly Change
     const topup = Math.max(0, Math.ceil((acc.avgDailySpend * RUNWAY_TARGET_DAYS - bal) / 100_000) * 100_000);
     if (runway < RUNWAY_TARGET_DAYS && topup > 0) {
       const input: ChangeInput = { module: 'alert', kind: 'setting', target: `${acc.name} 충전`, targetId: topupTargetId(acc), before: bal, after: bal + topup, changePct: bal > 0 ? Math.round((topup / bal) * 1000) / 10 : undefined, reason: `${i.severity} ${i.title} · 잔액 ${runway.toFixed(2)}일치 → ${RUNWAY_TARGET_DAYS}일치 확보 (${fmt.krw(topup)}원) · 결제 수단 수면밀도 (p.50)`, requestedBy: 'MILDO Flow', approver: 'CLIENT' };
-      return { label: `충전 요청 ${fmt.krw(topup)}원 (수면밀도)`, input, state: fixStateOf(changes, input.targetId!) };
+      return { label: `충전 요청 ${fmt.krw(topup)}원 (수면밀도)`, input, state: fixStateOf(changes, input.targetId!) ?? viaAlert('topup') };
     }
   }
   const k = data?.keywords?.find((x) => x.text === t);
   if (k && /soldout/.test(i.ruleId) && effectiveKeywordStatus(k, changes) !== 'off') {
     const input: ChangeInput = { module: 'adpilot', kind: 'status', target: `${k.text} 광고 일시 중지`, targetId: k.id, before: 'on', after: 'off', reason: `${i.severity} ${i.title} — 품절 옵션 랜딩 광고비 누수 방지 (p.45)`, requestedBy: 'MILDO Flow', approver: 'PM' };
-    return { label: '키워드 일시 중지 요청 (PM)', input, state: fixStateOf(changes, k.id, 'status') };
+    return { label: '키워드 일시 중지 요청 (PM)', input, state: fixStateOf(changes, k.id, 'status') ?? viaAlert('pause') };
   }
   const cmp = data?.campaigns?.find((c) => c.name === t);
   if (cmp) {
@@ -1646,7 +1874,10 @@ export function opsCases(data: Dataset, incidents: readonly Incident[], changes:
       return t ? toMs(t.at) : null;
     };
     const linked = linkedChanges(data, i, changes, toMs);
-    const appliedLink = linked.find((l) => l.change.status === 'applied' || l.change.status === 'rolled_back');
+    // 조치 완료로 보는 연결 요청: 명시 연결이거나, 같은 대상 · 매체 추정 연결 중 감지 이후 만든 요청만 (감지 전 변경은 원인 후보일 수는 있어도 조치가 아님)
+    const det = toMs(i.detectedAt);
+    const appliedLink = linked.find((l) => (l.change.status === 'applied' || l.change.status === 'rolled_back')
+      && (!l.inferred || (finite(det) && toMs(l.change.createdAt) >= det)));
     const resolved = i.status === 'resolved';
     const assignDone = i.status !== 'open' || !!sla.ackAt;
     const actionDone = i.status === 'action' || resolved || !!sla.actionAt || !!appliedLink;
@@ -1706,7 +1937,7 @@ export function segmentRows(input: { summary: FlowSummary; checks: readonly Prom
   const live: Record<string, { value: string; route: string; tab?: string }> = {
     '데이터 요청': { value: 'MILDO Board에서 6개 매체 · 4개 판매 채널 직접 조회', route: 'board' },
     '보고 · 피드백': { value: `리포트 코멘트 · 피드백 ${comments}건 기록`, route: 'reports' },
-    '예산 · 세팅 변경': { value: `요청 ${summary.total}건 · 이력 기록 ${summary.total ? '100%' : '—'} · 평균 결정 ${fmtDuration(summary.avgDecisionMin)} · 기준 충족 ${fmt.ratio(summary.metRate, 0)}`, route: 'flow', tab: 'board' },
+    '예산 · 세팅 변경': { value: `요청 ${summary.total}건 (반영 ${summary.byStatus.applied} · 롤백 ${summary.byStatus.rolled_back} · 보류 ${summary.byStatus.held}) · 평균 결정 ${fmtDuration(summary.avgDecisionMin)} · p.53 기준 충족 ${fmt.ratio(summary.metRate, 0)}`, route: 'flow', tab: 'board' },
     '프로모션 준비': { value: `${checks.length}개 프로모션 · 점검 ${itemCount}항목 자동 · 실패 ${fails}건 탐지`, route: 'flow', tab: 'promo' },
     '프로모션 결과': { value: `리포트 ${reportsReady}개 자동 생성 · 다음 기획 반영 포인트 포함`, route: 'flow', tab: 'report' },
   };
@@ -1745,27 +1976,34 @@ export function seedChanges(data: Dataset): ChangeRequest[] {
   const guards = dataGuards(data);
   const gfaPace = monthlyPacing(data).find((m) => m.media === 'naver_gfa');
 
+  /** 변경 폭 → 위임 범위 승인 주체 · 승인자 역할명 · 근거 (시드도 같은 규칙으로 라우팅) */
+  const routeOf = (pct: number) => {
+    const row = GFA_DELEGATION[delegationIndexByPct(pct)];
+    return { approver: row.approver, by: APPROVER_LABEL[row.approver], note: `변경 폭 ${fmt.delta(pct, 1)} · 위임 범위 ${row.range.split(' · ')[0].replace('일 예산 ', '')} → ${row.label} (p.15)` };
+  };
   if (star) {
     const after = star.bid;
     const before = Math.max(70, round(after / 1.12, 10));
     const pct = Math.round(((after - before) / before) * 1000) / 10;
-    mk(1, { createdAt: at(d3, 10, 5), module: 'adpilot', kind: 'bid', target: `${star.text} 입찰가`, targetId: `seed:bid:${star.id}`, before, after, changePct: pct, reason: `고효율 키워드 (14일 ROAS ${fmt.roas(roasOf(star))} ≥ 목표 ${AD_PILOT.targetRoas}% × ${AD_PILOT.highEfficiencyRoasRatio}) · 노출 기회 손실 ${fmt.ratio(star.impressionShareLost, 0)} ≥ 25% → 입찰 상향 (p.14)`, requestedBy: 'AD Pilot', approver: GFA_DELEGATION[delegationIndexByPct(pct)].approver, status: 'applied',
+    const r = routeOf(pct);
+    mk(1, { createdAt: at(d3, 10, 5), module: 'adpilot', kind: 'bid', target: `${star.text} 입찰가`, targetId: `seed:bid:${star.id}`, before, after, changePct: pct, reason: `고효율 키워드 (14일 ROAS ${fmt.roas(roasOf(star))} ≥ 목표 ${AD_PILOT.targetRoas}% × ${AD_PILOT.highEfficiencyRoasRatio}) · 노출 기회 손실 ${fmt.ratio(star.impressionShareLost, 0)} ≥ 25% → 입찰 상향 (p.14)`, requestedBy: 'AD Pilot', approver: r.approver, status: 'applied',
       history: [
         { at: at(d3, 10, 5), by: 'AD Pilot', action: '요청 생성', note: '고효율 · 노출 기회 손실 규칙' },
-        { at: at(d3, 10, 41), by: 'PM', action: '승인', note: 'PM 승인 범위 (±10~30%)' },
-        { at: at(d3, 10, 52), by: '담당 AE', action: '반영', note: 'AD Pilot 반영 · 롤백 가능' },
+        { at: at(d3, 10, 41), by: r.by, action: '승인', note: r.note },
+        { at: at(d3, 10, 52), by: r.by, action: '반영', note: 'AD Pilot 반영 · 롤백 가능' },
       ] });
   }
   if (spiky) {
     const k = spiky.k;
     const before = k.bid;
-    const after = Math.max(70, round(before * 1.1, 10));
+    const after = Math.max(70, round(before * 1.08, 10));
     const pct = Math.round(((after - before) / before) * 1000) / 10;
-    mk(2, { createdAt: at(d3, 15, 20), module: 'adpilot', kind: 'bid', target: `${k.text} 입찰가`, targetId: `seed:bid:${k.id}`, before, after, changePct: pct, reason: `비교 · 검토 의도 순위 방어 — 평균 순위 ${k.avgRank.toFixed(1)}위 · 노출 기회 손실 ${fmt.ratio(k.impressionShareLost, 0)} (p.14)`, requestedBy: 'AD Pilot', approver: GFA_DELEGATION[delegationIndexByPct(pct)].approver, status: 'rolled_back',
+    const r = routeOf(pct);
+    mk(2, { createdAt: at(d3, 15, 20), module: 'adpilot', kind: 'bid', target: `${k.text} 입찰가`, targetId: `seed:bid:${k.id}`, before, after, changePct: pct, reason: `비교 · 검토 의도 순위 방어 — 평균 순위 ${k.avgRank.toFixed(1)}위 · 노출 기회 손실 ${fmt.ratio(k.impressionShareLost, 0)} (p.14)`, requestedBy: 'AD Pilot', approver: r.approver, status: 'rolled_back',
       history: [
         { at: at(d3, 15, 20), by: 'AD Pilot', action: '요청 생성', note: '순위 방어' },
-        { at: at(d3, 15, 38), by: '담당 AE', action: '승인', note: '±10% 이내 · 담당 AE 위임 범위' },
-        { at: at(d3, 15, 46), by: '담당 AE', action: '반영' },
+        { at: at(d3, 15, 38), by: r.by, action: '승인', note: r.note },
+        { at: at(d3, 15, 46), by: r.by, action: '반영' },
         { at: at(d1, 9, 18), by: 'PM', action: '롤백', note: `반영 후 최근 3일 CPC ${fmt.delta(spiky.cpcDelta, 0)} · 전환 ${fmt.delta(spiky.convDelta, 0)} (직전 11일 대비) — 경쟁사 입찰 상승 추정 · 직전 입찰 ${fmt.won(before)} 복원 후 자동 조정 보류` },
       ] });
   }
@@ -1850,7 +2088,9 @@ export function pendingBrief(data: Dataset, changes: readonly ChangeRequest[], i
   if (finite(s.avgDecisionMin)) patterns.push(`결정까지 평균 ${fmtDuration(s.avgDecisionMin)}, p.53 소요 기준 충족률 ${fmt.ratio(s.metRate, 0)} (결정 ${s.decided}건 기준).`);
   if (s.overdue.length) patterns.push(`기준 시간을 넘긴 대기 ${s.overdue.length}건: ${s.overdue.map((c) => `${c.target}(${decisionOf(c).row.lead})`).join(', ')}.`);
   const held = changes.filter((c) => c.status === 'held');
-  if (held.length) patterns.push(`보류 ${held.length}건은 실행 점검에서 멈췄습니다: ${held.map((c) => `${c.target} — ${lastHistory(c, /보류/)?.note ?? '사유 기록 없음'}`).join(' / ')}.`);
+  if (held.length) patterns.push(`보류 ${held.length}건 (실행 점검 보류 또는 결정 보류): ${held.map((c) => `${c.target} — ${lastHistory(c, /보류/)?.note ?? '사유 기록 없음'}`).join(' / ')}.`);
+  const bulkAlerts = bulkChangeAlerts(changes, data.today, incidents);
+  if (bulkAlerts.length) facts.push(`대량 변경 실수 감지 ${bulkAlerts.length}건 (MILDO Alert 기준 · p.45): ${bulkAlerts.map((b) => `${b.title} — ${b.basis}`).join(' / ')}.`);
   const interpretation: string[] = [];
   const blockedApply = q.apply.map((c) => ({ c, ex: executionCheck(data, changes, incidents, c) })).filter((x) => !x.ex.ok);
   if (blockedApply.length) interpretation.push(`반영 대기 중 ${blockedApply.length}건은 지금 반영하면 실행 점검에서 보류됩니다 (${blockedApply.map((x) => `${x.c.target}: ${x.ex.blocks[0]}`).join(' / ')}). 결제 · 데이터 이상이 정상화된 뒤 반영하는 순서가 안전합니다.`);
@@ -1861,6 +2101,7 @@ export function pendingBrief(data: Dataset, changes: readonly ChangeRequest[], i
     conditions: [`권한: 담당 AE는 AE건, PM은 AE · PM건, 수면밀도는 전부 (p.53). 위임 범위: 일 예산 ±10% 이내 AE · ±10~30% · ON/OFF PM · 30% 초과 · 신규 캠페인 수면밀도 (p.15, 예시 · 계약 시 확정).`, `소요 기준: 운영 조정 즉시(60분, 운영 기본값) · 예산 · 구조 변경 당일 17:00 · 알림 기준 주간 · 전략 방향 월간 리뷰.`],
     counter: ['승인 대기가 길어지는 원인이 승인 주체 부재(휴가 · 주말)라면 처리 속도가 아니라 백업 지정 문제입니다. 주말에는 당번 AE가 AE건만 처리할 수 있어 PM · 수면밀도 건은 다음 영업일로 넘어갑니다.'],
     actions: [
+      ...(bulkAlerts.length ? [`PM: 대량 변경 감지 ${bulkAlerts.length}건의 관련 요청을 건별로 확인하고, 잘못 반영된 건은 최신 건부터 롤백합니다 (p.45 즉시 롤백).`] : []),
       q.approve.length ? `${role}: 승인 대기 ${q.approve.length}건을 오늘 처리하고, 권한 밖 ${q.blocked.length}건은 승인 주체에게 메신저로 전달합니다.` : `${role}: 승인할 건이 없습니다. 권한 밖 ${q.blocked.length}건의 승인 주체 응답을 확인합니다.`,
       blockedApply.length ? 'PM: 실행 보류 예상 건은 계정 충전 · 추적 정상화 확인 후 반영합니다.' : '담당 AE: 승인된 건을 반영하고 반영 후 1시간 성과를 확인합니다.',
     ],
@@ -1892,10 +2133,16 @@ export function promoCheckBrief(data: Dataset, changes: readonly ChangeRequest[]
   };
 }
 
+/** p.49 SLA 표기 — constants SLA에서 생성 (화면 · 브리프 · 에이전트 공용) */
+export function slaText(): string {
+  return `P1 인지 ${SLA.P1.label.ack} · 1차 조치 ${SLA.P1.label.action} · 결과 보고 ${SLA.P1.label.report}, P2 인지 ${SLA.P2.label.ack} · 조치 ${SLA.P2.label.action} · 보고 ${SLA.P2.label.report}`;
+}
+
 export function opsBrief(data: Dataset, incidents: readonly Incident[], changes: readonly ChangeRequest[], toMs: ToMs): Brief {
   const cases = opsCases(data, incidents, changes, toMs);
   const sc = stageCounts(cases);
   const open = cases.filter((c) => c.current !== 'done');
+  const p1Wait = open.filter((c) => c.incident.severity === 'P1' && c.linked.some((l) => l.change.status === 'pending'));
   return {
     title: '운영 프로세스 · 감지 → 배정 → 조치 → 보고',
     facts: [
@@ -1903,8 +2150,10 @@ export function opsBrief(data: Dataset, incidents: readonly Incident[], changes:
       ...open.slice(0, 5).map((c) => `${c.incident.severity} ${c.incident.title}: ${STAGE_LABEL[c.current as OpsStage] ?? '완료'} 단계 · ${c.stages.find((s) => s.stage === 'action')?.note ?? ''}`),
     ],
     patterns: [`연결된 변경 요청이 있는 이슈 ${cases.filter((c) => c.linked.length).length}건 — 조치가 승인 흐름(MILDO Flow)으로 넘어간 건입니다.`],
-    interpretation: ['P1(결제 · 전환 추적)은 조치가 승인 대기에 걸리면 SLA 30분을 넘기기 쉽습니다. 수면밀도 승인이 필요한 충전 요청은 요청 생성과 동시에 메신저로 승인자에게 전달하는 것이 병목을 줄입니다.'],
-    conditions: ['SLA: P1 인지 15분 · 1차 조치 30분 · 결과 보고 2시간, P2 인지 1시간 · 조치 4시간 (p.49).'],
+    interpretation: p1Wait.length
+      ? [`P1 ${p1Wait.length}건(${p1Wait.map((c) => c.incident.title).join(', ')})은 조치 요청이 승인 대기(${p1Wait.flatMap((c) => c.linked.filter((l) => l.change.status === 'pending').map((l) => `${l.change.target} → ${APPROVER_LABEL[l.change.approver]}`)).join(', ')})에 걸려 있어 1차 조치 SLA ${SLA.P1.label.action}을 넘길 수 있습니다. 승인 주체가 수면밀도인 건은 요청 생성과 동시에 메신저로 전달해야 병목이 줄어듭니다.`]
+      : [`승인 대기에 걸린 P1 조치 요청은 없습니다. P1은 1차 조치 SLA ${SLA.P1.label.action} 기준이라 조치가 승인 흐름으로 넘어가는 순간 승인 주체 응답 시간이 SLA를 좌우합니다.`],
+    conditions: [`SLA: ${slaText()} (p.49).`],
     counter: ['연결 요청 중 \'관련 추정\'은 같은 매체 · 대상 기준 추정 연결입니다. 실제 원인 조치가 아닐 수 있습니다.'],
     actions: open.slice(0, 4).map((c) => `${c.incident.assignee ?? '담당 AE'}: ${c.incident.title} — ${c.next ? c.next.label : 'MILDO Alert에서 해결 · 재발 방지 기록'}.`),
   };

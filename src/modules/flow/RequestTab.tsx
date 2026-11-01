@@ -9,7 +9,7 @@ import { APPROVER_LABEL, canAct, effectiveBid, effectiveBudget, fmtValue, paceCa
 import type { FlowCtx } from './useFlow';
 
 export function RequestTab({ ctx, draft, setDraft, onCreated }: { ctx: FlowCtx; draft: RequestDraft; setDraft: (d: RequestDraft) => void; onCreated: (id: string) => void }) {
-  const { data, changes, incidents, state, createRequest } = ctx;
+  const { data, changes, incidents, state, createRequest, apCfg } = ctx;
   const plan = useMemo(() => planRequest(data, changes, incidents, draft, state.role), [data, changes, incidents, draft, state.role]);
   const def = REQUEST_TYPES.find((t) => t.id === draft.type) ?? REQUEST_TYPES[0];
   const set = (patch: Partial<RequestDraft>) => setDraft({ ...draft, ...patch });
@@ -114,7 +114,7 @@ export function RequestTab({ ctx, draft, setDraft, onCreated }: { ctx: FlowCtx; 
         <div className="xs muted">{def.basis} ({def.page})</div>
         {targetPicker()}
         {def.needsPct ? (
-          <Field label="변경 폭" id="flow-pct" hint={draft.type === 'bid' ? '일 조정 폭 상한 ±20% (p.14 SAFETY)' : '±10% 이내 담당 AE · ±10~30% PM · 30% 초과 수면밀도 (p.15 예시)'}>
+          <Field label="변경 폭" id="flow-pct" hint={draft.type === 'bid' ? `일 조정 폭 상한 ±${apCfg.dailyChangeCapPct}% (p.14 SAFETY · AD Pilot 공식 기준)` : '±10% 이내 담당 AE · ±10~30% PM · 30% 초과 수면밀도 (p.15 예시)'}>
             <NumberInput id="flow-pct" value={draft.pct} onChange={(v) => set({ pct: v })} step={5} min={-99} max={100} suffix="%" />
           </Field>
         ) : null}
@@ -130,7 +130,7 @@ export function RequestTab({ ctx, draft, setDraft, onCreated }: { ctx: FlowCtx; 
       </Card>
 
       <div className="stack-lg">
-        <Card tone="dark" title="승인 주체 자동 결정" sub="제출 전 미리보기">
+        <Card tone="dark" title="승인 주체 자동 결정" sub="제출 전 미리보기 · 현재 값은 반영 이력 기준" actions={<Src kind="DEMO" />}>
           <div className="row" style={{ gap: 8 }}>
             <span className="flow-big-approver">{APPROVER_LABEL[plan.route.approver]}</span>
             <Pill tone={perm.ok ? 'good' : 'neutral'} icon={perm.ok ? 'check' : 'x'}>{perm.ok ? `현재 역할(${state.role})이 직접 승인 가능` : `현재 역할(${state.role}) 승인 범위 밖`}</Pill>

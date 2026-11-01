@@ -115,6 +115,41 @@ describe('geo agent kit', () => {
     expect(dup.사유).toContain('이미 요청');
   });
 
+  it('geo_request_keyword: AD Pilot · MILDO Lab에서 이미 올린 검색어는 거절 · 브랜드 검색어는 PM 승인', async () => {
+    const t = '매트리스 경도 고르는 법';
+    const adpilot = { id: 'chg_ad', createdAt: '2026-10-31T06:00:00Z', module: 'adpilot', kind: 'keyword_add', target: `${t} → PROBLEM_TEST 등록`, targetId: `term:${t}`, before: '미등록', after: 'PROBLEM_TEST · 입찰 900원', reason: '', requestedBy: 'AD Pilot', approver: 'AE', status: 'pending', history: [] } as ChangeRequest;
+    const { ctx: c1, created: c1made } = ctx([adpilot]);
+    const dup = await run(c1, 'geo_request_keyword', { query: t });
+    expect(dup.ok).toBe(false);
+    expect(dup.사유).toContain('AD Pilot');
+    expect(c1made).toHaveLength(0);
+    const lab = { ...adpilot, id: 'chg_lab', module: 'lab', target: t, targetId: 'labreg:매트리스경도고르는법' } as ChangeRequest;
+    expect((await run(ctx([lab]).ctx, 'geo_request_keyword', { query: 'q07' })).사유).toContain('MILDO Lab');
+    // 반려된 요청은 다시 올릴 수 있다
+    expect((await run(ctx([{ ...adpilot, status: 'rejected' }]).ctx, 'geo_request_keyword', { query: t })).ok).toBe(true);
+    const { ctx: c2, created } = ctx();
+    const brand = await run(c2, 'geo_request_keyword', { query: '밀도 매트리스 경도' });
+    expect(brand.ok).toBe(true);
+    expect(created[0]).toMatchObject({ approver: 'PM', targetId: 'term:밀도 매트리스 경도', status: 'pending' });
+    expect(brand.승인).toContain('PM');
+  });
+
+  it('geo_paid_surface: 급변 키워드만 원인 후보 · 급변 기준 표기', async () => {
+    const r = await run(ctx().ctx, 'geo_paid_surface');
+    const hold = r.질의.filter((q: { 판정: string }) => q.판정 === '자동 조정 보류 유지');
+    expect(hold.map((q: { 질의: string }) => q.질의)).toEqual(['매트리스 추천']);
+    expect(hold[0].원인후보[0].후보).toBe('경쟁사 입찰 상승');
+    expect(hold[0].SA키워드.성과급변).toBe(true);
+    expect(r.질의.filter((q: { 원인후보?: unknown }) => q.원인후보)).toHaveLength(1);
+    expect(r.급변기준).toContain('±50%');
+  });
+
+  it('geo_parse_answer: URL만 있는 답변은 자사 인용만 판정', async () => {
+    const r = await run(ctx().ctx, 'geo_parse_answer', { text: '자세한 내용은 https://mildo.kr 참고' });
+    expect(r.언급).toBe(false);
+    expect(r.판정).toContain('자사 인용만');
+  });
+
   it('브리프: 질문 매칭 · 구조 · 출력 규칙', () => {
     const c = ctx().ctx;
     const pick = (q: string) => agentKit.briefs!.filter((b) => b.match.test(q)).map((b) => b.id);

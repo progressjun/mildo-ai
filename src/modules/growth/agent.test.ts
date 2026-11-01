@@ -87,6 +87,52 @@ describe('growth agentKit', () => {
     expect(ok.생성).toBe(true);
     expect(created[1]).toMatchObject({ status: 'pending', approver: 'CLIENT', kind: 'test' });
     expect(((await pilot.execute({ name: '없는 매체', budget: 1 })) as { 생성: boolean }).생성).toBe(false);
+    // 빈 후보명이 첫 후보로 매칭되지 않는다
+    expect(((await pilot.execute({ name: '', budget: 10_000_000 })) as { 생성: boolean }).생성).toBe(false);
+    expect(((await pilot.execute({ name: '네이버 신규 지면', budget: -5 })) as { 생성: boolean }).생성).toBe(false);
+  });
+
+  it('파일럿 한도 누적 · 중복 요청 차단 · 변경 없는 재배분 요청 거절 (state.changes 기준)', async () => {
+    const { ctx, created } = makeCtx();
+    // 도구가 만든 요청이 다음 호출의 state.changes에 보이도록 연결
+    (ctx.state as { changes: ChangeRequest[] }).changes = created;
+    const tools = agentKit.tools(ctx);
+    const pilot = tools.find((x) => x.name === 'growth_request_pilot')!;
+    const realloc = tools.find((x) => x.name === 'growth_request_reallocation')!;
+    expect(((await pilot.execute({ name: '네이버 신규 지면', budget: 200_000_000 })) as { 생성: boolean }).생성).toBe(true);
+    const again = (await pilot.execute({ name: '네이버 신규 지면', budget: 10_000_000 })) as { 생성: boolean; 사유: string };
+    expect(again.생성).toBe(false);
+    expect(again.사유).toContain('이미 승인 흐름');
+    // 기존 2억 + 0.6억 = 2.6억 > 2.5억 → 차단, 0.5억은 허용
+    const over = (await pilot.execute({ name: '당근', budget: 60_000_000 })) as { 생성: boolean; 사유: string };
+    expect(over.생성).toBe(false);
+    expect(over.사유).toContain('기존 요청');
+    expect(((await pilot.execute({ name: '당근', budget: 50_000_000 })) as { 생성: boolean }).생성).toBe(true);
+    // 반려된 요청은 한도에서 빠진다
+    created[0].status = 'rejected';
+    expect(((await pilot.execute({ name: '영상 · YouTube', budget: 100_000_000 })) as { 생성: boolean }).생성).toBe(true);
+    // 재배분: 같은 안 중복 · 가안과 같은 시나리오는 만들지 않는다
+    const n = created.length;
+    expect(((await realloc.execute({ which: 'optimized' })) as { 생성: boolean }).생성).toBe(true);
+    const dup = (await realloc.execute({ which: 'optimized' })) as { 생성: boolean; 사유: string };
+    expect(dup.생성).toBe(false);
+    expect(dup.사유).toContain('이미 승인 흐름');
+    const same = (await realloc.execute({ which: 'scenario' })) as { 생성: boolean; 사유: string };
+    expect(same.생성).toBe(false);
+    expect(same.사유).toContain('변경 없음');
+    expect(((await realloc.execute({ which: 'scenario', shares: { naver_sa: 48 } })) as { 생성: boolean }).생성).toBe(true);
+    expect(created.length).toBe(n + 2);
+    expect(created.every((c) => c.status === 'pending' || c.status === 'rejected')).toBe(true);
+  });
+
+  it('growth_reallocate: 오늘 예산 제약 — 데모 시나리오 판정이 데이터로 나온다', async () => {
+    const { ctx } = makeCtx();
+    const t = agentKit.tools(ctx).find((x) => x.name === 'growth_reallocate')!;
+    const r = (await t.execute({})) as { 오늘예산제약: { 캠페인: string; 판정: string; 보류사유: string | null; 예상마감: string }[] };
+    const by = (n: string) => r.오늘예산제약.find((x) => x.캠페인 === n)!;
+    expect(by('SA_일반 제품')).toMatchObject({ 판정: '증액 후보', 예상마감: '20:22' });
+    expect(by('Meta_넓은 타겟')).toMatchObject({ 판정: '증액 보류', 보류사유: 'spike' });
+    expect(by('GFA_쇼핑 고객 확장').보류사유).toBe('account');
   });
 
   it('오프라인 브리프 ≥ 2개 · 질문 매칭 · 구조 준수', () => {

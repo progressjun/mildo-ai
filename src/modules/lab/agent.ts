@@ -7,10 +7,10 @@ import type { AgentTool } from '@/ai/claude';
 import type { IntentId } from '@/core/types';
 import { INTENT_IDS, SA_CAMPAIGNS } from '@/data/constants';
 import type { ModuleAgentKit, ToolContext } from '../types';
-import { demoTestCards, HYP_IDS, PATTERN_SEEDS, SA_CHAR_LIMITS, type HypId } from './data';
+import { demoTestCards, HYP_IDS, PATTERN_SEEDS, SA_CHAR_LIMITS, SCORE_WEIGHTS, type HypId } from './data';
 import {
   buildPipeline, candidateStatus, classifyIntent, collectCopies, creativeBrief, discoverCandidates, discoveryBrief, groupPools, INTENT_NAME,
-  judgeTestCard, LANDING_LEVEL_META, parseAiCandidates, pipelineBrief, pipelineSummary, registrationPayload, resolveCriteria, reviewAll, reviewBrief, reviewCopy, rn,
+  judgeTestCard, labBrief, labOverview, LANDING_LEVEL_META, ruleLabel, parseAiCandidates, pipelineBrief, pipelineSummary, registrationPayload, resolveCriteria, reviewAll, reviewBrief, reviewCopy, rn,
   skuEntries, skuFormula, SOURCE_LABEL, generateSaCopies, type CandidateSource, type TestCard,
 } from './engine';
 import { getLab } from './store';
@@ -41,21 +41,21 @@ export const agentKit: ModuleAgentKit = {
       execute: (inp) => {
         const d = ctx.state.data;
         const crit = resolveCriteria(getLab().criteria);
-        const { all, excludedExisting } = discoverCandidates(d, ctx.state.changes, getLab().aiCandidates, crit.targetRoas);
+        const { all, excludedExisting, excludedRegistered } = discoverCandidates(d, ctx.state.changes, getLab().aiCandidates, crit.targetRoas);
         const src = SOURCES.includes(inp.source as CandidateSource) ? (inp.source as CandidateSource) : null;
-        const pool = src === 'sku48' ? skuEntries(d, ctx.state.changes, crit.targetRoas) : all;
+        const sku = skuEntries(d, ctx.state.changes, crit.targetRoas);
+        const pool = src === 'sku48' ? [...sku].sort((a, b) => b.score - a.score || b.volume - a.volume) : all;
         const limit = Math.min(48, Math.max(1, Number(inp.limit) || 15));
         const minScore = Number(inp.minScore) || 0;
         const rows = pool.filter((c) => (!src || c.source === src) && (!isIntent(inp.intent) || c.intent === inp.intent) && c.score >= minScore).slice(0, limit);
-        const sku = skuEntries(d, ctx.state.changes, crit.targetRoas);
         const f = skuFormula();
         return {
           출처: SRC,
           공식: `제품 ${f.product} × 문제 ${f.problems} × 상황 ${f.situations} × 비교 ${f.criteria} = 검색 진입점 ${f.total}개 (p.36)`,
           소스별건수: Object.fromEntries(SOURCES.map((s) => [SOURCE_LABEL[s], all.filter((c) => c.source === s).length])),
-          이미등록제외: excludedExisting,
+          이미등록제외: excludedExisting, 보고서등록구문_파이프라인판정: excludedRegistered,
           진입점48: { 우선: sku.filter((c) => c.tier === 'priority').length, 검토: sku.filter((c) => c.tier === 'review').length, 보류: sku.filter((c) => c.tier === 'hold').length, 랜딩매칭: sku.filter((c) => c.landing.level === 'good').length },
-          점수기준: '검색량 40 + 랜딩 30 + 근거 20 + 구매 의도 10 (모듈 가정) · 70 이상 우선 · 50 이상 검토',
+          점수기준: `검색량 ${SCORE_WEIGHTS.volume} + 랜딩 ${SCORE_WEIGHTS.landing} + 근거 ${SCORE_WEIGHTS.evidence} + 구매 의도 ${SCORE_WEIGHTS.intent} (모듈 가정) · ${SCORE_WEIGHTS.priority} 이상 우선 · ${SCORE_WEIGHTS.review} 이상 검토 · 목표 ROAS ${crit.targetRoas}% 기준`,
           후보: rows.map((c) => ({
             구문: c.phrase, 출처: SOURCE_LABEL[c.source], 근원: c.origin.slice(0, 60), 의도: INTENT_NAME(c.intent), 점수: c.score, 등급: c.tier,
             검색량: c.volume, 검색량근거: c.volumeNote, 랜딩: `${c.landing.label} · ${LANDING_LEVEL_META[c.landing.level].label}`, 랜딩메모: c.landing.notes.slice(0, 2),
@@ -118,7 +118,7 @@ export const agentKit: ModuleAgentKit = {
           const r = reviewCopy(inp.text.slice(0, 400), d, { limit: Number(inp.limit) || undefined });
           return {
             출처: 'REVIEW_RULES (p.27 · p.35) + 상품 · 프로모션 데이터 대조 (TEST DATA)',
-            문안: r.text, 판정: r.level, 지적: r.findings.map((f) => ({ 규칙: f.ruleId, 수준: f.level, 표현: f.match, 사유: f.reason, 수정: f.suggestion, 근거: f.basis })),
+            문안: r.text, 판정: r.level, 지적: r.findings.map((f) => ({ 규칙: ruleLabel(f.ruleId), 수준: f.level, 표현: f.match, 사유: f.reason, 수정: f.suggestion, 근거: f.basis })),
             가격대조: r.prices.map((p) => ({ 표기: p.raw, 결과: p.status, 기준: p.ref, 메모: p.note })),
             수정안: r.changed ? r.suggested : null, 수정안판정: r.changed ? r.suggestedLevel : null,
           };
@@ -158,6 +158,28 @@ export const agentKit: ModuleAgentKit = {
       },
     },
     {
+      name: 'lab_overview',
+      description: 'MILDO Lab 현황 요약(발굴 후보 · 파이프라인 단계 · 테스트 카드 판정 · 검수 차단 · 다음 운영 루프 일정)과 오늘 처리할 항목을 판정 기준 · 근거 수치와 함께 반환합니다.',
+      inputSchema: { type: 'object', properties: {} },
+      execute: () => {
+        const d = ctx.state.data;
+        const lab = getLab();
+        const ov = labOverview(d, ctx.state.changes, lab.criteria, allCards(d.today), lab.decisions, { aiCandidates: lab.aiCandidates, aiCopies: lab.aiCopies, role: ctx.state.role });
+        const t = ov.tiles;
+        return {
+          출처: SRC,
+          기준일: `${d.today} ${d.currentHour}시`,
+          발굴: { 미등록후보: t.discover.fresh, 우선: t.discover.priority, 검색어보고서미등록: t.discover.searchTerm, 목표이상: t.discover.searchTermHigh, 진입점48: t.discover.sku48, 랜딩매칭: t.discover.skuGood },
+          파이프라인: { 전체: t.pipeline.total, 단계별: t.pipeline.byStep, 판정대기: t.pipeline.awaiting, 기한경과: t.pipeline.overdue },
+          테스트카드: { 전체: t.cards.total, 판정별: t.cards.byVerdict, 결정완료: t.cards.decided, 수신요청: ov.incoming.length },
+          검수: { 전체: t.review.total, 차단: t.review.block, 경고: t.review.warn, 확인: t.review.check, 통과: t.review.pass },
+          일정: { 주간브리프: t.loop.weekly?.date ?? null, 테스트종료: t.loop.testEnd ? `${t.loop.testEnd.date} ${t.loop.testEnd.ref ?? ''}`.trim() : null, 월간리뷰: t.loop.monthly?.date ?? null },
+          오늘처리: ov.todos.map((x) => ({ 항목: x.title, 근거: x.basis, 화면: `lab · ${x.tab}` })),
+          승인대기: ov.labPending.length, 현재역할승인가능: ov.mine.length,
+        };
+      },
+    },
+    {
       name: 'lab_register_candidate',
       description: '구문형 키워드 후보를 테스트 전용 그룹 등록 요청(ChangeRequest, pending)으로 만듭니다. 실제 등록은 담당 AE 승인 후 반영됩니다. 이미 등록 · 요청된 구문은 만들지 않고 상태를 알려줍니다.',
       inputSchema: {
@@ -183,6 +205,11 @@ export const agentKit: ModuleAgentKit = {
   ],
   briefs: [
     {
+      id: 'lab-overview',
+      match: /((mildo\s?)?lab|랩(?!업)).*(현황|요약|오늘|할 일|우선)|운영 루프|주간 인사이트/i,
+      build: (ctx) => labBrief(ctx.state.data, ctx.state.changes, getLab().criteria, allCards(ctx.state.data.today), [...PATTERN_SEEDS, ...getLab().library]),
+    },
+    {
       id: 'lab-pipeline',
       match: /(테스트.*(판정|결과|파이프라인)|판정.*(키워드|테스트)|랩업|확장.*유지.*제외|mildo\s?lab|lab\s?판정|테스트 그룹)/i,
       build: (ctx) => pipelineBrief(ctx.state.data, ctx.state.changes, getLab().criteria),
@@ -190,7 +217,7 @@ export const agentKit: ModuleAgentKit = {
     {
       id: 'lab-discover',
       match: /(롱테일|구문형|키워드.*(발굴|후보|확장)|48|진입점|검색어 보고서|sku)/i,
-      build: (ctx) => discoveryBrief(ctx.state.data, ctx.state.changes, getLab().aiCandidates),
+      build: (ctx) => discoveryBrief(ctx.state.data, ctx.state.changes, getLab().aiCandidates, getLab().criteria),
     },
     {
       id: 'lab-review',

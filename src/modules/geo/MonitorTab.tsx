@@ -4,15 +4,15 @@ import type { IntentId } from '@/core/types';
 import { useAi } from '@/ai/useAi';
 import { AI_ERROR_COPY, type AiError } from '@/ai/claude';
 import { fmt, fmtDate, hhmm, nowIso } from '@/core/util';
-import { Button, Callout, Card, DataTable, Empty, Pill, Segmented, Src, Swatch, type Column } from '@/ui/primitives';
+import { toCsv } from '@/core/download';
+import { Button, Callout, Card, CopyButton, DataTable, DownloadButton, Empty, Pill, Segmented, Src, Swatch, type Column } from '@/ui/primitives';
 import { HBarChart, LineChart, ShareBar } from '@/ui/charts';
-import { CITE_LABEL, GEO_ROUNDS, GEO_RULES, LIVE_ENGINE } from './data';
+import { CITE_LABEL, COMPETITOR_COLOR, COMPETITOR_COLOR_FALLBACK, GEO_ROUNDS, GEO_RULES, LIVE_ENGINE } from './data';
 import {
-  BRAND, INTENT_LABEL, liveSummary, liveVerdict, parseAiAnswer, type GeoSnapshot, type LiveRecord, type QueryStat, type Visibility,
+  BRAND, dateLabel, INTENT_LABEL, liveSummary, liveVerdict, parseAiAnswer, visibilityMarkdown, visibilityRows, type GeoSnapshot, type LiveRecord, type QueryStat, type Visibility,
 } from './engine';
 import { EngineCell, IntentPill, LiveCell, VerdictBadge } from './parts';
 
-const COMP_COLORS = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-7', '--series-8'];
 type IntentFilter = 'all' | IntentId;
 
 export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLive, onClearLive }: {
@@ -30,6 +30,8 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
   const rows = useMemo(() => vis.queries.filter((q) => intent === 'all' || q.query.intent === intent), [vis, intent]);
   const selected = vis.queries.find((q) => q.query.id === sel) ?? null;
   const ls = liveSummary(Object.values(latest));
+  const nE = snap.engines.length;
+  const need = Math.min(GEO_RULES.coveredEngines, Math.max(1, nE));
 
   const reason = ai.backend === 'checking' ? 'AI 연결 상태를 확인하는 중입니다.'
     : ai.connected ? '' : 'AI 미연결 — 설정에서 Anthropic API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.';
@@ -66,7 +68,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
     {
       key: 'chk', label: <span className="sr-only">라이브 진단 대상</span>, width: 28,
       render: (r) => (
-        <input type="checkbox" className="geo-row-check" aria-label={`${r.query.text} 라이브 진단 대상`} checked={checked.has(r.query.id)}
+        <input id={`geo-live-${r.query.id}`} type="checkbox" className="geo-row-check" aria-label={`${r.query.text} 라이브 진단 대상`} checked={checked.has(r.query.id)}
           onClick={(e) => e.stopPropagation()} onChange={() => toggle(r.query.id)} />
       ),
     },
@@ -75,17 +77,17 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
       render: (r) => (
         <div className="stack-sm" style={{ gap: 2 }}>
           <span className="geo-qtext">{r.query.text}</span>
-          <span className="row" style={{ gap: 4 }}><IntentPill intent={r.query.intent} />{r.gap ? <Pill tone="serious" icon="alert" title={r.gapBasis}>경쟁사 우위 · 경쟁 {r.competitorEngines}/5 · 자사 {r.mentionedEngines}/5 (기준 ≥{GEO_RULES.gapCompetitorEngines} · ≤{GEO_RULES.gapBrandMax})</Pill> : null}</span>
+          <span className="row" style={{ gap: 4 }}><IntentPill intent={r.query.intent} />{r.gap ? <Pill tone="serious" icon="alert" title={r.gapBasis}>경쟁사 우위 · 경쟁 {r.competitorEngines}/{nE} · 자사 {r.mentionedEngines}/{nE} (기준 ≥{GEO_RULES.gapCompetitorEngines} · ≤{GEO_RULES.gapBrandMax})</Pill> : null}</span>
         </div>
       ),
     },
-    { key: 'status', label: `판정 (확보 ≥${GEO_RULES.coveredEngines}/5)`, sort: (r) => r.mentionedEngines, render: (r) => <VerdictBadge v={r.status} /> },
+    { key: 'status', label: `판정 (확보 ≥${need}/${nE})`, sort: (r) => r.mentionedEngines, render: (r) => <VerdictBadge v={r.status} /> },
     ...snap.engines.map((e): Column<QueryStat> => ({
       key: e.id, label: e.short, align: 'center', sort: (r) => (r.cells[e.id]?.mentioned ? 10 - (r.cells[e.id]?.position ?? 9) : 0),
       render: (r) => <EngineCell cell={r.cells[e.id]} rounds={r.roundsMentioned[e.id]} />,
     })),
     { key: 'live', label: <span className="row" style={{ gap: 4 }}>{LIVE_ENGINE.name}<Src kind="LIVE" /></span>, align: 'center', render: (r) => <LiveCell rec={latest[r.query.id]} /> },
-    { key: 'comp', label: '최다 경쟁사', sort: (r) => r.competitorEngines, render: (r) => r.topCompetitor ? <span className="small">{r.topCompetitor} <span className="muted">· {r.competitorEngines}/5 엔진</span></span> : <span className="muted xs">없음</span> },
+    { key: 'comp', label: '최다 경쟁사', sort: (r) => r.competitorEngines, render: (r) => r.topCompetitor ? <span className="small">{r.topCompetitor} <span className="muted">· {r.competitorEngines}/{nE} 엔진</span></span> : <span className="muted xs">없음</span> },
   ];
 
   const trendSeries = useMemo(() => [
@@ -109,8 +111,15 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
 
       <div className="grid g-3">
         <Card className="span-2" title="질의 × 엔진 매트릭스"
-          sub={`${fmtDate(vis.date ?? '')} 정기 진단 · 질의 ${vis.queries.length}개 × 엔진 ${snap.engines.length}개 · 셀: 수면밀도 언급 순서 · 경쟁사 수 · 최근 ${GEO_ROUNDS}회 중 언급 횟수`}
-          actions={<Src kind="DEMO" title="데모 진단 스냅샷 · 실제 엔진 응답 아님" />}>
+          sub={`${dateLabel(vis.date)} 정기 진단 · 질의 ${vis.queries.length}개 × 엔진 ${snap.engines.length}개 · 셀: 수면밀도 언급 순서 · 경쟁사 수 · 최근 ${GEO_ROUNDS}회 중 언급 횟수`}
+          actions={
+            <>
+              <Src kind="DEMO" title="데모 진단 스냅샷 · 실제 엔진 응답 아님" />
+              <CopyButton text={() => visibilityMarkdown(vis, latest)} label="진단 결과 복사" />
+              <DownloadButton filename={`searchtune-geo-${vis.date ?? 'snapshot'}.md`} data={() => visibilityMarkdown(vis, latest)} label=".md" />
+              <DownloadButton filename={`searchtune-geo-${vis.date ?? 'snapshot'}.csv`} data={() => toCsv(visibilityRows(vis, latest))} mime="text/csv;charset=utf-8" label="CSV" />
+            </>
+          }>
           <div className="geo-legend">
             <span className="geo-cell first">1번째</span><span>가장 먼저 언급</span>
             <span className="geo-cell on">2번째</span><span>언급</span>
@@ -124,7 +133,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
         </Card>
 
         <div className="stack-lg">
-          <Card title={selected ? `'${selected.query.text}'` : '질의 선택'} sub={selected ? `${INTENT_LABEL[selected.query.intent]} · ${fmtDate(vis.date ?? '')} 진단` : '매트릭스에서 질의를 고르세요'} actions={<Src kind="DEMO" />}>
+          <Card title={selected ? `'${selected.query.text}'` : '질의 선택'} sub={selected ? `${INTENT_LABEL[selected.query.intent]} · ${dateLabel(vis.date)} 진단` : '매트릭스에서 질의를 고르세요'} actions={<Src kind="DEMO" />}>
             {selected ? (
               <div className="stack-sm">
                 <VerdictBadge v={selected.status} inline />
@@ -201,17 +210,17 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
             ]} />
         </Card>
         <div className="stack-lg">
-          <Card title="경쟁 6개사 대비 언급 점유" sub={`${fmtDate(vis.date ?? '')} · 셀 단위 언급 수 기준 (RFP 경쟁사)`} actions={<Src kind="DEMO" />}>
+          <Card title="경쟁 6개사 대비 언급 점유" sub={`${dateLabel(vis.date)} · 셀 단위 언급 수 기준 (RFP 경쟁사)`} actions={<Src kind="DEMO" />}>
             <ShareBar parts={[
               { label: BRAND, value: vis.overall.brandMentions, colorVar: '--accent' },
-              ...vis.competitors.map((c, i) => ({ label: c.name, value: c.mentions, colorVar: COMP_COLORS[i % COMP_COLORS.length] })),
+              ...vis.competitors.map((c) => ({ label: c.name, value: c.mentions, colorVar: COMPETITOR_COLOR[c.name] ?? COMPETITOR_COLOR_FALLBACK })),
             ]} />
             <div className="xs muted">점유 = {BRAND} 언급 ÷ ({BRAND} + 경쟁 6개사 언급) = {fmt.pct(vis.overall.sov * 100, 1)}{vis.overall.prevSov !== null ? ` · 직전 ${fmt.pct(vis.overall.prevSov * 100, 1)}` : ''}</div>
             <DataTable rows={vis.competitors} rowKey={(c) => c.name}
               columns={[
                 { key: 'n', label: '경쟁사', render: (c) => <strong className="small">{c.name}</strong> },
                 { key: 'm', label: '언급 셀', align: 'right', sort: (c) => c.mentions, render: (c) => <span className="num small">{c.mentions}</span> },
-                { key: 'e', label: '엔진', align: 'right', render: (c) => <span className="num small">{c.engines}/5</span> },
+                { key: 'e', label: '엔진', align: 'right', render: (c) => <span className="num small">{c.engines}/{nE}</span> },
                 { key: 'a', label: '자사보다 먼저', align: 'right', sort: (c) => c.aheadOfBrand, render: (c) => <span className="num small">{c.aheadOfBrand}</span> },
               ]} />
           </Card>

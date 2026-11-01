@@ -3,7 +3,8 @@
  * 감지 → 배정 → 조치 → 보고 운영 타임라인.
  */
 import { useState } from 'react';
-import { Pill, PageHeader, Src, Tabs } from '@/ui/primitives';
+import type { AppState } from '@/core/store';
+import { PageHeader, Segmented, Src, Tabs } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
 import { BoardTab } from './BoardTab';
 import { ChangeDrawer } from './ChangeDrawer';
@@ -20,12 +21,13 @@ export type FlowTab = 'board' | 'timeline' | 'promo' | 'report' | 'request' | 's
 
 export default function View() {
   const ctx = useFlow();
-  const { summary, checks, cases, state, clock, data } = ctx;
+  const { summary, checks, cases, state, clock, data, dispatch } = ctx;
   const [tab, setTab] = useState<FlowTab>('board');
   const [openId, setOpenId] = useState<string | null>(null);
   const [draft, setDraft] = useState<RequestDraft>(EMPTY_DRAFT);
-  const live = data.promotions.find((p) => p.start <= data.today && p.end >= data.today);
-  const [reportId, setReportId] = useState<string>(live?.id ?? data.promotions[0]?.id ?? '');
+  const promos = data.promotions ?? [];
+  const live = promos.find((p) => p.start <= data.today && p.end >= data.today);
+  const [reportId, setReportId] = useState<string>(live?.id ?? promos[0]?.id ?? '');
   const sc = stageCounts(cases);
   const openCases = cases.filter((c) => c.current !== 'done').length;
   const fails = checks.reduce((a, c) => a + c.counts.fail, 0);
@@ -36,7 +38,14 @@ export default function View() {
       <PageHeader eyebrow="04 REVENUE GROWTH · MILDO FLOW" title="MILDO Flow"
         sub="요청 · 승인 · 반영 이력을 한 화면에서 처리하고, 프로모션은 오픈 전 자동 점검과 종료 후 자동 리포트로 묶어 브랜드 ↔ 대행사 확인 왕복을 줄입니다."
         sources={<><Src kind="PROPOSAL" page="p.31" /><Src kind="PROPOSAL" page="p.53" /><Src kind="PROPOSAL" page="p.15" /><Src kind="DEMO" /></>}
-        actions={<Pill tone="dark" icon="users">현재 역할 {state.role} · 승인 범위 {roleScopeLabel(state.role)}</Pill>} />
+        actions={
+          <div className="flow-role" title="승인 · 반려 · 반영 · 롤백 권한은 요청의 승인 주체와 현재 역할을 대조합니다 (p.53)">
+            <span className="xs muted">현재 역할</span>
+            <Segmented<AppState['role']> label="현재 역할" value={state.role} onChange={(role) => dispatch({ type: 'role/set', role })}
+              options={[{ id: '담당 AE', label: '담당 AE' }, { id: 'PM', label: 'PM' }, { id: '수면밀도', label: '수면밀도' }]} />
+            <span className="xs ink2">승인 범위 {roleScopeLabel(state.role)} 건</span>
+          </div>
+        } />
 
       <section className="card dark flow-hero" aria-label="Flow 요약">
         <button type="button" className="flow-hero-item main" onClick={() => setTab('board')}>
@@ -62,7 +71,7 @@ export default function View() {
         <button type="button" className="flow-hero-item" onClick={() => setTab('promo')}>
           <span className="flow-hero-label">프로모션 점검 실패</span>
           <span className="flow-hero-value num">{fails}</span>
-          <span className="flow-hero-foot">{checks.map((c) => `${c.promotion.name.split(' ')[0]} ${c.verdict.label}`).join(' · ') || '프로모션 없음'}</span>
+          <span className="flow-hero-foot">{checks.map((c) => `${c.promotion.name.split(' ')[0]} ${c.verdict.label}(실패 ${c.counts.fail})`).join(' · ') || '프로모션 없음'} · 기준 실패 0건 = 오픈 가능</span>
         </button>
         <button type="button" className="flow-hero-item" onClick={() => setTab('timeline')}>
           <span className="flow-hero-label">진행 중 이슈</span>

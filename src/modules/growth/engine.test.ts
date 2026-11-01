@@ -3,19 +3,21 @@
  * 데모 시나리오가 엔진 계산으로 실제 잡히는지(하드코딩 아님) 검증한다.
  */
 import { describe, expect, it } from 'vitest';
-import type { DailyMediaRow, Dataset, MediaId } from '@/core/types';
+import type { ChangeRequest, DailyMediaRow, Dataset, MediaId } from '@/core/types';
 import { DEMO } from '@/data/demo';
 import { AD_PILOT, MEDIA, MEDIA_IDS, NEW_MEDIA_PILOT, RFP } from '@/data/constants';
-import { addDays, hashString, rng } from '@/core/util';
-import { ALLOCATION_GUARDRAILS, CURVE_PRIORS, REBALANCE_RULES } from './data';
+import { addDays, fmt, hashString, rng } from '@/core/util';
+import { ALLOCATION_GUARDRAILS, CURVE_PRIORS, PACE_RULES, REBALANCE_RULES } from './data';
 import {
-  PROPOSAL_SHARES, allocationModel, applyDaSaCredit, belowTargetKeywords, calendarView, cannibalization, coPromoDemand, curveMarginal, curveRevenue, daSaAnalysis,
+  PROPOSAL_SHARES, allocationModel, applyDaSaCredit, belowTargetKeywords, budgetConstraints, calendarView, cannibalization, coPromoDemand, curveMarginal, curveRevenue,
+  accountForCampaign, accountRunway, activeDuplicate, daSaAnalysis, exhaustText, expandKeywordsOf, maxShareMove, pilotCommitments, recentHourlyDelta, PILOT_TARGET_PREFIX,
   defaultPilots, equalizeMarginal, evaluateAllocation, fitLogLog, fitResponseCurves, funnelDiagnosis, funnelRates, growthFormula, growthPrompt, growthSignals,
   holdoutChange, holdoutDesign, keywordCpcSpikes, landingFindings, landingType, marginalCurvePoints, normInv, normalizeShares, ols, pilotChange, pilotPlan,
   reallocationChange, rebalanceShares, requiredConversions, rfpSegmentSummary, saCampaignPerformance, sameWeekdayAdjust, scoreNewMedia, skuExpansionSummary,
   targetGroupView, type ResponseCurve, type Shares,
 } from './engine';
 import { allocationBrief, campaignBrief, daSaBrief, funnelBrief, newMediaBrief, overviewBrief } from './briefs';
+import { paceCampaigns, resolveConfig } from '@/modules/adpilot/engine';
 
 function emptyData(): Dataset {
   return { ...DEMO, dates: [], mediaDaily: [], mediaHourly: [], salesDaily: [], keywords: [], campaigns: [], accounts: [], searchTerms: [], products: [], promotions: [], brandSearchDaily: [] };
@@ -311,7 +313,146 @@ describe('DA→SA 기여 반영 · 시뮬레이터 묶음', () => {
     expect(c).toMatchObject({ module: 'growth', kind: 'budget', approver: 'CLIENT', requestedBy: 'PM' });
     expect(c.before).toContain('SA 43.0%');
     expect(c.changePct).toBeGreaterThan(0);
+    expect(c.changePct).toBeCloseTo(maxShareMove(m.equalize.shares), 1);
+    expect(c.targetId.startsWith('growth-realloc:')).toBe(true);
+    // 같은 입력이면 같은 키 (결정적) · 다른 배분이면 다른 키
+    expect(reallocationChange(allocationModel(DEMO), 'optimized', 'AE').targetId).toBe(c.targetId);
+    expect(reallocationChange(m, 'scenario', 'PM').targetId).not.toBe(c.targetId);
+    expect(maxShareMove(PROPOSAL_SHARES)).toBe(0);
     noBad(JSON.stringify(c));
+  });
+
+  it('activeDuplicate: 살아 있는 같은 대상 요청만 중복 (반려 · 롤백 · 다른 모듈 제외)', () => {
+    const c = reallocationChange(allocationModel(DEMO), 'optimized', 'PM');
+    const mk = (status: ChangeRequest['status'], module = 'growth'): ChangeRequest => ({ ...c, id: `x_${status}_${module}`, createdAt: '', history: [], status, module });
+    expect(activeDuplicate([], c.targetId)).toBeNull();
+    expect(activeDuplicate(undefined, c.targetId)).toBeNull();
+    expect(activeDuplicate([mk('rejected'), mk('rolled_back')], c.targetId)).toBeNull();
+    expect(activeDuplicate([mk('pending', 'adpilot')], c.targetId)).toBeNull();
+    expect(activeDuplicate([mk('rejected'), mk('pending')], c.targetId)?.status).toBe('pending');
+    expect(activeDuplicate([mk('applied')], c.targetId)?.status).toBe('applied');
+  });
+});
+
+/* ---------------- 예산 제약 신호 (조기 소진 → 재배분 입력) ---------------- */
+
+describe('예산 제약 신호 · 일 예산 조기 소진', () => {
+  it('기준값: 최근 2시간 · 피크 21시 · 계정 잔액 1일치 (초기값), 조기 소진 기준은 AD Pilot 설정(23시 전)과 같다', () => {
+    expect(PACE_RULES).toEqual({ recentHours: 2, peakStartHour: 21, runwayMinDays: 1 });
+    expect(resolveConfig().exhaustBeforeHour).toBe(23);
+  });
+
+  it('같은 숫자는 같은 계산: 대상 · 예상 마감 · 소진 배수가 AD Pilot paceCampaigns(Board · 커맨드 센터와 같은 28일 곡선)와 일치', () => {
+    const bc = budgetConstraints(DEMO);
+    const paces = paceCampaigns(DEMO).filter((p) => p.earlyExhaust);
+    expect(bc.map((x) => x.id).sort()).toEqual(paces.map((p) => p.id).sort());
+    for (const x of bc) {
+      const p = paces.find((y) => y.id === x.id)!;
+      expect(x.exhaustHour).toBeCloseTo(p.curveExhaustHour ?? p.linearExhaustHour ?? NaN, 9);
+      expect(x.paceIndex).toBeCloseTo(p.projectedRatio, 9);
+    }
+    // 예상 마감 오름차순 (가장 이른 마감이 먼저)
+    for (let i = 1; i < bc.length; i++) expect(bc[i - 1].exhaustHour ?? 99).toBeLessThanOrEqual(bc[i].exhaustHour ?? 99);
+  });
+
+  it('최근 2시간 광고비 vs 동요일 · 동시간 4주 평균: 데모 Meta 14~15시 +50% 이상, SA는 ±30% 이내 (데이터 계산)', () => {
+    const meta = recentHourlyDelta(DEMO, 'meta');
+    expect(meta.hours).toEqual([14, 15]);
+    expect(meta.baselineDays).toBe(4);
+    expect(meta.deltaPct).toBeGreaterThan(50);
+    expect(Math.abs(recentHourlyDelta(DEMO, 'naver_sa').deltaPct)).toBeLessThan(30);
+    expect(recentHourlyDelta(emptyData(), 'meta').deltaPct).toBeNaN();
+    expect(recentHourlyDelta({ ...DEMO, currentHour: 0 }, 'meta').hours).toEqual([0]);
+  });
+
+  it('데모 시나리오: Meta_넓은 타겟(1.58) 광고비 급변 · SA_일반 제품(1.32) 증액 후보 · GFA 잔액 1일치 미만 + 자동충전 실패 · 매트리스 추천 CPC 급등', () => {
+    const m = allocationModel(DEMO);
+    const bc = budgetConstraints(DEMO, m);
+    const by = (n: string) => bc.find((x) => x.campaign === n)!;
+    const meta = by('Meta_넓은 타겟');
+    const sa = by('SA_일반 제품');
+    const gfa = by('GFA_쇼핑 고객 확장');
+    const cmp = by('SA_비교 · 검토');
+    expect([meta, sa, gfa, cmp].every(Boolean)).toBe(true);
+    // 시드 페이스(1.58 · 1.32)가 시간대 곡선 소진 배수로 그대로 나온다
+    expect(meta.paceIndex).toBeCloseTo(1.58, 1);
+    expect(sa.paceIndex).toBeCloseTo(1.32, 1);
+    // 저녁 피크(21시) 전 마감
+    expect(meta.missesPeak && sa.missesPeak).toBe(true);
+    expect(meta.exhaustHour!).toBeLessThan(sa.exhaustHour!);
+    expect(meta).toMatchObject({ verdict: 'hold', holdKind: 'spike' });
+    expect(meta.basis).toContain('기준 ±30%');
+    expect(sa).toMatchObject({ verdict: 'raise', holdKind: null, campaignEfficient: true });
+    expect(sa.marginalRoas).toBeGreaterThanOrEqual(m.equalize.marginalRoas);
+    expect(sa.basis).toContain('균등화 기준');
+    expect(gfa).toMatchObject({ verdict: 'hold', holdKind: 'account' });
+    expect(gfa.basis).toContain('자동충전 실패');
+    expect(gfa.basis).toContain('0.91일치');
+    expect(cmp).toMatchObject({ verdict: 'hold', holdKind: 'cpc' });
+    expect(cmp.basis).toContain("'매트리스 추천'");
+    // 소진 정상 캠페인은 대상이 아니다
+    expect(bc.map((x) => x.campaign)).not.toContain('SA_브랜드 방어');
+    for (const x of bc) noBad(x.basis);
+  });
+
+  it('하드코딩 아님: 급변 · 잔액 · CPC 원인을 없애면 판정이 한계 ROAS · 캠페인 효율 기준으로 바뀐다', () => {
+    const wd = DEMO.mediaHourly.find((r) => r.date === DEMO.today)!.weekday;
+    const lastSame = DEMO.mediaHourly.filter((r) => r.weekday === wd && r.date < DEMO.today).map((r) => r.date).sort().pop()!;
+    const ref = new Map(DEMO.mediaHourly.filter((r) => r.date === lastSame).map((r) => [`${r.media}|${r.hour}`, r.cost]));
+    const mediaHourly = DEMO.mediaHourly.map((r) => (r.date === DEMO.today && r.media === 'meta' && (r.hour === 14 || r.hour === 15) ? { ...r, cost: ref.get(`${r.media}|${r.hour}`) ?? r.cost } : r));
+    const accounts = DEMO.accounts.map((a) => (a.media === 'naver_gfa' ? { ...a, balance: 30_000_000, autoCharge: 'ok' as const } : a));
+    const keywords = DEMO.keywords.map((k) => (k.text === '매트리스 추천' ? { ...k, daily: k.daily.map((x, i) => (i >= k.daily.length - 3 ? { ...x, cost: x.clicks * (k.daily[0].cost / Math.max(1, k.daily[0].clicks)) } : x)) } : k));
+    const calm = budgetConstraints({ ...DEMO, mediaHourly, accounts, keywords });
+    const by = (n: string) => calm.find((x) => x.campaign === n);
+    const meta = by('Meta_넓은 타겟');
+    expect(meta).toBeTruthy();
+    expect(Math.abs(meta!.recent.deltaPct)).toBeLessThan(30);
+    expect(meta!.verdict).toBe('bid');
+    expect(meta!.marginalRoas).toBeLessThan(meta!.threshold);
+    expect(by('GFA_쇼핑 고객 확장')?.holdKind).not.toBe('account');
+    expect(by('SA_비교 · 검토')?.holdKind).not.toBe('cpc');
+    expect(by('SA_비교 · 검토')?.verdict).toBe('raise');
+  });
+
+  it('목표 미달 캠페인은 한계 ROAS가 높아도 증액 후보가 아니다', () => {
+    const keywords = DEMO.keywords.map((k) => (k.intent === 'generic' ? { ...k, last14: { ...k.last14, revenue: k.last14.cost * 2 } } : k));
+    const sa = budgetConstraints({ ...DEMO, keywords }).find((x) => x.campaign === 'SA_일반 제품')!;
+    expect(sa.campaignEfficient).toBe(false);
+    expect(sa.verdict).toBe('bid');
+    expect(sa.basis).toContain('목표 미달');
+  });
+
+  it('accountForCampaign · accountRunway: 매체 일치 · 버티컬 접두사 · 후불은 Infinity', () => {
+    expect(accountForCampaign(DEMO, { media: 'naver_gfa', name: 'GFA_x' })?.id).toBe('acc_gfa');
+    expect(accountForCampaign(DEMO, { media: 'vertical', name: '쿠팡_상품광고' })?.media).toBe('coupang');
+    expect(accountForCampaign(DEMO, { media: 'vertical', name: '오늘의집_상품광고' })?.media).toBe('ohouse');
+    expect(accountForCampaign(DEMO, { media: 'vertical', name: '기타' })).toBeUndefined();
+    expect(accountRunway(DEMO.accounts.find((a) => a.id === 'acc_gfa'))).toBeCloseTo(2_350_000 / 2_590_000, 6);
+    expect(accountRunway(DEMO.accounts.find((a) => a.id === 'acc_meta'))).toBe(Infinity);
+    expect(accountRunway(undefined)).toBe(Infinity);
+    expect(accountRunway({ ...DEMO.accounts[0], avgDailySpend: 0 })).toBe(Infinity);
+  });
+
+  it('소진 정상 · 캠페인 없음 · 빈 데이터 · 예산 0 · 시간대 데이터 없음: 예외 없이 처리', () => {
+    const slow = { ...DEMO, campaigns: DEMO.campaigns.map((c) => ({ ...c, spentToday: Math.round(c.dailyBudget * 0.3) })) };
+    expect(budgetConstraints(slow)).toEqual([]);
+    expect(budgetConstraints({ ...DEMO, campaigns: [] })).toEqual([]);
+    expect(budgetConstraints(emptyData())).toEqual([]);
+    expect(budgetConstraints({ ...DEMO, campaigns: DEMO.campaigns.map((c) => ({ ...c, dailyBudget: 0 })) })).toEqual([]);
+    expect(budgetConstraints({ ...DEMO, campaigns: DEMO.campaigns.map((c) => ({ ...c, status: 'off' as const })) })).toEqual([]);
+    // 시간대 데이터가 없으면 균등 곡선 · 급변 판정 불가(NaN) — 문구에 NaN이 섞이지 않는다
+    const noHourly = budgetConstraints({ ...DEMO, mediaHourly: [] });
+    expect(noHourly.length).toBeGreaterThan(0);
+    expect(noHourly.every((x) => x.holdKind !== 'spike')).toBe(true);
+    noBad(JSON.stringify(noHourly.map((x) => x.basis)));
+  });
+
+  it('exhaustText: 시각 표기 · 자정 이후 · 없음', () => {
+    expect(exhaustText(19.5)).toBe('19:30');
+    expect(exhaustText(23.13)).toBe('23:08');
+    expect(exhaustText(25)).toBe('자정 이후');
+    expect(exhaustText(null)).toBe('소진 없음');
+    expect(exhaustText(NaN)).toBe('소진 없음');
   });
 });
 
@@ -517,6 +658,19 @@ describe('p.34–36 타겟 그룹 · SA 캠페인 · SKU', () => {
       expect(x.verdict === 'expand').toBe(expectExpand);
     }
     expect(c.find((x) => x.intent === 'compare')!.landingMismatch).toBeGreaterThan(0);
+    // 키워드 profile star(고효율 · 노출 손실 26~42%)가 캠페인 합계에 묻히지 않고 키워드 단위로 잡힌다
+    const stars = c.flatMap((x) => x.expandKeywords.map((k) => k.keyword));
+    for (const kw of ['수면밀도', '퀸 매트리스', '허리 편안한 매트리스', '신혼 매트리스']) expect(stars).toContain(kw);
+    expect(c.find((x) => x.intent === 'generic')!.verdict).not.toBe('expand');
+    for (const x of c) for (const k of x.expandKeywords) {
+      expect(k.ratioPct).toBeGreaterThanOrEqual(AD_PILOT.highEfficiencyRoasRatio * 100);
+      expect(k.lostShare).toBeGreaterThanOrEqual(AD_PILOT.lostShareTrigger);
+    }
+    // 테스트 · 집행 없음 · NaN 키워드는 제외
+    const kw0 = DEMO.keywords.find((k) => k.text === '퀸 매트리스')!;
+    expect(expandKeywordsOf([{ ...kw0, status: 'test' }])).toEqual([]);
+    expect(expandKeywordsOf([{ ...kw0, last14: { ...kw0.last14, cost: 0 } }])).toEqual([]);
+    expect(expandKeywordsOf([{ ...kw0, impressionShareLost: 0.1 }])).toEqual([]);
     const e = saCampaignPerformance(emptyData());
     expect(e.every((x) => x.verdict === 'nodata')).toBe(true);
     noBad(e.map((x) => x.basis).join(' '));
@@ -530,6 +684,8 @@ describe('p.34–36 타겟 그룹 · SA 캠페인 · SKU', () => {
 
   it('키워드 보조 신호: 데모 \'매트리스 추천\' 최근 3일 CPC 급등 · 목표 미달 키워드 계산', () => {
     expect(keywordCpcSpikes(DEMO).map((x) => x.keyword)).toContain('매트리스 추천');
+    expect(keywordCpcSpikes(DEMO).find((x) => x.keyword === '매트리스 추천')).toMatchObject({ intent: 'compare' });
+    expect(keywordCpcSpikes(DEMO).every((x) => x.deltaPct >= AD_PILOT.anomalyHoldPct)).toBe(true);
     const below = belowTargetKeywords(DEMO);
     for (const k of below) expect(k.roas).toBeLessThan(k.target);
     expect(keywordCpcSpikes(emptyData())).toEqual([]);
@@ -574,7 +730,28 @@ describe('p.38 신규 매체 · p.39 코프로모션', () => {
     expect(pilotPlan(DEMO, [{ name: '금융 · 리워드 앱', budget: 0 }]).rows[0].status).toBe('off');
     const e = pilotPlan(emptyData(), [{ name: '영상 · YouTube', budget: 10_000_000 }]).rows[0];
     expect(e.feasible).toBe(false);
-    expect(pilotChange(plan.rows[0], 'PM')).toMatchObject({ module: 'growth', kind: 'test', approver: 'CLIENT' });
+    const ch = pilotChange(plan.rows[0], 'PM');
+    expect(ch).toMatchObject({ module: 'growth', kind: 'test', approver: 'CLIENT', after: plan.rows[0].budget });
+    expect(ch.targetId).toBe(`${PILOT_TARGET_PREFIX}${plan.rows[0].name}`);
+  });
+
+  it('파일럿 한도는 이미 승인 흐름에 올라간 금액까지 합산 (반려 제외) · 요청한 후보는 금액 고정', () => {
+    const row = (name: string, budget: number) => pilotPlan(DEMO, [{ name, budget }]).rows[0];
+    const mk = (name: string, budget: number, status: ChangeRequest['status']): ChangeRequest => ({ ...pilotChange(row(name, budget), 'PM'), id: `p_${name}_${status}`, createdAt: '', history: [], status });
+    const changes = [mk('네이버 신규 지면', 150_000_000, 'pending'), mk('영상 · YouTube', 90_000_000, 'rejected'), mk('지역 커뮤니티 · 당근', 60_000_000, 'approved')];
+    const committed = pilotCommitments(changes);
+    expect(committed).toEqual({ '네이버 신규 지면': 150_000_000, '지역 커뮤니티 · 당근': 60_000_000 });
+    expect(pilotCommitments([])).toEqual({});
+    // 새 후보 4천만은 기존 2.1억 + 0.4억 = 2.5억 → 한도 이내, 5천만이면 초과
+    expect(pilotPlan(DEMO, [{ name: '영상 · YouTube', budget: 40_000_000 }], { committed }).overCap).toBe(false);
+    const over = pilotPlan(DEMO, [{ name: '영상 · YouTube', budget: 50_000_000 }], { committed });
+    expect(over.overCap).toBe(true);
+    expect(over.committedTotal).toBe(210_000_000);
+    // UI 입력값과 무관하게 요청한 후보는 요청 금액으로 고정
+    const ui = pilotPlan(DEMO, [{ name: '네이버 신규 지면', budget: 1 }, { name: '영상 · YouTube', budget: 10_000_000 }], { committed });
+    expect(ui.rows[0]).toMatchObject({ requested: true, budget: 150_000_000 });
+    expect(ui.rows[1].requested).toBe(false);
+    expect(ui.total).toBe(150_000_000 + 10_000_000 + 60_000_000);
   });
 
   it('코프로모션: 4개 구매 순간 · 관련 키워드 검색 수요 연결', () => {
@@ -582,6 +759,10 @@ describe('p.38 신규 매체 · p.39 코프로모션', () => {
     expect(c.map((x) => x.moment)).toEqual(['신혼', '이사 · 입주', '숙면 환경', '선물']);
     expect(c[0].keywords).toContain('신혼 매트리스');
     expect(c[0].monthlySearch).toBeGreaterThan(0);
+    // '독립스프링'(제품 구조)은 '첫 독립'(생활 상황)이 아니다 · 건강 맥락 키워드는 코프로모션 근거로 쓰지 않는다
+    expect(c[1].keywords).toContain('첫 독립 매트리스');
+    expect(c[1].keywords).not.toContain('독립스프링 매트리스 추천');
+    expect(c.flatMap((x) => x.keywords).some((k) => /허리/.test(k))).toBe(false);
     expect(coPromoDemand(emptyData()).every((x) => x.monthlySearch === 0)).toBe(true);
   });
 });
@@ -593,20 +774,34 @@ describe('성장 공식 · 캘린더 · 신호 · 프롬프트 · 브리프', ()
     const c = calendarView(DEMO);
     expect(c.map((x) => x.q)).toEqual(['2027 Q1', '2027 Q2', '2027 Q3', '2027 Q4']);
     expect(c[0].daysUntil).toBe(62);
+    expect(c.map((x) => x.end)).toEqual(['2027-03-31', '2027-06-30', '2027-09-30', '2027-12-31']);
+    expect(c.every((x) => x.status === 'upcoming')).toBe(true);
+    const mid = calendarView({ ...DEMO, today: '2027-05-15' });
+    expect(mid.map((x) => x.status)).toEqual(['past', 'current', 'upcoming', 'upcoming']);
+    expect(calendarView({ ...DEMO, today: '2027-12-31' })[3].status).toBe('current');
   });
 
   it('성장 공식 4축: 줄인 시간 주 635분 (1,070 → 435) 등', () => {
     const f = growthFormula(DEMO);
     expect(f.map((x) => x.title)).toEqual(['줄인 시간', '매체 파워', '새 수요', '기본기']);
     expect(f[0].value).toBe('주 635분');
-    expect(f[2].value).toBe('2.50억');
+    expect(f[0].tab).toBe('partner');
+    expect(f[3].tab).toBe('alloc');
+    expect(f[2].value).toBe(fmt.krw(250_000_000));
     for (const x of f) noBad(`${x.value} ${x.foot}`);
     for (const x of growthFormula(emptyData())) noBad(`${x.value} ${x.foot}`);
   });
 
   it('첫 화면 신호: 데모 시나리오(한계 격차 · DA→SA · 자사몰 퍼널 · 랜딩/품절 · SA 확대 · 신규 매체)를 데이터로 잡는다', () => {
     const s = growthSignals(DEMO);
-    expect(s.map((x) => x.id)).toEqual(['marginal_gap', 'da_sa', 'funnel', 'landing', 'sa_expand', 'new_media']);
+    expect(s.map((x) => x.id)).toEqual(['marginal_gap', 'budget_constraint', 'da_sa', 'funnel', 'landing', 'sa_expand', 'new_media']);
+    const bc = s.find((x) => x.id === 'budget_constraint')!;
+    expect(bc.title).toContain('조기 소진 예상 4개 캠페인');
+    expect(bc.title).toContain('증액 후보 SA_일반 제품');
+    expect(bc.title).toMatch(/증액 보류 Meta_넓은 타겟 · GFA_쇼핑 고객 확장 · SA_비교 · 검토/);
+    expect(bc.basis).toContain('MILDO Board · AD Pilot과 같은 계산');
+    expect(bc.tone).toBe('serious');
+    expect(s.find((x) => x.id === 'sa_expand')!.title).toMatch(/키워드 \d+개/);
     expect(s.find((x) => x.id === 'landing')!.basis).toContain('킹 매트리스');
     expect(s.find((x) => x.id === 'funnel')!.title).toContain('자사몰');
     for (const x of s) noBad(`${x.title} ${x.basis}`);

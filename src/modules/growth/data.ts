@@ -7,7 +7,7 @@ import type { IntentId, MediaId } from '@/core/types';
 
 /* ------------------------------ p.30 성장 공식 ------------------------------ */
 export const GROWTH_FORMULA = [
-  { id: 'time', title: '줄인 시간', detail: '반복 구간 축소 → 성장 실험에 재투입', tab: 'overview', route: 'flow' },
+  { id: 'time', title: '줄인 시간', detail: '반복 구간 축소 → 성장 실험에 재투입', tab: 'partner', route: 'flow' },
   { id: 'power', title: '매체 파워', detail: '매체 협력 → 최선의 구좌 확보', tab: 'partner', route: 'growth' },
   { id: 'demand', title: '새 수요', detail: '신규 매체 발굴 · 브랜드 코프로모션', tab: 'demand', route: 'growth' },
   { id: 'basics', title: '기본기', detail: '캠페인 · 전환율 · 자사몰 · DA→SA', tab: 'alloc', route: 'growth' },
@@ -91,6 +91,15 @@ export const ALLOCATION_GUARDRAILS: Record<MediaId, { min: number; max: number }
   kakao: { min: 0.05, max: 0.1 },
   vertical: { min: 0.05, max: 0.1 },
 };
+/**
+ * 예산 제약 신호 (재배분 입력).
+ * 조기 소진 대상 · 예상 마감 시각은 MILDO Board · AD Pilot · 커맨드 센터와 같은 계산(AD Pilot paceCampaigns:
+ * 최근 28일 매체 시간대별 소진 곡선 + 선형 외삽, 23시 전 마감)을 그대로 쓴다 — 같은 숫자는 같은 계산.
+ * recentHours: 급변 확인 구간 (현재 시각 포함 최근 n시간, p.47 동요일 · 동시간 기준선과 비교) — 초기값
+ * peakStartHour: 저녁 피크 시작 (21~23시) — 이 시각 전 마감이면 피크 전 소진 (Board · AD Pilot과 같은 값)
+ * runwayMinDays: 계정 잔액 1일치 미만이면 증액 보류 (p.44 계정 · 결제 기준)
+ */
+export const PACE_RULES = { recentHours: 2, peakStartHour: 21, runwayMinDays: 1 } as const;
 /** p.37 재배분 원칙 + 1회 재배분 폭 상한 (초기값) */
 export const REBALANCE_RULES = { principle: '한계 효율 비교 → 월 1회 재배분 → 분기 구조 리뷰', stepCapPct: 20, note: '연 50억 원 가정 · VAT · 수수료 별도' } as const;
 
@@ -144,11 +153,15 @@ export const CO_PROMO_PRINCIPLES = {
   matching: '프로그레스미디어 운영 광고주 중 카테고리 비경쟁 브랜드를 양사 동의 하에 제안',
   rules: '고객 데이터 공유 없음 · 브랜드별 성과 분리 측정',
 } as const;
-/** 구매 순간 ↔ 관련 SA 키워드 (검색 수요 연결용 정규식) */
+/**
+ * 구매 순간 ↔ 관련 SA 키워드 (검색 수요 연결용 정규식).
+ * '독립스프링'(제품 구조)이 '첫 독립'(생활 상황)으로 잡히지 않도록 '첫 독립'만 매칭한다.
+ * 숙면 환경은 침구 · 베개 · 조명 · 공기 파트너와 맞닿는 수면 환경 검색(통기 · 경도 · 꺼짐 · 단단)만 연결 — 통증 · 허리 등 건강 맥락 키워드는 코프로모션 근거로 쓰지 않는다 (p.34 원칙).
+ */
 export const CO_PROMO_KEYWORDS: Record<string, string> = {
   '신혼': '신혼',
-  '이사 · 입주': '이사|독립|자취',
-  '숙면 환경': '통기|경도|꺼짐|단단|허리',
+  '이사 · 입주': '이사|입주|첫\\s?독립|자취|집들이',
+  '숙면 환경': '통기|경도|꺼짐|단단|베개|침구',
   '선물': '선물|부모님',
 };
 

@@ -20,6 +20,27 @@
   padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface);
 }
 
+.lab-todo-item.t-critical { border-left: 3px solid var(--critical); }
+.lab-todo-item.t-warning { border-left: 3px solid var(--warning); }
+.lab-todo-item.t-accent { border-left: 3px solid var(--accent); }
+.lab-tile { text-align: left; cursor: pointer; font: inherit; color: var(--ink); }
+.lab-tile:hover { border-color: var(--ink-2); }
+.lab-tile[aria-pressed='true'] { border-color: var(--ink); box-shadow: inset 0 -3px 0 var(--accent); }
+.lab-tile.hot .lab-tile-value { color: var(--accent-ink); }
+.lab-tile-value { font-size: var(--fs-2xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.1; display: flex; align-items: baseline; gap: 4px; }
+.lab-tile-unit { font-size: var(--fs-sm); font-weight: 500; color: var(--muted); }
+
+/* ---------- 작동 흐름 (p.23) ---------- */
+.lab-flow { display: flex; flex-direction: column; gap: 4px; }
+.lab-flow-row {
+  display: grid; grid-template-columns: 58px 1fr auto; gap: 8px; align-items: center; padding: 6px 8px; border-radius: var(--r-sm);
+  color: var(--panel-ink); text-decoration: none; border: 1px solid transparent;
+}
+.lab-flow-row:hover { background: color-mix(in srgb, var(--panel-ink) 8%, transparent); }
+.lab-flow-row.on { border-color: var(--accent); }
+.lab-flow-day { font-size: var(--fs-xs); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--panel-muted); }
+.lab-flow-row.on .lab-flow-day { color: var(--accent); }
+
 /* ---------- STEP 스트립 ---------- */
 .lab-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .lab-step {

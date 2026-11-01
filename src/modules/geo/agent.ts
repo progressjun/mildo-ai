@@ -8,8 +8,8 @@ import type { IntentId } from '@/core/types';
 import type { ModuleAgentKit, ToolContext } from '../types';
 import { AEO_TOPICS, GEO_PRINCIPLE, GEO_RULES, type AeoTopicId, type GeoEngineId } from './data';
 import {
-  auditBrief, auditHtml, buildFaqDraft, buildGeoSnapshot, faqBrief, faqCoverage, faqJsonLd, liveSummary, paidBrief, paidSummary,
-  paidSurfaceRows, parseAiAnswer, QUERY_BY_ID, reviewFaq, round, sampleProductHtml, STATUS_LABEL, visibilityBrief, visibilitySummary,
+  auditBrief, auditHtml, buildFaqDraft, buildGeoSnapshot, faqBrief, faqCoverage, faqJsonLd, findRegistration, liveSummary, liveVerdict, paidBrief, paidSummary,
+  paidSurfaceRows, parseAiAnswer, QUERY_BY_ID, REGISTRATION_ORIGIN, registrationRequest, reviewFaq, round, sampleProductHtml, STATUS_LABEL, visibilityBrief, visibilitySummary,
   type PaidRow,
 } from './engine';
 import { latestByQuery, loadLive } from './persist';
@@ -136,7 +136,7 @@ export const agentKit: ModuleAgentKit = {
     },
     {
       name: 'geo_paid_surface',
-      description: '페이드 AI 지면 점검: 질의별 네이버 AI 브리핑 언급 · 쇼핑 지면 노출(데모 스냅샷)과 연결된 SA 키워드(ROAS · 목표 대비 · 노출 기회 손실 · 순위 · 품절 랜딩 · CPC 급변), 검색어 보고서(등록 여부 · 전환)를 묶어 SA 반영 판정(테스트 그룹 등록 후보 · 랜딩 점검 · 자동 조정 보류 · 노출 유지 등)을 반환합니다.',
+      description: '페이드 AI 지면 점검: 질의별 네이버 AI 브리핑 언급 · 쇼핑 지면 노출(데모 스냅샷)과 연결된 SA 키워드(ROAS · 목표 대비 · 노출 기회 손실 · 순위 · 품절 랜딩 · CPC 급변), 검색어 보고서(등록 여부 · 전환)를 묶어 SA 반영 판정(테스트 그룹 등록 후보 · 랜딩 점검 · 자동 조정 보류 · 노출 유지 등)과 급변 키워드의 원인 후보 순위를 반환합니다.',
       inputSchema: { type: 'object', properties: { onlyActions: { type: 'boolean', description: 'true면 유지 외 판정만 (기본 false)' } } },
       execute: (inp) => {
         const rows = paidSurfaceRows(ctx.state.data, snapOf(ctx));
@@ -148,10 +148,16 @@ export const agentKit: ModuleAgentKit = {
             id: r.query.id, 질의: r.query.text,
             AI브리핑: r.naverAi ? (r.naverAi.mentioned ? `언급 ${r.naverAi.position}번째` : `미언급 · 경쟁사 ${r.naverAi.competitors.length}`) : null,
             쇼핑지면: r.shopping.exposed ? `${r.shopping.rank}위` : '미노출',
-            SA키워드: r.kw ? { 키워드: r.kw.text, 상태: r.kw.status, ROAS: r0(r.kw.roas), 목표: r.kw.targetRoas, 목표대비pct: pct(r.kw.roasRatio), 노출손실pct: pct(r.kw.lost), 순위: r.kw.avgRank, CPC변화pct: r0(r.kw.cpcChangePct), 품절옵션: r.kw.soldOutOption } : null,
+            SA키워드: r.kw ? {
+              키워드: r.kw.text, 상태: r.kw.status, ROAS: r0(r.kw.roas), 목표: r.kw.targetRoas, 목표대비pct: pct(r.kw.roasRatio), 노출손실pct: pct(r.kw.lost), 순위: r.kw.avgRank,
+              CPC변화pct: r0(r.kw.cpcChangePct), 전환변화pct: r0(r.kw.convChangePct), 성과급변: r.kw.shift.triggered, 품절옵션: r.kw.soldOutOption,
+            } : null,
             검색어: r.term ? { 검색어: r.term.term, 등록: r.term.registered, 클릭: r.term.clicks, 전환: r1(r.term.conversions), ROAS: r0(r.term.roas) } : null,
             판정: r.action.label, 근거: r.action.basis, SA반영요청가능: r.requestable,
+            ...(r.causes.length ? { 원인후보: r.causes.filter((c) => c.score >= 20).map((c) => ({ 후보: c.label, 근거강도: c.score, 근거: c.basis })) } : {}),
           })),
+          원인후보기준: '근거 강도는 순위를 매기기 위한 상대 점수이며 확률이 아님 (CAUSE_CANDIDATES · p.47)',
+          급변기준: '최근 3일 vs 이전 11일 CPC · 전환 ±50% (p.14) · 최근 3일 클릭 20회 · 기대 전환 1건 이상일 때만 판정 (AD Pilot 표본 기준과 동일)',
         };
       },
     },
@@ -161,26 +167,26 @@ export const agentKit: ModuleAgentKit = {
       inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'AI 답변 원문' }, query: { type: 'string', description: '질의 (선택)' } }, required: ['text'] },
       execute: (inp) => {
         const p = parseAiAnswer(String(inp.text ?? '').slice(0, 60_000));
-        return { 질의: typeof inp.query === 'string' ? inp.query : null, 언급: p.mentioned, 브랜드표현수: p.brandHits, 확인필요밀도: p.ambiguous, 순서: p.position, 등장순서: p.order, 경쟁사: p.competitors, 기타브랜드: p.others, 인용: p.citations, 발췌: p.excerpt };
+        const v = liveVerdict(p);
+        return { 질의: typeof inp.query === 'string' ? inp.query : null, 판정: `${v.label} · ${v.basis}`, 언급: p.mentioned, 브랜드표현수: p.brandHits, 확인필요밀도: p.ambiguous, 순서: p.position, 등장순서: p.order, 경쟁사: p.competitors, 기타브랜드: p.others, 인용: p.citations, 발췌: p.excerpt };
       },
     },
     {
       name: 'geo_request_keyword',
-      description: '페이드 AI 지면 판정이 "SA 테스트 그룹 등록 후보"인 질의의 검색어를 SA 테스트 그룹 등록 요청(ChangeRequest, pending · 담당 AE 승인)으로 올립니다. 실제 반영은 사람이 MILDO Flow에서 승인합니다.',
+      description: '페이드 AI 지면 판정이 "SA 테스트 그룹 등록 후보"인 질의의 검색어를 SA 테스트 그룹 등록 요청(ChangeRequest, pending · 담당 AE 승인, 브랜드 검색어는 PM)으로 올립니다. AD Pilot · MILDO Lab에서 이미 올린 검색어는 거절합니다. 실제 반영은 사람이 MILDO Flow에서 승인합니다.',
       inputSchema: { type: 'object', properties: { query: { type: 'string', description: '질의 텍스트 · 질의 id(q01~q20) · 검색어' } }, required: ['query'] },
       execute: (inp) => {
         const rows = paidSurfaceRows(ctx.state.data, snapOf(ctx));
         const r = findPaidRow(rows, inp.query);
         if (!r) return { ok: false, 사유: '질의를 찾지 못했습니다', 후보: rows.filter((x) => x.requestable).map((x) => x.query.text) };
         if (!r.requestable || !r.term) return { ok: false, 사유: `판정이 '${r.action.label}'입니다 (${r.action.basis}) · 등록 요청 대상 아님`, 후보: rows.filter((x) => x.requestable).map((x) => x.query.text) };
-        const dup = ctx.state.changes.find((c) => c.module === 'geo' && c.kind === 'keyword_add' && c.target === r.term!.term && (c.status === 'pending' || c.status === 'approved' || c.status === 'applied'));
-        if (dup) return { ok: false, 사유: '이미 요청된 검색어입니다', 요청id: dup.id, 상태: dup.status };
-        const c = ctx.actions.addChange({
-          module: 'geo', kind: 'keyword_add', target: r.term.term, before: '미등록 (검색어 보고서)', after: '테스트 그룹 등록 · 입찰 상한 적용',
-          reason: `GEO 질의 '${r.query.text}' · ${r.action.basis} · AI 브리핑 ${r.naverAi?.mentioned ? '언급' : '미언급'} (TEST DATA)`,
-          requestedBy: 'SearchTuneOS', approver: 'AE',
-        });
-        return { ok: true, 요청id: c.id, 상태: c.status, 승인: '담당 AE (승인 범위 내 운영 조정 · p.53)', 대상: r.term.term };
+        // SearchTuneOS · AD Pilot · MILDO Lab 어디서 올렸든 같은 검색어면 중복
+        const dup = findRegistration(ctx.state.changes, r.term.term);
+        if (dup) return { ok: false, 사유: `이미 요청된 검색어입니다 (${REGISTRATION_ORIGIN[dup.module] ?? dup.module})`, 요청id: dup.id, 상태: dup.status };
+        const payload = registrationRequest(r, 'SearchTuneOS');
+        if (!payload) return { ok: false, 사유: '등록 요청 대상 아님' };
+        const c = ctx.actions.addChange(payload);
+        return { ok: true, 요청id: c.id, 상태: c.status, 승인: payload.approver === 'PM' ? 'PM (브랜드 검색어 편입 · AD Pilot 기준과 동일)' : '담당 AE (승인 범위 내 운영 조정 · p.53)', 대상: r.term.term };
       },
     },
   ],

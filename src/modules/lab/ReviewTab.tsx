@@ -4,7 +4,7 @@ import { REVIEW_RULES } from '@/data/constants';
 import { fmt, fmtDate } from '@/core/util';
 import { Button, Callout, Card, type Column, CopyButton, DataTable, Pill, Segmented, Src } from '@/ui/primitives';
 import { EXTRA_REVIEW_RULES, REVIEW_SAMPLES, SA_CHAR_LIMITS } from './data';
-import { charLen, priceReferences, REVIEW_LEVEL_META, reviewCopy, type CopyItem, type PriceRef, type ReviewLevel, type ReviewResult } from './engine';
+import { charLen, priceReferences, REVIEW_LEVEL_META, reviewCopy, ruleLabel, type CopyItem, type PriceRef, type ReviewLevel, type ReviewResult } from './engine';
 import { Highlighted, ReviewPill, type LabModel } from './parts';
 
 type LimitMode = 'none' | 'title' | 'desc';
@@ -24,7 +24,7 @@ function ResultView({ r }: { r: ReviewResult }) {
             <tbody>
               {r.findings.map((f, i) => (
                 <tr key={i}>
-                  <td><ReviewPill level={f.level} /></td>
+                  <td><div className="stack-sm" style={{ gap: 2 }}><ReviewPill level={f.level} /><span className="lab-sub nowrap">{ruleLabel(f.ruleId)}</span></div></td>
                   <td><strong className="small">{f.match}</strong></td>
                   <td className="lab-basis">{f.reason}</td>
                   <td className="lab-basis">{f.suggestion || '—'}</td>
@@ -72,7 +72,7 @@ export function ReviewTab({ m }: { m: LabModel }) {
     <div className="stack-lg">
       <div className="grid g-3">
         <Card className="span-2" title="자유 입력 검수" sub="문안을 입력하면 즉시 검수합니다 · 가격 · 할인율은 상품 옵션가와 프로모션 데이터로 대조" actions={<><Src kind="PROPOSAL" page="p.27 · p.35" /><Src kind="DEMO" title="판매가 · 프로모션은 TEST DATA" /></>}>
-          <textarea className="textarea" aria-label="검수할 문안" value={text} onChange={(e) => setText(e.target.value)} />
+          <textarea id="lab-review-input" className="textarea" aria-label="검수할 문안" value={text} onChange={(e) => setText(e.target.value)} />
           <div className="row-between" style={{ gap: 8 }}>
             <div className="lab-samples">
               {REVIEW_SAMPLES.map((s) => <Button key={s} size="sm" onClick={() => setText(s)}>{s.length > 18 ? `${s.slice(0, 18)}…` : s}</Button>)}
@@ -82,18 +82,18 @@ export function ReviewTab({ m }: { m: LabModel }) {
           <span className="lab-sub">현재 {charLen(text)}자</span>
           <ResultView r={r} />
         </Card>
-        <Card title="검수 규칙" sub="차단 → 경고 → 확인 순. 차단 문안은 테스트 카드 · 집행 등록 불가">
+        <Card title="검수 규칙" sub="차단 → 경고 → 확인 순. 차단 문안은 테스트 카드 · 집행 등록 불가" actions={<Src kind="PROPOSAL" page="p.27 · p.35 · p.45" />}>
           <div className="stack-sm">
             {REVIEW_RULES.map((rule) => (
               <div key={rule.id} className="stack-sm" style={{ gap: 2 }}>
-                <span className="row" style={{ gap: 6 }}><ReviewPill level={rule.id === 'price_claim' ? 'check' : (rule.level as ReviewLevel)} suffix={rule.id === 'price_claim' ? ' → 불일치 시 차단' : rule.id === 'superlative' ? ' → 출처 병기 시 확인' : undefined} /><span className="lab-mono">{rule.id}</span></span>
+                <span className="row" style={{ gap: 6 }}><ReviewPill level={rule.id === 'price_claim' ? 'check' : (rule.level as ReviewLevel)} suffix={rule.id === 'price_claim' ? ' → 불일치 시 차단' : rule.id === 'superlative' ? ' → 출처 병기 시 확인' : undefined} /><strong className="small">{ruleLabel(rule.id)}</strong><span className="lab-mono">{rule.id}</span></span>
                 <span className="lab-sub">{rule.reason}</span>
               </div>
             ))}
             <hr className="divider" />
             {EXTRA_REVIEW_RULES.map((rule) => (
               <div key={rule.id} className="stack-sm" style={{ gap: 2 }}>
-                <span className="row" style={{ gap: 6 }}><ReviewPill level={rule.level} /><span className="lab-mono">{rule.id}</span><Pill tone="outline">Lab 추가</Pill></span>
+                <span className="row" style={{ gap: 6 }}><ReviewPill level={rule.level} /><strong className="small">{ruleLabel(rule.id)}</strong><Pill tone="outline">Lab 추가</Pill></span>
                 <span className="lab-sub">{rule.reason}</span>
               </div>
             ))}

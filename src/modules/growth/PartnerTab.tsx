@@ -1,5 +1,6 @@
-/* 매체 협력 구좌(p.32) · 네이버 3자 협업(p.33) · 2027 분기별 성장 캘린더(p.42) · 줄인 시간 재투입(p.31) */
+/* 줄인 시간 재투입 · 반복 구간 축소(p.31) · 매체 협력 구좌(p.32) · 네이버 3자 협업(p.33) · 2027 분기별 성장 캘린더(p.42) */
 import type { Dataset } from '@/core/types';
+import { FLOW_SEGMENTS } from '@/data/constants';
 import { fmt } from '@/core/util';
 import { Callout, Card, Pill, Src } from '@/ui/primitives';
 import { CALENDAR_NOTE, MEDIA_PARTNERSHIPS, NAVER_TRIPARTITE, PARTNERSHIP_NOTE, TIME_REINVEST } from './data';
@@ -7,10 +8,39 @@ import { automationSavings, calendarView } from './engine';
 
 export function PartnerTab({ d }: { d: Dataset }) {
   const cal = calendarView(d);
-  const next = cal.find((q) => q.daysUntil >= 0);
+  const next = cal.find((q) => q.status === 'current') ?? cal.find((q) => q.status === 'upcoming');
   const sv = automationSavings();
   return (
     <div className="stack-lg">
+      <Card title={<>줄인 시간 → 성장 실험 재투입 <Src kind="PROPOSAL" page="p.19 · p.31" /></>} sub="요청하고, 기다리고, 다시 확인하던 구간을 MILDO Flow로 줄여 브랜드팀 · 운영팀의 시간을 성장 업무로 돌립니다"
+        actions={<><a className="btn sm" href="#flow">MILDO Flow</a><a className="btn sm" href="#reports">절감 실측</a></>}>
+        <div className="grid g-3">
+          <div className="span-2">
+            <div className="table-wrap">
+              <table className="tbl">
+                <thead><tr><th>업무 구간</th><th>지금</th><th>MILDO Flow 이후</th><th>효과</th></tr></thead>
+                <tbody>
+                  {FLOW_SEGMENTS.map((f) => (
+                    <tr key={f.seg}>
+                      <td><strong>{f.seg}</strong></td>
+                      <td className="small muted">{f.now}</td>
+                      <td className="small">{f.after}</td>
+                      <td><span className="growth-chip">{f.effect}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="stack">
+            <div className="stack-sm" style={{ gap: 0 }}><span className="xs muted">SA 업무 (주) · p.19 목표</span><span className="growth-big">{fmt.int(sv.before)} → {fmt.int(sv.after)}분</span></div>
+            <div className="stack-sm" style={{ gap: 0 }}><span className="xs muted">확보 시간 (주)</span><span className="growth-big">{fmt.int(sv.saved)}분</span><span className="xs muted">{fmt.minutes(sv.saved)} · {fmt.delta(-sv.pct, 0)}</span></div>
+            <span className="small">확보된 시간 → {TIME_REINVEST.to}</span>
+            <span className="xs muted">목표치 · 온보딩 30일 내 실측 확정 · 참고: {TIME_REINVEST.reference}</span>
+          </div>
+        </div>
+      </Card>
+
       <Card title={<>매체 협력으로 최선의 구좌 확보 <Src kind="PROPOSAL" page="p.32" /></>} sub="광고대행사의 가장 큰 가치는 매체와의 관계 — 프로그레스미디어의 매체 파트너십을 수면밀도의 구좌로 바꿉니다">
         <div className="table-wrap">
           <table className="tbl">
@@ -61,7 +91,7 @@ export function PartnerTab({ d }: { d: Dataset }) {
         <div className="growth-cal">
           {cal.map((q) => (
             <div key={q.q} className={`growth-cal-col${next?.q === q.q ? ' next' : ''}`}>
-              <div className="growth-cal-q"><span>{q.q}</span><span>{Number.isFinite(q.daysUntil) ? (q.daysUntil > 0 ? `D-${q.daysUntil}` : '진행') : ''}</span></div>
+              <div className="growth-cal-q"><span>{q.q}</span><span>{q.status === 'upcoming' ? `D-${q.daysUntil}` : q.status === 'current' ? '진행 중' : q.status === 'past' ? '종료' : ''}</span></div>
               <div className="growth-cal-theme">{q.theme}</div>
               <div className="growth-cal-row"><span>핵심 실행</span><span>{q.core}</span></div>
               <div className="growth-cal-row"><span>네이버 연계</span><span>{q.naver}</span></div>
@@ -74,17 +104,6 @@ export function PartnerTab({ d }: { d: Dataset }) {
         </div>
       </Card>
 
-      <Card title={<>줄인 시간 → 성장 실험 재투입 <Src kind="PROPOSAL" page="p.19 · p.31" /></>} sub="반복 구간을 MILDO Flow로 줄여 브랜드팀 · 운영팀의 시간을 성장 업무로 돌립니다"
-        actions={<><a className="btn sm" href="#flow">MILDO Flow</a><a className="btn sm" href="#reports">절감 실측</a></>}>
-        <div className="row" style={{ gap: 24 }}>
-          <div className="stack-sm" style={{ gap: 0 }}><span className="xs muted">SA 업무 (주)</span><span className="growth-big">{fmt.int(sv.before)} → {fmt.int(sv.after)}분</span></div>
-          <div className="stack-sm" style={{ gap: 0 }}><span className="xs muted">확보 시간 (주)</span><span className="growth-big">{fmt.int(sv.saved)}분</span></div>
-          <div className="stack-sm" style={{ maxWidth: 420 }}>
-            <span className="small">확보된 시간 → {TIME_REINVEST.to}</span>
-            <span className="xs muted">목표치 · 온보딩 30일 내 실측 확정 · 참고: {TIME_REINVEST.reference}</span>
-          </div>
-        </div>
-      </Card>
     </div>
   );
 }

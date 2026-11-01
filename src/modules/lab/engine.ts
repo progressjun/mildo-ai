@@ -245,13 +245,35 @@ export const TIER_META: Record<Candidate['tier'], { label: string; tone: 'accent
   hold: { label: '보류', tone: 'outline' },
 };
 
-/** 랩 등록 요청인가 (Lab 후보 등록 · AD Pilot 테스트 그룹 등록 · Watch 테스트 등록) */
+/**
+ * 키워드 테스트 그룹 등록 요청인가 (Lab 후보 등록 · AD Pilot 테스트 그룹 등록).
+ * kind 'test'(Watch 소액 테스트 · Growth 파일럿 등)는 키워드가 아니므로 여기서 제외하고 incomingTests()로 따로 받는다.
+ */
 export function isRegistration(c: ChangeRequest): boolean {
   if (!c) return false;
   if (c.kind === 'keyword_add' && c.module === 'lab') return !String(c.targetId ?? '').startsWith('labdec:');
   if (c.kind === 'keyword_add' && c.module === 'adpilot') return /_TEST/.test(String(c.after));
-  if (c.kind === 'test' && c.module !== 'lab') return true;
   return false;
+}
+
+/** 다른 모듈이 Lab으로 보낸 테스트 요청 (Watch 감지 → 소액 테스트 · Growth 파일럿 · 홀드아웃) — Lab 테스트 카드 요청(labcard:)은 제외 */
+export interface IncomingTest { change: ChangeRequest; origin: string; route: string; title: string; summary: string; before: string; after: string }
+/** 변경 전후 값 표기 — 숫자(예산 원 단위)는 금액으로 */
+const changeValue = (v: unknown): string => (typeof v === 'number' ? (finite(v) ? `${fmt.krw(v)}원` : '—') : String(v ?? ''));
+/** 아직 처리할 수 있는 요청 (승인 대기 · 승인 · 보류) */
+export const isOpenChange = (c: Pick<ChangeRequest, 'status'>) => c.status === 'pending' || c.status === 'approved' || c.status === 'held';
+export function incomingTests(changes: readonly ChangeRequest[] = []): IncomingTest[] {
+  return [...(changes ?? [])]
+    .filter((c) => c && c.kind === 'test' && !String(c.targetId ?? '').startsWith('labcard:'))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .map((c) => {
+      const fromWatch = c.module === 'watch' || /MILDO Watch/.test(String(c.reason ?? ''));
+      const origin = fromWatch ? 'MILDO Watch' : c.module === 'growth' ? '매출 성장' : c.module === 'lab' ? 'MILDO Lab' : String(c.module ?? '기타');
+      const route = fromWatch ? 'watch' : c.module === 'growth' ? 'growth' : c.module === 'lab' ? 'lab' : String(c.module ?? 'flow');
+      const before = changeValue(c.before);
+      const after = changeValue(c.after);
+      return { change: c, origin, route, title: String(c.target ?? ''), summary: `${before} → ${after}`, before, after };
+    });
 }
 const isActiveStatus = (s: ChangeRequest['status']) => s !== 'rejected' && s !== 'rolled_back';
 
@@ -402,10 +424,25 @@ export function parseAiCandidates(raw: unknown, data: Dataset, changes: readonly
   return out;
 }
 
+/**
+ * 저장된 후보(AI 확장 등)를 현재 데이터 · 요청 이력 기준으로 다시 계산한다.
+ * 저장 시점의 상태를 그대로 쓰면 등록 요청 후에도 '미등록'으로 남아 중복 요청이 생기고, 품절 · 기획전 종료 메모도 낡는다.
+ */
+export function refreshCandidate(data: Dataset, changes: readonly ChangeRequest[], c: Candidate | null | undefined, target: number = AD_PILOT.targetRoas): Candidate | null {
+  if (!c || typeof c.phrase !== 'string' || !c.phrase.trim()) return null;
+  const source: CandidateSource = (Object.keys(SOURCE_LABEL) as CandidateSource[]).includes(c.source) ? c.source : 'ai_expand';
+  const kind: Candidate['volumeKind'] = c.volumeKind === 'impressions' || c.volumeKind === 'monthly_demo' ? c.volumeKind : 'monthly_est';
+  return buildCandidate(data, changes, {
+    phrase: c.phrase, source, origin: String(c.origin ?? SOURCE_LABEL[source]), volume: n0(c.volume), volumeKind: kind, volumeNote: String(c.volumeNote ?? ''),
+    evidence: c.evidence ?? undefined, sku: c.sku,
+  }, target);
+}
+
 /** 전체 후보 — 소스별 생성 → 구문 단위 중복 제거(실측 근거가 있는 소스 우선) → 우선순위순 */
-export function discoverCandidates(data: Dataset, changes: readonly ChangeRequest[] = [], extra: readonly Candidate[] = [], target: number = AD_PILOT.targetRoas): { all: Candidate[]; excludedExisting: number } {
+export function discoverCandidates(data: Dataset, changes: readonly ChangeRequest[] = [], extra: readonly Candidate[] = [], target: number = AD_PILOT.targetRoas): { all: Candidate[]; excludedExisting: number; excludedRegistered: number } {
   const order: CandidateSource[] = ['search_term', 'related', 'ai_query', 'ai_expand', 'sku48'];
-  const pool = [...searchTermCandidates(data, changes, target), ...relatedCandidates(data, changes, RELATED_SEEDS, target), ...aiQueryCandidates(data, changes, AI_QUERY_SEEDS, target), ...extra, ...skuEntries(data, changes, target)];
+  const fresh = (extra ?? []).map((c) => refreshCandidate(data, changes, c, target)).filter((c): c is Candidate => !!c);
+  const pool = [...searchTermCandidates(data, changes, target), ...relatedCandidates(data, changes, RELATED_SEEDS, target), ...aiQueryCandidates(data, changes, AI_QUERY_SEEDS, target), ...fresh, ...skuEntries(data, changes, target)];
   pool.sort((a, b) => order.indexOf(a.source) - order.indexOf(b.source));
   const seen = new Map<string, Candidate>();
   let excludedExisting = 0;
@@ -415,8 +452,25 @@ export function discoverCandidates(data: Dataset, changes: readonly ChangeReques
     if (c.status === 'existing') { excludedExisting += 1; continue; }
     seen.set(k, c);
   }
+  // 검색어 보고서에서 이미 등록(registered)됐거나 등록 키워드와 같은 구문 — 발굴 대상에서 빼고 파이프라인에서 판정
+  const kw = new Set((data?.keywords ?? []).map((k) => norm(k.text)));
+  const excludedRegistered = (data?.searchTerms ?? []).filter((t) => t && (t.registered || kw.has(norm(t.term)))).length;
   const all = [...seen.values()].sort((a, b) => b.score - a.score || b.volume - a.volume);
-  return { all, excludedExisting };
+  return { all, excludedExisting, excludedRegistered };
+}
+
+/** 확장 판정 키워드의 연관 후보 — 같은 상황 · 문제 토픽이나 핵심 단어를 공유하는 미등록 후보 (p.26 '연관 키워드 추가 발굴') */
+export function relatedCandidatesFor(phrase: string, pool: readonly Candidate[], limit = 3): Candidate[] {
+  const generic = new Set(['추천', '비교', '후기', '리뷰']);
+  const topics = phraseTopics(phrase).filter((t) => !generic.has(t));
+  const words = String(phrase ?? '').split(/\s+/).filter((w) => w.length >= 2 && w !== '매트리스' && !generic.has(w));
+  const key = norm(phrase);
+  if (!key || (!topics.length && !words.length)) return [];
+  return (pool ?? [])
+    .filter((c) => c.status === 'new' && c.purchase && norm(c.phrase) !== key && !norm(c.phrase).includes(key)
+      && (topics.some((t) => phraseTopics(c.phrase).includes(t)) || words.some((w) => c.phrase.includes(w))))
+    .sort((a, b) => b.score - a.score || b.volume - a.volume)
+    .slice(0, Math.max(0, limit));
 }
 
 /** 등록 요청 페이로드 (pending ChangeRequest로만 생성 — 실제 등록은 승인 후) */
@@ -504,7 +558,7 @@ export function judgeKeywordTest(
     verdict = 'running';
     badge = `집행 중 · ${progressTxt}`;
     basis = `STEP 2 — ${c.minDays}일 또는 클릭 ${c.minClicks}회 도달 전 (${progressTxt})`;
-    action = KW_VERDICT_META.running.action;
+    action = `${c.minDays}일 또는 클릭 ${c.minClicks}회 도달까지 집행 · 입찰 변경 없음`;
   } else if (stats.clicks < c.minJudgeClicks) {
     verdict = 'insufficient';
     badge = `판정 보류 · 표본 부족 (클릭 ${fmt.int(stats.clicks)} < ${c.minJudgeClicks})`;
@@ -522,6 +576,12 @@ export function judgeKeywordTest(
     badge = `제외 · 전환 없음 (클릭 ${fmt.int(stats.clicks)})`;
     basis = `클릭 ${fmt.int(stats.clicks)}회 · 전환 0 — 제외 기준 "전환 없음" (p.26)`;
     action = KW_VERDICT_META.exclude.action;
+  } else if (!finite(ratioPct)) {
+    // 전환은 있는데 광고비가 0 · 누락 — ROAS를 계산할 수 없으므로 제외로 단정하지 않는다
+    verdict = 'insufficient';
+    badge = '판정 보류 · 광고비 데이터 없음';
+    basis = `클릭 ${fmt.int(stats.clicks)}회 · 전환 ${fmt.dec1(stats.conversions)}건 · 광고비 ${fmt.won(stats.cost)} — ROAS 계산 불가`;
+    action = '광고비 수집(07:00 검증) 확인 후 재판정';
   } else if (ratioPct >= c.expandAtPct) {
     verdict = 'expand';
     badge = `확장 · 목표 ROAS ${fmt.int(target)}% 대비 ${pct0(ratioPct)}`;
@@ -551,23 +611,26 @@ export function judgeKeywordTest(
 }
 
 /** 데이터 키워드의 테스트 시작 추정 — 직전 14일에 노출이 있으면 28일 누적, 없으면 최근 14일 중 첫 노출일부터 */
-export function inferTestStart(data: Dataset, k: Keyword): { start: string | null; days: number; stats: Stats; isNew: boolean; overdue: boolean; basis: string } {
+/** 판정 기한 유예 — 기간 기준을 넘긴 뒤 1주(주간 리포트 1회분) 안에 판정 · 조치가 없으면 기한 경과 (모듈 가정) */
+export const OVERDUE_GRACE_DAYS = 7;
+
+export function inferTestStart(data: Dataset, k: Keyword, cIn?: Partial<LabCriteria> | null): { start: string | null; days: number; stats: Stats; isNew: boolean; overdue: boolean; basis: string } {
   const daily = Array.isArray(k?.daily) ? k.daily : [];
   const end = addDays(data.today, -1);
   const len = daily.length;
   const winStart = addDays(end, -(Math.max(1, len) - 1));
-  const crit = LAB_DEFAULT_CRITERIA;
+  const crit = resolveCriteria(cIn);
   if (n0(k?.prev14?.impressions) > 0) {
     const days = len + 14;
     return {
-      start: addDays(winStart, -14), days, stats: sumStats([k.prev14, k.last14]), isNew: false, overdue: days > crit.minDays + 7,
-      basis: `직전 14일부터 집행 — ${days}일 누적 (판정 기준 ${crit.minDays}일 경과)`,
+      start: addDays(winStart, -14), days, stats: sumStats([k.prev14, k.last14]), isNew: false, overdue: days > crit.minDays + OVERDUE_GRACE_DAYS,
+      basis: `직전 14일부터 집행 — ${days}일 누적 (판정 기준 ${crit.minDays}일${days >= crit.minDays ? ' 경과' : ''})`,
     };
   }
   const i = daily.findIndex((x) => n0(x?.impressions) > 0);
   if (i < 0) return { start: null, days: 0, stats: sumStats(daily), isNew: true, overdue: false, basis: '최근 14일 노출 없음 — 집행 확인 필요' };
   const days = len - i;
-  return { start: addDays(winStart, i), days, stats: sumStats(daily.slice(i)), isNew: true, overdue: false, basis: `${fmtDate(addDays(winStart, i))} 첫 노출 — 신규 ${days}일 집행` };
+  return { start: addDays(winStart, i), days, stats: sumStats(daily.slice(i)), isNew: true, overdue: days > crit.minDays + OVERDUE_GRACE_DAYS, basis: `${fmtDate(addDays(winStart, i))} 첫 노출 — 신규 ${days}일 집행` };
 }
 
 export interface PipelineItem {
@@ -601,16 +664,21 @@ export function buildPipeline(data: Dataset, changes: readonly ChangeRequest[] =
   const crit = resolveCriteria(cIn);
   const items: PipelineItem[] = [];
   const taken = new Set<string>();
+  // 품절 옵션이 들어간 구문 — 본 그룹 이관 · 재테스트 전에 랜딩 재고를 확인해야 한다 (p.45 품절 랜딩, 상품 데이터 대조)
+  const soldNotes = (phrase: string) => soldOutOptions(data).filter((so) => norm(phrase).includes(norm(so.label))).map((so) => `${so.label} 옵션 품절 — 랜딩에서 구매 불가 (${so.product.name}) · 이관 전 랜딩 · 문안 교체`);
   for (const k of data?.keywords ?? []) {
     if (k.status !== 'test') continue;
-    const st = inferTestStart(data, k);
+    const st = inferTestStart(data, k, crit);
     const j = judgeKeywordTest(st.stats, st.days, crit, { monthlySearch: k.monthlySearch, maxBid: k.maxBid, bid: k.bid, isBrand: k.isBrand });
     const id = `kw:${k.id}`;
-    const notes = [st.basis];
-    if (st.overdue) notes.push(`판정 기한 경과 — ${st.days}일 집행 (기준 ${crit.minDays}일)`);
+    const decision = latestByTargetId(changes, `labdec:${id}`);
+    // 판정 · 보류 조치를 이미 요청했으면 기한 경과로 세지 않는다
+    const overdue = st.overdue && !(decision && isActiveStatus(decision.status));
+    const notes = [st.basis, ...soldNotes(k.text)];
+    if (overdue) notes.push(`판정 기한 경과 — ${st.days}일 집행 (기준 ${crit.minDays}일 + 유예 ${OVERDUE_GRACE_DAYS}일)`);
     items.push({
       id, phrase: k.text, source: 'keyword', sourceLabel: st.isNew ? '테스트 그룹 · 신규' : '테스트 그룹 키워드', intent: k.intent, adgroup: k.adgroup,
-      step: stepOf(j.verdict), start: st.start, days: st.days, isNew: st.isNew, overdue: st.overdue, judgement: j, decision: latestByTargetId(changes, `labdec:${id}`),
+      step: stepOf(j.verdict), start: st.start, days: st.days, isNew: st.isNew, overdue, judgement: j, decision,
       keywordId: k.id, bid: k.bid, maxBid: k.maxBid, landing: k.landing, notes,
     });
     taken.add(norm(k.text));
@@ -623,7 +691,7 @@ export function buildPipeline(data: Dataset, changes: readonly ChangeRequest[] =
     items.push({
       id, phrase: t.term, source: 'search_term', sourceLabel: '검색어 보고서 등록 구문', intent: ci.intent, adgroup: `${ci.intent.toUpperCase()}_TEST`,
       step: stepOf(j.verdict), start: null, days: null, isNew: false, overdue: false, judgement: j, decision: latestByTargetId(changes, `labdec:${id}`),
-      landing: landingFor(data, t.term, ci.intent).url, notes: ['검색어 보고서 누적 · 일자별 데이터 미연동 — 클릭 기준으로만 판정'],
+      landing: landingFor(data, t.term, ci.intent).url, notes: ['검색어 보고서 누적 · 일자별 데이터 미연동 — 클릭 기준으로만 판정', ...soldNotes(t.term)],
     });
     taken.add(norm(t.term));
   }
@@ -639,7 +707,7 @@ export function buildPipeline(data: Dataset, changes: readonly ChangeRequest[] =
       id: `req:${c.id}`, phrase: c.target, source: 'request', sourceLabel: c.module === 'lab' ? 'Lab 등록 요청' : c.module === 'adpilot' ? 'AD Pilot 후보' : `${c.module} 테스트 요청`,
       intent: ci.intent, adgroup: `${ci.intent.toUpperCase()}_TEST`, step: approved ? 2 : 1, start: null, days: approved ? 0 : null, isNew: true, overdue: false,
       judgement: approved ? { ...j, badge: '집행 대기 · Day 0 · 데이터 수집 전', basis: `${c.status === 'applied' ? '테스트 그룹 반영' : '승인 완료 · 반영 대기'} — 익일 07:00 수집부터 집계` } : { ...j, badge: `STEP 1 · ${APPROVER_LABEL[c.approver]} 승인 대기`, basis: c.reason },
-      registration: c, landing: landingFor(data, c.target, ci.intent).url, notes: [String(c.after)],
+      registration: c, landing: landingFor(data, c.target, ci.intent).url, notes: [String(c.after), ...soldNotes(c.target)],
     });
   }
   return items;
@@ -648,7 +716,8 @@ export function buildPipeline(data: Dataset, changes: readonly ChangeRequest[] =
 /** STEP 4 판정 반영 요청 페이로드 */
 export function decisionPayload(item: PipelineItem, requestedBy: string) {
   const j = item.judgement;
-  const base = { module: 'lab', target: item.phrase, targetId: `labdec:${item.id}`, requestedBy, reason: `${j.badge} — ${j.basis}${j.cautions.length ? ` · ${j.cautions.join(' · ')}` : ''}` };
+  const stock = (item.notes ?? []).filter((n) => n.includes('품절'));
+  const base = { module: 'lab', target: item.phrase, targetId: `labdec:${item.id}`, requestedBy, reason: `${j.badge} — ${j.basis}${[...j.cautions, ...stock].length ? ` · ${[...j.cautions, ...stock].join(' · ')}` : ''}` };
   if (j.verdict === 'expand') return { ...base, kind: 'keyword_add' as ChangeKind, before: `${item.adgroup} (테스트 그룹)`, after: `${item.intent.toUpperCase()}_MAIN 이관 · 연관 키워드 추가 발굴`, approver: 'PM' as ApprovalLevel };
   if (j.verdict === 'keep') return { ...base, kind: 'setting' as ChangeKind, before: '테스트 판정: 유지', after: '입찰 · 랜딩 조정 후 재테스트 (14일)', approver: 'AE' as ApprovalLevel };
   if (j.verdict === 'exclude') return { ...base, kind: 'keyword_exclude' as ChangeKind, before: item.adgroup, after: '제외 키워드 등록 · 사유 기록', approver: 'AE' as ApprovalLevel };
@@ -846,7 +915,7 @@ export function judgeTestCard(card: TestCard, today: string, rules: Partial<type
     badge = `중단 · ${dataDays}일 차 CVR ${sg(liftCvr, 0)} (기준 −${card.stopDropPct}%)`;
     basis = `CVR ${fmt.pct(C.cvr, 2)} → ${fmt.pct(V.cvr, 2)} · ${pText(zCvr.p)}${finite(zCvr.p) && zCvr.p >= R.alpha ? ' — 유의성 미확보 상태의 손실 방지 중단' : ' — 열위 유의'}`;
     action = '변형안 집행 중단 · 기존안 복귀 · 2주 후 랩업에 원인 기록';
-  } else if (dataDays < plannedDays && !(card.minClicksPerArm && have >= card.minClicksPerArm)) {
+  } else if (dataDays < plannedDays && !(card.minClicksPerArm && Math.min(C.clicks, V.clicks) >= card.minClicksPerArm)) {
     verdict = 'running';
     badge = `진행 중 · ${dataDays}/${plannedDays}일 · 중간 ${pctLabel} ${sg(primaryLift, 0)}`;
     basis = `중간 결과 ${pText(primaryP)} · ${reqTxt} (현재 ${fmt.int(have)}) — 기간 종료 전 확대 판정 안 함`;
@@ -900,6 +969,20 @@ export function cumulativeSeries(card: TestCard, metric: CardMetric, days?: numb
     v.push(metric === 'ctr' ? ctrOf(b) : cvrOf(b));
   }
   return { c, v };
+}
+
+/** 사용자 카드 id — 기존 카드 · 요청 이력(labcard:)과 겹치지 않는 가장 작은 번호 (Lab 기록 초기화 후에도 이력과 섞이지 않게) */
+export function nextUserCardId(cards: readonly Pick<TestCard, 'id'>[] = [], changes: readonly Pick<ChangeRequest, 'targetId'>[] = []): string {
+  const used = new Set<string>((cards ?? []).map((c) => c.id));
+  for (const ch of changes ?? []) {
+    const m = String(ch?.targetId ?? '').match(/^labcard:([^:]+)/);
+    if (m) used.add(m[1]);
+  }
+  for (let n = 1; n < 1000; n++) {
+    const id = `TC-U${String(n).padStart(2, '0')}`;
+    if (!used.has(id)) return id;
+  }
+  return `TC-U${used.size + 1}`;
 }
 
 export function wrapupDue(decision: CardDecision | undefined): string | null {
@@ -992,6 +1075,12 @@ export const REVIEW_LEVEL_META: Record<ReviewLevel, { label: string; tone: 'crit
   check: { label: '확인', tone: 'warning', icon: 'search', rank: 1 },
   pass: { label: '통과', tone: 'good', icon: 'check', rank: 0 },
 };
+/** 검수 규칙 id → 화면 · 브리프 표기 */
+export const RULE_LABEL: Record<string, string> = {
+  medical_cure: '의료 효능 암시', medical_device: '의료기기 오인 · 전문가 추천', superlative: '최상급 · 순위', absolute: '절대 표현', price_claim: '가격 · 할인 대조',
+  competitor: '경쟁사명', numeric_claim: '수치 주장', service_claim: '배송 · 설치 조건', soldout_option: '품절 옵션', length: '글자수', lowest_price: '최저가 표기',
+};
+export const ruleLabel = (id: string) => RULE_LABEL[id] ?? id;
 const maxLevel = (levels: ReviewLevel[]): ReviewLevel => levels.reduce<ReviewLevel>((a, b) => (REVIEW_LEVEL_META[b].rank > REVIEW_LEVEL_META[a].rank ? b : a), 'pass');
 
 export interface ReviewFinding { ruleId: string; level: ReviewLevel; match: string; reason: string; suggestion: string; basis: string }
@@ -1017,6 +1106,7 @@ function checkPrices(text: string, data: Dataset | null | undefined): PriceCheck
   const out: PriceCheck[] = [];
   if (!data) return out;
   const refs = priceReferences(data);
+  if (!refs.length && !(data.promotions ?? []).length) return out;
   const today = data.today;
   const describe = (r: PriceRef, raw: string, amount: number, kind: PriceCheck['kind'], note0 = ''): PriceCheck => {
     const left = r.end ? daysBetween(today, r.end) : NaN;
@@ -1053,7 +1143,11 @@ function checkPrices(text: string, data: Dataset | null | undefined): PriceCheck
 }
 
 const SOURCE_QUALIFIER = /(기준|집계|출처|조사|\d{4}\s?(년|\.))/;
-const NUMERIC_CLAIM = /(\d+(?:\.\d+)?\s?(?:만|천)?\s?(?:개|명|건|년|회|가지))/g;
+/** 자동 수정안이 넣는 입력란 — 출처 병기로 인정하지 않는다 (실제 근거를 채워야 확인 단계로 내려간다) */
+const FILL_PLACEHOLDER = /\[[^\]]*입력\]/g;
+const SUPERLATIVE_PLACEHOLDER = '[출처 · 집계 기간 입력]';
+/** 수치 주장 — '6만 개' · '3,000명' · '10년' 그리고 단위 없는 '6만' · '3천'도 잡는다 (가격 표기는 가격 대조에서 따로 처리) */
+const NUMERIC_CLAIM = /(\d[\d,]*(?:\.\d+)?\s?(?:만|천)\s?(?:개|명|건|회|가지)?|\d[\d,]*(?:\.\d+)?\s?(?:개|명|건|년|회|가지))/g;
 const LOWEST_PRICE = /(최저\s?가격|최저가)/g;
 const SERVICE_CLAIM = /(무료\s?배송|무료\s?설치|기사\s?설치|평생|무상\s?(?:A\/S|AS)|보증)/g;
 
@@ -1061,6 +1155,8 @@ export function reviewCopy(text: string, data?: Dataset | null, opts: { limit?: 
   const t = String(text ?? '');
   const findings: ReviewFinding[] = [];
   const push = (f: ReviewFinding) => { if (!findings.some((x) => x.ruleId === f.ruleId && x.match === f.match)) findings.push(f); };
+  const qualified = SOURCE_QUALIFIER.test(t.replace(FILL_PLACEHOLDER, ''));
+  const hasPlaceholder = new RegExp(FILL_PLACEHOLDER.source).test(t);
   for (const rule of REVIEW_RULES) {
     if (rule.id === 'price_claim') continue;
     const re = new RegExp(rule.pattern, 'g');
@@ -1069,7 +1165,9 @@ export function reviewCopy(text: string, data?: Dataset | null, opts: { limit?: 
       let level = rule.level as ReviewLevel;
       let suggestion = '';
       if (rule.id === 'superlative') {
-        if (SOURCE_QUALIFIER.test(t)) { level = 'check'; suggestion = '출처 · 기간 표기 확인됨 — 원문 집계 자료와 대조'; } else suggestion = `'${match}'에 출처 · 집계 기간 · 기준 병기 (예: 네이버 가구 부문 판매 1위, 집계 기간 명시) 또는 삭제`;
+        if (qualified) { level = 'check'; suggestion = '출처 · 기간 표기 확인됨 — 원문 집계 자료와 대조'; }
+        else if (hasPlaceholder) suggestion = `${SUPERLATIVE_PLACEHOLDER} 칸을 실제 출처 · 집계 기간으로 채운 뒤 재검수 (예: 네이버 가구 부문 판매 1위, 2026년 상반기 기준)`;
+        else suggestion = `'${match}'에 출처 · 집계 기간 · 기준 병기 (예: 네이버 가구 부문 판매 1위, 집계 기간 명시) 또는 삭제`;
       } else if (rule.id === 'medical_cure' || rule.id === 'medical_device') suggestion = '의료 효능 표현 삭제 — 경도 · 지지감 · 체압 분산 등 제품 속성 표현으로 교체';
       else if (rule.id === 'absolute') suggestion = `'${match}' 삭제 또는 조건 · 범위를 밝힌 표현으로 교체`;
       else if (rule.id === 'competitor') suggestion = '경쟁사명 삭제 — 비교광고는 객관 근거 · 법무 검토 후';
@@ -1077,7 +1175,8 @@ export function reviewCopy(text: string, data?: Dataset | null, opts: { limit?: 
     }
   }
   const prices = checkPrices(t, data);
-  if (!data) {
+  // 대조할 판매가 · 프로모션 데이터가 없으면 불일치로 단정하지 않고 '대조 필요(확인)'로 둔다
+  if (!data || (!prices.length && !priceReferences(data).length)) {
     for (const m of t.matchAll(new RegExp(REVIEW_RULES.find((r) => r.id === 'price_claim')!.pattern, 'g'))) {
       prices.push({ raw: m[0], amount: NaN, kind: /%/.test(m[0]) ? 'percent' : 'won', status: 'unchecked', ref: null, note: '데이터 없이 검수 — 판매가 대조 필요' });
     }
@@ -1113,7 +1212,7 @@ export function applyFixes(text: string, findings: readonly ReviewFinding[], dat
   let s = String(text ?? '');
   const ids = new Set(findings.filter((f) => f.level === 'block' || f.level === 'warn').map((f) => f.ruleId));
   for (const fx of REVIEW_FIXES) if (ids.has(fx.ruleId)) s = s.replace(new RegExp(fx.pattern, 'g'), fx.replace);
-  if (ids.has('superlative') && !SOURCE_QUALIFIER.test(s)) s = s.replace(/1위/g, '1위(집계 기간 · 기준 병기)');
+  if (ids.has('superlative') && !SOURCE_QUALIFIER.test(s.replace(FILL_PLACEHOLDER, ''))) s = s.replace(/1위(?!\s?\[)/g, `1위${SUPERLATIVE_PLACEHOLDER}`);
   if (ids.has('lowest_price')) s = s.replace(LOWEST_PRICE, '');
   if (data && ids.has('price_claim')) {
     const live = (data.promotions ?? []).filter((p) => p.status === 'live' && p.end >= data.today).sort((a, b) => b.discountRate - a.discountRate);
@@ -1243,7 +1342,20 @@ export function pipelineBrief(data: Dataset, changes: readonly ChangeRequest[] =
     for (const i of running.slice(0, 3)) facts.push(`${q(i.phrase)} 집행 중 — ${i.judgement.badge.replace(/^집행 중 · /, '')}.`);
   }
   const overdue = items.filter((i) => i.overdue);
-  if (overdue.length) patterns.push(`테스트 그룹 키워드 ${overdue.length}개가 판정 기준 ${c.minDays}일을 넘겨 ${Math.max(...overdue.map((i) => n0(i.days)))}일째 집행 중입니다. 같은 그룹 키워드가 모두 일 클릭 1회 안팎이라 기간을 늘려도 표본이 쌓이지 않는 구조가 반복됩니다.`);
+  if (overdue.length) {
+    const perDay = overdue.map((i) => (n0(i.days) > 0 ? i.judgement.stats.clicks / n0(i.days) : NaN)).filter(finite);
+    const lo = perDay.length ? Math.min(...perDay) : NaN;
+    const hi = perDay.length ? Math.max(...perDay) : NaN;
+    const range = !finite(lo) ? '' : fmt.dec1(lo) === fmt.dec1(hi) ? `${fmt.dec1(lo)}회` : `${fmt.dec1(lo)}~${fmt.dec1(hi)}회`;
+    // 가장 빠른 키워드 기준 남은 일수 (클릭 기준 도달까지)
+    const remain = overdue.map((i) => {
+      const pd = n0(i.days) > 0 ? i.judgement.stats.clicks / n0(i.days) : 0;
+      const left = Math.max(0, c.minClicks - i.judgement.stats.clicks);
+      return left === 0 ? 0 : pd > 0 ? Math.ceil(left / pd) : Infinity;
+    });
+    const need = remain.length ? Math.min(...remain) : Infinity;
+    patterns.push(`테스트 그룹 키워드 ${overdue.length}개가 판정 기준 ${c.minDays}일을 넘겨 ${Math.max(...overdue.map((i) => n0(i.days)))}일째 집행 중입니다.${range ? ` 일 평균 클릭 ${range}로, 가장 빠른 키워드도 클릭 ${c.minClicks}회까지 ${finite(need) ? `약 ${fmt.int(need)}일 더` : '현재 속도로는 기한 없이'} 걸리는 속도라 기간 연장만으로는 표본이 쌓이지 않는 구조가 반복됩니다.` : ''}`);
+  }
   const vols = insuff.map((i) => n0((data?.keywords ?? []).find((k) => k.id === i.keywordId)?.monthlySearch)).filter((v) => v > 0);
   if (vols.length >= 2) patterns.push(`판정 보류 키워드 ${vols.length}개는 월 검색량 ${fmt.int(Math.min(...vols))}~${fmt.int(Math.max(...vols))} 구간의 롱테일 구문입니다. 개별 구문 볼륨으로는 ${c.minDays}일 안에 클릭 ${c.minClicks}회에 도달하지 않는 패턴이 반복됩니다.`);
   for (const p of pools) {
@@ -1256,10 +1368,11 @@ export function pipelineBrief(data: Dataset, changes: readonly ChangeRequest[] =
   const conditions = [
     `판정 기준(p.26): 확장 ≥ 목표 ROAS ${fmt.int(c.targetRoas)}%의 ${c.expandAtPct}% · 유지 ${c.keepFromPct}~${c.expandAtPct}% · 제외 < ${c.keepFromPct}% 또는 전환 없음. 집행 기준 ${c.minDays}일 또는 클릭 ${c.minClicks}회. 판정 최소 클릭 ${c.minJudgeClicks}회는 모듈 가정이며 기준값은 온보딩 중 수면밀도 목표 ROAS에 맞춰 확정합니다.`,
   ];
-  const hiRatio = insuff.map((i) => i.judgement.ratioPct).filter((v) => finite(v) && v >= c.expandAtPct);
+  const hiItems = insuff.filter((i) => finite(i.judgement.ratioPct) && i.judgement.ratioPct >= c.expandAtPct);
+  const hiClicks = hiItems.map((i) => i.judgement.stats.clicks);
   const counter = [
-    hiRatio.length
-      ? `ROAS만 보면 판정 보류 키워드 ${hiRatio.length}개도 목표 대비 ${pct0(Math.min(...hiRatio))} 이상으로 확장 구간이지만, 전환 1건 미만의 소수 전환으로 계산된 값이라 판정 근거로 쓰지 않습니다.`
+    hiItems.length
+      ? `ROAS만 보면 판정 보류 키워드 ${hiItems.length}개도 목표 대비 ${pct0(Math.min(...hiItems.map((i) => i.judgement.ratioPct)))} 이상으로 확장 구간이지만, 클릭 ${fmt.int(Math.min(...hiClicks))}~${fmt.int(Math.max(...hiClicks))}회 · 전환 합계 ${fmt.dec1(hiItems.reduce((a, i) => a + i.judgement.stats.conversions, 0))}건의 소표본(판정 최소 클릭 ${c.minJudgeClicks}회 미달)으로 계산된 값이라 판정 근거로 쓰지 않습니다.`
       : '판정 결과는 최근 집행 기간의 TEST DATA 기준이며 시즌(가을 이사 · 혼수) 효과가 섞여 있을 수 있습니다.',
   ];
   if (decided.length) actions.push(`담당 AE: STEP 4 판정 ${decided.length}건을 승인 요청합니다. 본 그룹 이관(확장)은 PM 승인, 제외 · 재테스트는 담당 AE 승인이며, 반영 후 2주 랩업에서 목표 ROAS 대비 비율과 전환 수로 재판정합니다.`);
@@ -1279,28 +1392,44 @@ export function gapText(entries: readonly Candidate[]): string {
   return parts.join(' ') || '콘텐츠 공백은 확인되지 않았습니다.';
 }
 
-export function discoveryBrief(data: Dataset, changes: readonly ChangeRequest[] = [], extra: readonly Candidate[] = []): Brief {
-  const { all, excludedExisting } = discoverCandidates(data, changes, extra);
+export function discoveryBrief(data: Dataset, changes: readonly ChangeRequest[] = [], extra: readonly Candidate[] = [], cIn?: Partial<LabCriteria> | null): Brief {
+  const crit = resolveCriteria(cIn);
+  const { all, excludedExisting, excludedRegistered } = discoverCandidates(data, changes, extra, crit.targetRoas);
   const st = all.filter((c) => c.source === 'search_term');
-  const sku = skuEntries(data, changes);
+  const sku = skuEntries(data, changes, crit.targetRoas);
   const f = skuFormula();
   const top = all.filter((c) => c.status === 'new' && c.purchase).slice(0, 5);
-  const bySource = (Object.keys(SOURCE_LABEL) as CandidateSource[]).map((s) => `${SOURCE_LABEL[s]} ${all.filter((c) => c.source === s).length}`).join(' · ');
-  const stHigh = st.filter((c) => c.evidence && c.evidence.ratioPct >= 100);
+  const SRC_SHORT: Record<CandidateSource, string> = { search_term: '검색어 보고서', related: '연관 검색어', ai_query: 'AI 검색 질의', sku48: 'SKU 확장 진입점', ai_expand: 'AI 확장' };
+  const bySource = (Object.keys(SOURCE_LABEL) as CandidateSource[])
+    .map((s) => [s, all.filter((c) => c.source === s).length] as const)
+    .filter(([s, n]) => n > 0 || s !== 'ai_expand')
+    .map(([s, n]) => `${SRC_SHORT[s]} ${n}개`).join(' · ');
+  const stConv = st.filter((c) => c.evidence && c.evidence.conversions > 0);
+  const stHigh = st.filter((c) => c.evidence && finite(c.evidence.ratioPct) && c.evidence.ratioPct >= crit.expandAtPct);
   const skuGood = sku.filter((c) => c.landing.level === 'good');
+  const soldLabels = [...new Set(soldOutOptions(data).map((s) => s.label))];
   const soldNotes = all.filter((c) => c.landing.notes.some((n) => n.includes('품절 — 랜딩')));
   const nonPurchase = all.filter((c) => !c.purchase);
   const medical = all.filter((c) => c.medical);
+  const gapCount = new Map<string, number>();
+  for (const e of [...sku, ...all]) for (const g of e.landing.gaps) gapCount.set(g, (gapCount.get(g) ?? 0) + 1);
+  const gapTop = [...gapCount.entries()].sort((a, b) => b[1] - a[1]).map(([g]) => g).slice(0, 5);
+  const excludedTxt = [
+    excludedRegistered ? `검색어 보고서의 등록 구문 ${excludedRegistered}개는 테스트 파이프라인에서 판정` : '',
+    excludedExisting ? `등록 키워드와 같은 구문 ${excludedExisting}개는 제외` : '',
+  ].filter(Boolean).join(' · ');
   return {
     title: '롱테일 · 구문형 키워드 발굴',
     facts: [
-      `후보 ${all.length}개 (${bySource}) · 이미 등록된 키워드 ${excludedExisting}개는 제외했습니다. SKU 확장은 제품 ${f.product} × 문제 ${f.problems} × 상황 ${f.situations} × 비교 ${f.criteria} = 검색 진입점 ${f.total}개입니다 (p.36).`,
-      `검색어 보고서 미등록 구문 ${st.length}개는 모두 전환이 발생했고, 그중 ${stHigh.length}개가 목표 ROAS ${AD_PILOT.targetRoas}% 이상입니다 (TEST DATA).`,
+      `후보 ${all.length}개 (${bySource} · 구문 중복 제거)${excludedTxt ? ` · ${excludedTxt}` : ''}. SKU 확장은 제품 ${f.product} × 문제 ${f.problems} × 상황 ${f.situations} × 비교 ${f.criteria} = 검색 진입점 ${f.total}개입니다 (p.36).`,
+      st.length
+        ? `검색어 보고서 미등록 구문 ${st.length}개 중 전환 발생 ${stConv.length}개, 목표 ROAS(일반 ${fmt.int(crit.targetRoas)}% · 브랜드 ${AD_PILOT.brandTargetRoas}%) 대비 ${crit.expandAtPct}% 이상 ${stHigh.length}개입니다 (TEST DATA).`
+        : '검색어 보고서에 미등록 구문이 없습니다 (TEST DATA).',
       ...top.map((c) => `${q(c.phrase)} ${c.score}점 — ${SOURCE_LABEL[c.source]} · ${INTENT_NAME(c.intent)} · ${c.volumeKind === 'impressions' ? `노출 ${fmt.int(c.volume)}` : `월 ${fmt.int(c.volume)} (추정)`} · 랜딩 ${c.landing.label} ${LANDING_LEVEL_META[c.landing.level].label}${c.evidence ? ` · ROAS ${fmt.roas(c.evidence.roas)}` : ''}.`),
     ],
     patterns: [
       `48 진입점 중 랜딩이 완전히 맞는 조합은 ${skuGood.length}개${skuGood.length ? `(${[...new Set(skuGood.map((x) => `${x.sku?.situation} × ${x.sku?.problem}`))].join(' · ')})` : ''}입니다. ${gapText(sku)}`,
-      ...(soldNotes.length ? [`'킹'이 들어간 후보 ${soldNotes.length}개는 킹 옵션 품절로 랜딩에서 구매할 수 없습니다 (상품 데이터 대조).`] : []),
+      ...(soldNotes.length ? [`${soldLabels.map((l) => q(l)).join(' · ')} 옵션이 들어간 후보 ${soldNotes.length}개는 해당 옵션 품절로 랜딩에서 구매할 수 없습니다 (상품 재고 데이터 대조).`] : []),
     ],
     interpretation: [
       '등록 순서는 실측 근거가 있는 검색어 보고서 구문이 먼저이고, 48 진입점은 추정 검색량이라 랜딩이 맞는 조합부터 소액 테스트하는 것이 테스트 비용 대비 학습 속도가 빠릅니다. 롱테일 구문은 개별 볼륨이 작아 같은 의도 그룹으로 묶어 판정 표본을 확보하는 운영을 전제로 합니다.',
@@ -1313,8 +1442,9 @@ export function discoveryBrief(data: Dataset, changes: readonly ChangeRequest[] 
       ...(medical.length ? [`${medical.map((c) => q(c.phrase)).slice(0, 3).join(' · ')} — 의료 연관 검색 맥락이라 전환이 있어도 문안 · 랜딩 검수 통과 전에는 등록하지 않습니다.`] : []),
     ],
     actions: [
-      `SA AE: 우선 등급 후보를 테스트 전용 그룹에 등록 요청합니다 (입찰 상한 = 같은 의도 본 그룹 입찰 중앙값, ${LAB_BULK.pmFrom}건 이상 일괄은 PM 승인). 등록 후 ${LAB_DEFAULT_CRITERIA.minDays}일 또는 클릭 ${LAB_DEFAULT_CRITERIA.minClicks}회 도달 시 자동 판정합니다.`,
-      'SearchTuneOS 담당: 부분 매칭으로 분류된 콘텐츠 공백(꺼짐 · 통기 · 소음 · 아이방)을 선택 가이드 · FAQ 보강 목록으로 넘깁니다.',
+      `SA AE: 우선 등급 후보를 테스트 전용 그룹에 등록 요청합니다 (입찰 상한 = 같은 의도 본 그룹 입찰 중앙값, ${LAB_BULK.pmFrom}건 이상 일괄은 PM 승인). 등록 후 ${crit.minDays}일 또는 클릭 ${crit.minClicks}회 도달 시 자동 판정합니다.`,
+      ...(gapTop.length ? [`SearchTuneOS 담당: 부분 매칭으로 분류된 콘텐츠 공백(${gapTop.join(' · ')})을 선택 가이드 · FAQ 보강 목록으로 넘기고, 보강 후 같은 후보의 랜딩 매칭을 다시 계산합니다.`] : []),
+      ...(soldNotes.length ? [`담당 AE: ${soldLabels.join(' · ')} 옵션 재입고 전에는 해당 옵션이 들어간 후보를 등록하지 않거나 재고 있는 사이즈 랜딩으로 연결합니다.`] : []),
     ],
   };
 }
@@ -1323,15 +1453,24 @@ export function reviewBrief(data: Dataset, cards: readonly TestCard[] = [], aiCo
   const r = reviewAll(data, collectCopies(data, cards, aiCopies));
   const blocks = r.rows.filter((x) => x.result.level === 'block');
   const warns = r.rows.filter((x) => x.result.level === 'warn');
-  const topRule = Object.entries(r.byRule).sort((a, b) => b[1] - a[1])[0];
+  // 차단 · 경고 지적만 센다 (가격 일치 '확인'까지 세면 위반이 많은 규칙처럼 읽힌다)
+  const severe: Record<string, number> = {};
+  for (const x of r.rows) for (const f of x.result.findings) if (f.level === 'block' || f.level === 'warn') severe[f.ruleId] = (severe[f.ruleId] ?? 0) + 1;
+  const topRule = Object.entries(severe).sort((a, b) => b[1] - a[1])[0];
+  // VisualTune 초안에서 차단 사유가 된 규칙 (데이터로 집계)
+  const vtBlock = new Map<string, number>();
+  for (const x of blocks.filter((b) => b.item.id.startsWith('vt:'))) {
+    for (const id of new Set(x.result.findings.filter((f) => f.level === 'block').map((f) => (f.ruleId === 'price_claim' ? '가격 · 할인 불일치' : ruleLabel(f.ruleId))))) vtBlock.set(id, (vtBlock.get(id) ?? 0) + 1);
+  }
+  const vtTxt = [...vtBlock.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}건`).join(' · ');
   return {
     title: '문안 검수 에이전트',
     facts: [
       `검수 대상 ${r.total}건 — 차단 ${r.count.block} · 경고 ${r.count.warn} · 확인 ${r.count.check} · 통과 ${r.count.pass}.`,
-      ...blocks.slice(0, 4).map((x) => `차단: ${q(x.item.text)} — ${x.result.findings.filter((f) => f.level === 'block').map((f) => `${f.match}(${f.ruleId === 'price_claim' ? '가격 불일치' : '의료 효능'})`).join(' · ')} → 수정안 ${q(x.result.suggested)} (${REVIEW_LEVEL_META[x.result.suggestedLevel].label}).`),
+      ...blocks.slice(0, 4).map((x) => `차단: ${q(x.item.text)} — ${x.result.findings.filter((f) => f.level === 'block').map((f) => `${f.match}(${f.ruleId === 'price_claim' ? '가격 불일치' : ruleLabel(f.ruleId)})`).join(' · ')} → 수정안 ${q(x.result.suggested)} (${REVIEW_LEVEL_META[x.result.suggestedLevel].label}).`),
       ...warns.slice(0, 3).map((x) => `경고: ${q(x.item.text)} — ${x.result.findings.filter((f) => f.level === 'warn').map((f) => f.match).join(' · ')}.`),
     ],
-    patterns: topRule ? [`가장 많이 걸린 규칙은 ${topRule[0]} (${topRule[1]}건)입니다. VisualTune 초안에서 차단이 반복되는 유형은 의료 효능 암시와 프로모션 가격 불일치입니다.`] : [],
+    patterns: topRule ? [`차단 · 경고가 가장 많이 나온 규칙은 ${ruleLabel(topRule[0])} (${topRule[1]}건)입니다.${vtTxt ? ` VisualTune 초안의 차단 사유는 ${vtTxt}입니다.` : ''}`] : [],
     interpretation: ['차단 문안은 매체 검수 반려 · 표시광고 리스크로 소재 교체 비용이 발생하므로, 제작 단계에서 걸러내는 쪽이 운영 리소스를 줄입니다. 가격 · 할인율은 판매가 데이터와 매일 대조해야 기획전 종료 직후 불일치가 남지 않습니다.'],
     conditions: ['검수 규칙: 의료 효능 암시 · 의료기기 오인 차단, 최상급 · 순위는 출처 병기 시 확인, 절대 표현 · 경쟁사명 경고, 가격 표기는 상품 옵션가 × (1 − 할인율)과 대조해 불일치 시 차단 (REVIEW_RULES, p.27 · p.35 · p.45).'],
     counter: ['자동 수정안은 치환 초안이라 문맥이 어색할 수 있습니다. 최종 문안은 담당 AE가 확인하고, 수치 주장(리뷰 수 등)은 집계 기준일 근거를 첨부합니다.'],
@@ -1351,8 +1490,21 @@ export function creativeBrief(data: Dataset, cards: readonly TestCard[], pattern
     facts,
     patterns: patterns.slice(0, 3).map((p) => `${p.title} — ${p.metric} ${sg(p.lift, 0)}${p.p !== null ? ` (${pText(p.p)})` : ''} · ${p.period} (${p.source === 'demo' ? 'DEMO 가상 이력' : '랩업 기록'}).`),
     interpretation: [
-      ...exp.map(({ c, j }) => `${c.id} 카드는 ${c.primary === 'ctr' ? 'CTR' : '전환율'} ${sg(j.primaryLift, 0)}가 확대 기준 +${c.expandLiftPct}%를 넘고 유의합니다. 같은 의도 그룹 전체 적용 시 클릭 단가는 같고 전환율만 바뀌는 구조라 CPA 개선이 그대로 CAC 개선으로 이어질 가능성이 높습니다. 가정: 그룹 내 다른 키워드도 같은 랜딩 효과를 받는다.`),
-      ...stop.map(({ c, j }) => `${c.id} 카드는 ${j.dataDays}일 차 전환율 ${sg(j.liftCvr, 0)}로 중단 기준에 도달했습니다. ${finite(j.pCvr) && j.pCvr >= CARD_RULES.alpha ? `유의성은 아직 확보되지 않았지만(${pText(j.pCvr)}) 손실 방지 기준이 우선입니다.` : ''} 기획전 랜딩은 혜택 노출은 늘리지만 사이즈 선택 정보가 밀려 생활 상황 고객의 결정을 늦추는 것으로 해석합니다.`),
+      ...exp.map(({ c, j }) => {
+        const cpa = j.checks.find((x) => x.metric === 'cpa');
+        const cpaTxt = cpa && finite(cpa.lift) ? ` 테스트 기간 CPA ${sg(cpa.lift, 0)}` : '';
+        const why = c.primary === 'cvr'
+          ? `${c.variable} 변경은 클릭 단가를 거의 바꾸지 않고 전환율만 움직이는 구조라${cpaTxt ? `${cpaTxt}가` : ' CPA 변화가'} 같은 의도 그룹 확대 시 CAC 개선으로 이어질 가능성이 높습니다. 가정: 그룹 내 다른 키워드도 같은 ${c.variable} 효과를 받는다.`
+          : `CTR 상승은 같은 노출에서 클릭을 늘리지만, CVR이 유지돼야 CPA가 개선됩니다.${cpaTxt ? `${cpaTxt}를` : ' CPA를'} 확대 후 2주 랩업에서 다시 확인합니다. 가정: 확대 지면의 클릭 품질이 테스트 지면과 같다.`;
+        return `${c.id} 카드는 ${c.primary === 'ctr' ? 'CTR' : '전환율'} ${sg(j.primaryLift, 0)}가 확대 기준 +${c.expandLiftPct}%를 넘고 유의합니다(${pText(j.primaryP)}). ${why}`;
+      }),
+      ...stop.map(({ c, j }) => {
+        const promoLanding = /기획전/.test(`${c.variant} ${c.hypothesis}`);
+        const why = promoLanding
+          ? '기획전 랜딩은 혜택 노출은 늘리지만 사이즈 · 옵션 선택 정보가 아래로 밀려 결정을 늦추는 것으로 해석합니다(가설 — 랩업에서 스크롤 · 이탈 지점으로 확인).'
+          : `변형안의 ${c.variable} 변경이 클릭 이후 결정 단계에 마찰을 만든 것으로 보이며, 원인은 랩업에서 분리 테스트로 확인합니다(가설).`;
+        return `${c.id} 카드는 ${j.dataDays}일 차 전환율 ${sg(j.liftCvr, 0)}로 중단 기준 −${c.stopDropPct}%에 도달했습니다. ${finite(j.pCvr) && j.pCvr >= CARD_RULES.alpha ? `유의성은 아직 확보되지 않았지만(${pText(j.pCvr)}) 손실 방지 기준이 우선입니다. ` : ''}${why}`;
+      }),
       ...run.map(({ c, j }) => `${c.id} 카드는 중간 ${c.primary === 'ctr' ? 'CTR' : 'CVR'} ${sg(j.primaryLift, 0)}입니다. 판정 순서상 CTR 다음 CVR을 확인해야 하므로 기간 종료 전 확대하지 않습니다.`),
     ],
     conditions: [`테스트 카드 기준(p.28): 기간 ${CARD_RULES.days}일 또는 최소 표본 · 중단 ${CARD_RULES.stopDay}일 차 전환율 −${CARD_RULES.stopCvrDropPct}% · 확대 전환율 +${CARD_RULES.expandCvrLiftPct}% → 같은 의도 그룹 전체 적용. 유의수준 ${CARD_RULES.alpha} · 검정력 ${CARD_RULES.power}는 모듈 가정입니다. 소재 테스트는 한 번에 한 변수 · 동일 타겟 · 유사 예산 · CTR → CVR → CPA → ROAS 순 판정(p.27).`],
@@ -1369,7 +1521,7 @@ export function creativeBrief(data: Dataset, cards: readonly TestCard[], pattern
 export function labPrompt(data: Dataset, changes: readonly ChangeRequest[], cIn: Partial<LabCriteria> | null, cards: readonly TestCard[]): string {
   const c = resolveCriteria(cIn);
   const items = buildPipeline(data, changes, c);
-  const { all } = discoverCandidates(data, changes);
+  const { all } = discoverCandidates(data, changes, [], c.targetRoas);
   const snap = {
     출처: 'TEST DATA (시연용 테스트 데이터) · 제안서 p.26–28 · p.36 기준',
     기준일: `${data.today} ${data.currentHour}시`,
@@ -1400,9 +1552,11 @@ JSON 배열로만 답한다: [{"title": "...", "description": "...", "hypothesis
 export function weeklyDraft(data: Dataset, changes: readonly ChangeRequest[], cIn: Partial<LabCriteria> | null, cards: readonly TestCard[], patterns: readonly Pattern[]): string {
   const p = pipelineBrief(data, changes, cIn);
   const cr = creativeBrief(data, cards, patterns);
-  const d = discoveryBrief(data, changes);
-  const sec = (h: string, lines: string[]) => (lines.length ? `### ${h}\n${lines.map((l) => `- ${l}`).join('\n')}\n` : '');
-  const monday = addDays(data.today, ((8 - weekday(data.today)) % 7) || 7);
+  const d = discoveryBrief(data, changes, [], cIn);
+  // 단락 문장 (번호 · 글머리표 없이) — SPEC §0 문구 원칙, briefToMarkdown과 같은 형식
+  const sec = (h: string, lines: string[]) => (lines.length ? `### ${h}\n${lines.join('\n\n')}\n` : '');
+  // 다음 주간 발송일 — 운영 루프 캘린더와 같은 규칙 (월요일 · 공휴일이면 다음 영업일)
+  const monday = nextBusinessDay(addDays(data.today, ((8 - weekday(data.today)) % 7) || 7));
   return [
     `## MILDO Lab 주간 인사이트 브리프 · ${fmtDate(monday)} 발송분`,
     `기준 ${fmtDate(data.today)} ${data.currentHour}시 · TEST DATA · 제안서 p.28 주간 산출물(개선 제안)`,
@@ -1411,6 +1565,7 @@ export function weeklyDraft(data: Dataset, changes: readonly ChangeRequest[], cI
     sec('반복 관측 패턴', [...p.patterns, ...d.patterns.slice(0, 1)]),
     sec('AI 해석', [...p.interpretation.slice(0, 1), ...cr.interpretation.slice(0, 2)]),
     sec('전제 조건 · 기준값', [...p.conditions, ...cr.conditions]),
+    sec('반례 · 대체 시나리오', [...p.counter, ...cr.counter]),
     sec('다음 액션', [...p.actions, ...cr.actions].slice(0, 6)),
   ].join('\n');
 }
@@ -1419,7 +1574,7 @@ export function weeklyDraft(data: Dataset, changes: readonly ChangeRequest[], cI
 export function labBrief(data: Dataset, changes: readonly ChangeRequest[], cIn: Partial<LabCriteria> | null, cards: readonly TestCard[], patterns: readonly Pattern[]): Brief {
   const p = pipelineBrief(data, changes, cIn);
   const c = creativeBrief(data, cards, patterns);
-  const d = discoveryBrief(data, changes);
+  const d = discoveryBrief(data, changes, [], cIn);
   return {
     title: 'MILDO Lab 운영 해석',
     facts: [...p.facts.slice(0, 3), ...c.facts.slice(0, 3), ...d.facts.slice(0, 2)],
@@ -1428,5 +1583,148 @@ export function labBrief(data: Dataset, changes: readonly ChangeRequest[], cIn: 
     conditions: [...p.conditions, ...c.conditions.slice(0, 1)],
     counter: [...p.counter, ...c.counter, ...d.counter.slice(0, 1)],
     actions: [...p.actions.slice(0, 2), ...c.actions.slice(0, 2), ...d.actions.slice(0, 1)],
+  };
+}
+
+/* ================================================================== */
+/* 화면 요약 · 오늘 처리할 항목 (첫 화면 상태)                            */
+/* ================================================================== */
+
+export type LabTabId = 'discover' | 'pipeline' | 'cards' | 'creative' | 'review' | 'loop';
+export interface LabTodo { id: string; tone: 'critical' | 'warning' | 'accent' | 'neutral'; tab: LabTabId; label: string; title: string; basis: string; rank: number }
+
+/** 첫 화면 요약 타일 + 오늘 처리할 항목 — 모든 항목에 판정 기준 · 근거 수치를 붙인다 */
+export function labOverview(
+  data: Dataset, changes: readonly ChangeRequest[] = [], cIn: Partial<LabCriteria> | null = null, cards: readonly TestCard[] = [],
+  decisions: Record<string, CardDecision | undefined> = {}, extra: { aiCandidates?: readonly Candidate[]; aiCopies?: readonly AdCopy[]; role?: string } = {},
+) {
+  const crit = resolveCriteria(cIn);
+  const role = extra.role ?? 'PM';
+  const pipeline = buildPipeline(data, changes, crit);
+  const ps = pipelineSummary(pipeline);
+  const pools = groupPools(pipeline, crit);
+  const disc = discoverCandidates(data, changes, extra.aiCandidates ?? [], crit.targetRoas);
+  const sku = skuEntries(data, changes, crit.targetRoas);
+  const fresh = disc.all.filter((c) => c.status === 'new' && c.purchase);
+  const stNew = fresh.filter((c) => c.source === 'search_term');
+  const stHigh = stNew.filter((c) => c.evidence && finite(c.evidence.ratioPct) && c.evidence.ratioPct >= crit.expandAtPct);
+  const judged = cards.map((c) => ({ c, j: judgeTestCard(c, data.today) }));
+  const review = reviewAll(data, collectCopies(data, cards, extra.aiCopies ?? []));
+  const cal = loopCalendar(data.today, cards, decisions, 8);
+  const incoming = incomingTests(changes).filter((x) => isOpenChange(x.change));
+  const labPending = (changes ?? []).filter((c) => (c.module === 'lab' || isRegistration(c)) && c.status === 'pending');
+  const mine = labPending.filter((c) => canApprove(role, c.approver).ok);
+  const nextOf = (k: LoopEvent['cadence']) => cal.events.find((e) => e.cadence === k && e.date >= data.today) ?? null;
+
+  const todos: LabTodo[] = [];
+  const blocks = review.rows.filter((r) => r.result.level === 'block');
+  if (blocks.length) {
+    const first = blocks[0];
+    const f = first.result.findings.find((x) => x.level === 'block');
+    todos.push({
+      id: 'review-block', tone: 'critical', tab: 'review', label: `차단 ${blocks.length}건`, rank: 0,
+      title: `검수 차단 문안 ${blocks.length}건 — 집행 · 테스트 카드 등록 불가`,
+      basis: `${first.item.source}: '${first.item.text}'${f ? ` · ${f.match} (${f.ruleId === 'price_claim' ? '판매가 대조 불일치' : ruleLabel(f.ruleId)})` : ''} · 차단 기준 REVIEW_RULES (p.27 · p.35)`,
+    });
+  }
+  for (const { c, j } of judged) {
+    if (decisions[c.id]) continue;
+    if (j.verdict === 'stop') {
+      todos.push({ id: `card-stop:${c.id}`, tone: 'critical', tab: 'cards', label: '중단 결정', rank: 1, title: `${c.id} ${c.title} — 중단 결정 필요`, basis: `${j.badge} · ${j.basis}` });
+    } else if (j.verdict === 'expand') {
+      todos.push({ id: `card-expand:${c.id}`, tone: 'accent', tab: 'cards', label: '확대 결정', rank: 2, title: `${c.id} ${c.title} — 확대 승인 요청 (PM)`, basis: `${j.badge} · 확대 범위: ${c.expandScope}` });
+    }
+  }
+  if (ps.awaitingDecision) {
+    const ds = pipeline.filter((i) => i.step === 4 && (!i.decision || !isActiveStatus(i.decision.status)));
+    todos.push({
+      id: 'pipe-decide', tone: 'accent', tab: 'pipeline', label: `STEP 4 · ${ds.length}건`, rank: 3,
+      title: `키워드 판정 ${ds.length}건 — 반영 승인 요청 전`,
+      basis: ds.slice(0, 2).map((i) => `'${i.phrase}' ${i.judgement.badge}`).join(' · '),
+    });
+  }
+  if (ps.overdue) {
+    const od = pipeline.filter((i) => i.overdue);
+    const pool = pools[0];
+    todos.push({
+      id: 'pipe-overdue', tone: 'warning', tab: 'pipeline', label: `기한 경과 ${od.length}건`, rank: 4,
+      title: `테스트 그룹 ${od.length}개 판정 기한 경과 — 판정 보류 · 표본 부족`,
+      basis: `${Math.max(...od.map((i) => n0(i.days)))}일 집행 · 기준 ${crit.minDays}일 또는 클릭 ${crit.minClicks}회 · 판정 최소 클릭 ${crit.minJudgeClicks}회${pool ? ` · ${pool.adgroup} 합산 ${pool.judgement.badge}` : ''}`,
+    });
+  }
+  for (const pr of livePromotions(data)) {
+    const left = daysBetween(data.today, pr.end);
+    if (!(finite(left) && left >= 0 && left <= 7)) continue;
+    const affected = new Set([...sku, ...disc.all].filter((c) => c.landing.notes.some((n) => n.includes(pr.name))).map((c) => norm(c.phrase))).size;
+    // 기획전명을 랜딩 · 문안에 그대로 쓴 카드 (공백 무시 비교)
+    const cardsHit = cards.filter((c) => norm(`${c.control} ${c.variant} ${c.copyControl ?? ''} ${c.copyVariant ?? ''}`).includes(norm(pr.name))).map((c) => c.id);
+    const parts = [
+      `할인 ${pr.discountRate}%`,
+      affected ? `기획전 랜딩 후보 ${affected}개 부분 매칭` : '',
+      finite(pr.adCopyPrice) ? `소재 표기가 ${fmt.int(pr.adCopyPrice)}원 교체 대상` : '',
+      cardsHit.length ? `${cardsHit.join(' · ')} 카드 랜딩 · 문안 영향` : '',
+      '기준: 종료 7일 전부터 표시',
+    ].filter(Boolean);
+    todos.push({
+      id: `promo-end:${pr.id}`, tone: 'warning', tab: affected ? 'discover' : 'review', label: `D-${left}`, rank: 5,
+      title: `'${pr.name}' ${fmtDate(pr.end)} 종료 — ${affected ? '기획전 랜딩 · ' : ''}가격 문구 교체 일정`,
+      basis: parts.join(' · '),
+    });
+  }
+  if (stNew.length) {
+    todos.push({
+      id: 'disc-st', tone: 'neutral', tab: 'discover', label: `미등록 ${stNew.length}개`, rank: 6,
+      title: `검색어 보고서 미등록 전환 구문 ${stNew.length}개 — 테스트 그룹 등록 후보`,
+      basis: `목표 ROAS ${fmt.int(crit.targetRoas)}%의 ${crit.expandAtPct}% 이상 ${stHigh.length}개 · 우선 등급 ${stNew.filter((c) => c.tier === 'priority').length}개 (점수 ≥ ${SCORE_WEIGHTS.priority})`,
+    });
+  }
+  if (incoming.length) {
+    todos.push({
+      id: 'incoming', tone: 'neutral', tab: 'cards', label: `수신 ${incoming.length}건`, rank: 7,
+      title: `다른 모듈 테스트 요청 ${incoming.length}건 — 테스트 카드로 설계`,
+      basis: incoming.slice(0, 2).map((x) => `${x.origin}: ${x.title}`).join(' · '),
+    });
+  }
+  if (mine.length) {
+    todos.push({
+      id: 'mine', tone: 'neutral', tab: 'pipeline', label: `${role} 승인`, rank: 8,
+      title: `현재 역할(${role})이 승인할 Lab 요청 ${mine.length}건`,
+      basis: mine.slice(0, 3).map((c) => `${c.target} (${APPROVER_LABEL[c.approver]})`).join(' · '),
+    });
+  }
+  todos.sort((a, b) => a.rank - b.rank);
+
+  const cardCount: Partial<Record<CardVerdict, number>> = {};
+  for (const { j } of judged) cardCount[j.verdict] = (cardCount[j.verdict] ?? 0) + 1;
+  return {
+    crit, pipeline, ps, pools, disc, sku, judged, review, cal, incoming, labPending, mine, todos,
+    tiles: {
+      discover: { fresh: fresh.length, priority: fresh.filter((c) => c.tier === 'priority').length, searchTerm: stNew.length, searchTermHigh: stHigh.length, sku48: sku.length, skuGood: sku.filter((c) => c.landing.level === 'good').length },
+      pipeline: { total: ps.total, byStep: ps.byStep, awaiting: ps.awaitingDecision, overdue: ps.overdue, byVerdict: ps.byVerdict },
+      cards: { total: cards.length, byVerdict: cardCount, decided: cards.filter((c) => decisions[c.id]).length },
+      review: { total: review.total, ...review.count },
+      loop: { weekly: nextOf('weekly'), testEnd: nextOf('test_end'), monthly: nextOf('monthly') },
+    },
+  };
+}
+
+/** 수신 요청 초안의 매체 · 지면 — 테스트 카드 폼의 선택지와 같은 문자열 */
+export const INCOMING_MEDIA = { pilot: '신규 매체 파일럿' } as const;
+
+/** 다른 모듈 테스트 요청 → 테스트 카드 초안 (가설 · 변수 추정) */
+export function incomingToDraft(x: IncomingTest): { title: string; hypothesis: string; variable: CardVariable; media: string; intent: IntentId | null; control: string; variant: string; primary: CardMetric } {
+  const c = x.change;
+  const reason = String(c.reason ?? '');
+  const hyp = reason.match(/가설:\s*([^.]+?)(?:\.|$)/)?.[1]?.trim();
+  const blob = `${c.target} ${x.before} ${x.after} ${reason}`;
+  const variable: CardVariable = /(소재|메시지|문구|카피)/.test(blob) ? '메시지' : /(랜딩|상세|기획전 페이지)/.test(blob) ? '랜딩' : '타겟';
+  const media = /(파일럿|신규 매체)/.test(blob) ? INCOMING_MEDIA.pilot
+    : /GFA/.test(blob) ? '네이버 GFA · Prospecting' : /(Meta|메타)/.test(blob) ? 'Meta · 넓은 타겟' : /(Google|구글)/.test(blob) ? 'Google · Demand Gen' : /카카오/.test(blob) ? '카카오 · 리마케팅' : '네이버 SA';
+  const ci = classifyIntent(blob);
+  return {
+    title: String(c.target ?? '').slice(0, 60),
+    hypothesis: hyp && hyp.length >= 10 ? hyp : `${String(c.target ?? '')} 변경을 소액으로 적용하면 같은 예산 대비 증분 전환이 늘어난다`,
+    variable, media, intent: media === '네이버 SA' ? ci.intent : null,
+    control: x.before || '기존 운영', variant: x.after, primary: variable === '메시지' ? 'ctr' : 'cvr',
   };
 }
