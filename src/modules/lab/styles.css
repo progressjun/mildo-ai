@@ -1,0 +1,146 @@
+/* MILDO Lab 전용 스타일 — 접두사 lab-. 색은 토큰 변수만 사용 */
+
+.lab-page a.btn { text-decoration: none; color: var(--ink); }
+.lab-sub { font-size: var(--fs-xs); color: var(--muted); line-height: 1.45; }
+.card.dark .lab-sub { color: var(--panel-muted); }
+.lab-basis { font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.45; }
+.lab-mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
+.lab-quote { border-left: 3px solid var(--accent); padding: 2px 0 2px 10px; font-size: var(--fs-sm); line-height: 1.5; }
+.lab-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: var(--fs-sm); }
+.lab-kv dt { color: var(--muted); }
+.lab-kv dd { margin: 0; min-width: 0; }
+
+/* ---------- 요약 타일 ---------- */
+.lab-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.lab-summary .card { padding: 14px 16px; gap: 6px; }
+.lab-split { display: flex; gap: 6px; flex-wrap: wrap; }
+.lab-todo { display: flex; flex-direction: column; gap: 6px; }
+.lab-todo-item {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface);
+}
+
+/* ---------- STEP 스트립 ---------- */
+.lab-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.lab-step {
+  border: 1px solid color-mix(in srgb, var(--panel-ink) 16%, transparent); border-radius: var(--r-md);
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; min-width: 0; position: relative;
+}
+.lab-step.on { border-color: var(--accent); }
+.lab-step-n { font-size: 10.5px; letter-spacing: 0.12em; color: var(--panel-muted); font-weight: 700; }
+.lab-step-title { font-size: var(--fs-md); font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.lab-step-count { font-size: var(--fs-xl); font-weight: 900; font-variant-numeric: tabular-nums; }
+
+/* ---------- 칸반 ---------- */
+.lab-kanban { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.lab-col { background: var(--surface-2); border-radius: var(--r-lg); padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.lab-col-head { display: flex; flex-direction: column; gap: 2px; padding: 2px 4px 4px; }
+.lab-col-title { font-weight: 700; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.lab-item {
+  background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--line-strong); border-radius: var(--r-md);
+  padding: 10px 11px; display: flex; flex-direction: column; gap: 6px; min-width: 0;
+}
+.lab-item.ghost { border-style: dashed; border-left-style: dashed; background: transparent; }
+.lab-item.v-expand { border-left-color: var(--good); }
+.lab-item.v-keep { border-left-color: var(--warning); }
+.lab-item.v-exclude { border-left-color: var(--serious); }
+.lab-item.v-insufficient { border-left-color: var(--line-strong); }
+.lab-item.v-running { border-left-color: var(--ink-2); }
+.lab-item.v-stop { border-left-color: var(--critical); }
+.lab-item-title { font-weight: 700; font-size: var(--fs-sm); line-height: 1.35; }
+.lab-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.lab-metric { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.lab-metric span { font-size: 10.5px; color: var(--muted); }
+.lab-metric strong { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lab-prog { display: grid; grid-template-columns: 44px 1fr auto; gap: 6px; align-items: center; font-size: 10.5px; color: var(--muted); }
+
+/* ---------- 48 진입점 그리드 ---------- */
+.lab-formula { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.lab-formula-num { font-size: var(--fs-2xl); font-weight: 900; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.lab-formula-num em { font-style: normal; color: var(--accent-ink); }
+.lab-g48 { display: grid; grid-template-columns: 112px repeat(4, minmax(0, 1fr)); gap: 6px; }
+.lab-g48-h { font-size: var(--fs-xs); color: var(--muted); font-weight: 700; padding: 2px 4px; display: flex; align-items: flex-end; }
+.lab-g48-r { font-size: var(--fs-sm); font-weight: 700; display: flex; align-items: center; padding-right: 4px; }
+.lab-g48-cell { display: flex; flex-direction: column; gap: 4px; background: var(--surface-2); border-radius: var(--r-md); padding: 5px; min-width: 0; }
+.lab-chip {
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 7px; cursor: pointer; text-align: left;
+  display: grid; grid-template-columns: 1fr auto; gap: 4px; align-items: center; font-size: 11.5px; line-height: 1.3; min-width: 0;
+  color: var(--ink);
+}
+.lab-chip:hover { border-color: var(--ink-2); }
+.lab-chip.partial { border-style: dashed; border-color: var(--line-strong); }
+.lab-chip.none { opacity: 0.6; }
+.lab-chip[aria-pressed='true'] { outline: 2px solid var(--accent); outline-offset: 1px; }
+.lab-chip-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lab-chip-score { font-weight: 900; font-variant-numeric: tabular-nums; }
+.lab-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); display: inline-block; margin-right: 4px; }
+.lab-legend-box { width: 22px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid var(--line); }
+.lab-legend-box.dashed { border-style: dashed; border-color: var(--line-strong); }
+
+/* ---------- 점수 바 ---------- */
+.lab-score { display: grid; grid-template-columns: 1fr 28px; gap: 6px; align-items: center; min-width: 96px; }
+.lab-score-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.lab-score-bar > span { display: block; height: 100%; background: var(--series-1); border-radius: 999px; }
+.lab-score strong { font-variant-numeric: tabular-nums; font-size: var(--fs-sm); text-align: right; }
+.lab-parts { display: grid; grid-template-columns: 70px 1fr 44px; gap: 4px 8px; align-items: center; font-size: var(--fs-xs); }
+
+/* ---------- 소스 타일 ---------- */
+.lab-sources { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.lab-source {
+  border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-md); padding: 10px 12px; cursor: pointer; text-align: left;
+  display: flex; flex-direction: column; gap: 3px; min-width: 0; color: var(--ink);
+}
+.lab-source:hover { border-color: var(--ink-2); }
+.lab-source[aria-pressed='true'] { border-color: var(--accent); box-shadow: var(--focus); }
+.lab-source-n { font-size: var(--fs-xl); font-weight: 900; font-variant-numeric: tabular-nums; }
+
+/* ---------- 테스트 카드 ---------- */
+.lab-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.lab-ab { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
+.lab-ab th { text-align: right; color: var(--muted); font-weight: 500; padding: 3px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.lab-ab th:first-child, .lab-ab td:first-child { text-align: left; }
+.lab-ab td { text-align: right; padding: 3px 4px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lab-ab tr:last-child td { border-bottom: 0; }
+.lab-order { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.lab-order-step { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+.lab-order-step.win { border-color: var(--good); color: var(--good-ink); }
+.lab-order-step.lose { border-color: var(--critical); color: var(--critical-ink); }
+.lab-order-step.tie { color: var(--ink-2); }
+.lab-order-step.na { color: var(--muted); border-style: dashed; }
+.lab-wrap { border-top: 1px dashed var(--line-strong); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+
+/* ---------- 가설 카드 ---------- */
+.lab-hyp-copy { font-size: var(--fs-lg); font-weight: 700; line-height: 1.35; }
+.lab-hyp-id { font-size: var(--fs-3xl); font-weight: 900; line-height: 1; color: var(--accent-ink); }
+.lab-rules { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.lab-rule { border: 1px solid color-mix(in srgb, var(--panel-ink) 16%, transparent); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.lab-len { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+
+/* ---------- 검수 ---------- */
+.lab-hl { border-radius: 3px; padding: 0 2px; }
+.lab-hl.block { background: var(--critical-soft); color: var(--critical-ink); text-decoration: underline wavy; }
+.lab-hl.warn { background: var(--serious-soft); color: var(--serious-ink); }
+.lab-hl.check { background: var(--warning-soft); color: var(--warning-ink); }
+.lab-review-text { font-size: var(--fs-lg); line-height: 1.6; padding: 10px 12px; background: var(--surface-2); border-radius: var(--r-md); word-break: keep-all; }
+.lab-samples { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ---------- 캘린더 ---------- */
+.lab-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.lab-cal-h { font-size: var(--fs-xs); color: var(--muted); text-align: center; padding: 2px 0; }
+.lab-cal-d { min-height: 74px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 5px; display: flex; flex-direction: column; gap: 3px; background: var(--surface); min-width: 0; }
+.lab-cal-d.off { background: var(--surface-2); }
+.lab-cal-d.past { opacity: 0.6; }
+.lab-cal-d.today { outline: 2px solid var(--accent); outline-offset: -1px; }
+.lab-cal-date { font-size: 10.5px; color: var(--muted); display: flex; justify-content: space-between; gap: 4px; }
+.lab-ev { font-size: 10.5px; line-height: 1.25; border-radius: 4px; padding: 2px 4px; background: var(--surface-2); border-left: 3px solid var(--ink-2); overflow: hidden; text-overflow: ellipsis; }
+.lab-cal-d.off .lab-ev { background: var(--surface); }
+
+@media (max-width: 1180px) {
+  .lab-summary, .lab-sources { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lab-kanban, .lab-cards, .lab-rules { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .lab-summary, .lab-sources, .lab-kanban, .lab-cards, .lab-rules, .lab-steps { grid-template-columns: 1fr; }
+  .lab-g48 { grid-template-columns: 80px repeat(4, minmax(120px, 1fr)); overflow-x: auto; }
+  .lab-cal { grid-template-columns: repeat(7, minmax(64px, 1fr)); overflow-x: auto; }
+}

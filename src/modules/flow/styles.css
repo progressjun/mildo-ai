@@ -1,0 +1,142 @@
+/* MILDO Flow 전용 스타일 — 접두사 flow-. 색은 토큰 변수만 사용 (상태색은 아이콘 · 라벨과 함께) */
+
+/* ---------- 요약 스트립 (블랙 패널) ---------- */
+.flow-hero { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; padding: 14px; }
+.flow-hero-item {
+  display: flex; flex-direction: column; gap: 3px; text-align: left; border: 1px solid color-mix(in srgb, var(--panel-ink) 14%, transparent);
+  background: transparent; color: var(--panel-ink); border-radius: var(--r-md); padding: 10px 12px; cursor: pointer; min-width: 0; font: inherit;
+}
+.flow-hero-item:hover { border-color: color-mix(in srgb, var(--panel-ink) 40%, transparent); }
+.flow-hero-item.main { border-color: var(--accent); }
+.flow-hero-label { font-size: var(--fs-xs); color: var(--panel-muted); }
+.flow-hero-value { font-size: var(--fs-2xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.1; }
+.flow-hero-value.accent-text { color: var(--accent); }
+.flow-hero-foot { font-size: var(--fs-xs); color: var(--panel-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; line-height: 1.4; }
+.flow-hero-meta { grid-column: 1 / -1; color: var(--panel-muted); display: flex; gap: 8px; align-items: center; }
+.flow-tab-badge { margin-left: 2px; font-size: 11px; background: var(--surface-3); color: var(--ink); border-radius: 999px; padding: 0 7px; line-height: 18px; }
+.flow-tab-badge.crit { background: var(--critical-soft); color: var(--critical-ink); }
+
+/* ---------- 내가 처리할 것 ---------- */
+.flow-queue { display: flex; flex-direction: column; gap: 6px; }
+.flow-queue-row {
+  display: flex; gap: 10px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: 8px 10px; background: var(--surface); box-shadow: inset 3px 0 0 var(--accent);
+}
+.flow-queue-row.overdue { box-shadow: inset 3px 0 0 var(--critical); }
+.flow-queue-main { display: flex; flex-direction: column; gap: 4px; border: 0; background: none; padding: 0; text-align: left; cursor: pointer; min-width: 0; font: inherit; color: inherit; flex: 1; }
+.flow-mini-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.flow-mini-stat { display: flex; flex-direction: column; gap: 0; padding: 6px 8px; border-radius: var(--r-sm); background: var(--surface-2); border-top: 3px solid var(--line-strong); }
+.flow-mini-stat strong { font-size: var(--fs-xl); }
+.flow-mini-stat.st-pending, .flow-col.st-pending { border-top-color: var(--warning); }
+.flow-mini-stat.st-approved, .flow-col.st-approved { border-top-color: var(--accent); }
+.flow-mini-stat.st-applied, .flow-col.st-applied { border-top-color: var(--good); }
+.flow-mini-stat.st-rejected, .flow-col.st-rejected { border-top-color: var(--line-strong); }
+.flow-mini-stat.st-rolled_back, .flow-col.st-rolled_back { border-top-color: var(--serious); }
+.flow-mini-stat.st-held, .flow-col.st-held { border-top-color: var(--critical); }
+
+/* ---------- 필터 · 보드 ---------- */
+.flow-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.flow-filters .input { max-width: 260px; }
+.flow-filters .select { width: auto; }
+.flow-board { display: grid; grid-template-columns: repeat(6, minmax(190px, 1fr)); gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+.flow-col { background: var(--surface-2); border-radius: var(--r-md); border-top: 3px solid var(--line-strong); padding: 8px; display: flex; flex-direction: column; gap: 8px; min-height: 180px; min-width: 0; }
+.flow-col-head { display: flex; flex-direction: column; gap: 2px; padding: 2px 2px 4px; }
+.flow-col-empty { padding: 10px 4px; }
+.flow-card {
+  display: flex; flex-direction: column; gap: 4px; text-align: left; width: 100%; font: inherit; color: inherit; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; align-items: flex-start;
+}
+.flow-card:hover { border-color: var(--ink-2); }
+.flow-card.mine { box-shadow: inset 3px 0 0 var(--accent); }
+.flow-card.overdue { box-shadow: inset 3px 0 0 var(--critical); }
+.flow-card-target { font-weight: 700; font-size: var(--fs-sm); line-height: 1.35; }
+.flow-card-meta { font-size: var(--fs-xs); color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
+.flow-change { font-size: var(--fs-xs); display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.flow-approver { font-size: var(--fs-xs); display: inline-flex; align-items: center; gap: 3px; color: var(--ink-2); }
+.flow-module { font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em; color: var(--ink-2); background: var(--surface-3); border-radius: 4px; padding: 0 6px; line-height: 18px; text-decoration: none; white-space: nowrap; }
+.flow-module:hover { color: var(--ink); }
+.flow-seed { font-size: 10.5px; border-radius: 4px; padding: 0 6px; line-height: 18px; white-space: nowrap; color: var(--warning-ink); background: var(--warning-soft); }
+
+/* ---------- 드로어 ---------- */
+.flow-reason { background: var(--surface-2); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.flow-kv { display: grid; grid-template-columns: 116px 1fr; gap: 8px; font-size: var(--fs-sm); align-items: baseline; }
+.flow-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.flow-history li { display: grid; grid-template-columns: 12px 1fr; gap: 8px; position: relative; }
+.flow-history li::before { content: ''; position: absolute; left: 5px; top: 14px; bottom: -10px; width: 2px; background: var(--line); }
+.flow-history li:last-child::before { display: none; }
+.flow-history-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ink); margin-top: 4px; position: relative; z-index: 1; }
+.flow-related { display: flex; gap: 6px; align-items: center; font-size: var(--fs-sm); color: var(--ink); text-decoration: none; }
+
+/* ---------- 운영 타임라인 ---------- */
+.flow-pipe { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.flow-pipe-step { position: relative; border: 1px solid color-mix(in srgb, var(--panel-ink) 16%, transparent); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; }
+.flow-pipe-step.done { border-color: color-mix(in srgb, var(--good) 60%, transparent); }
+.flow-pipe-n { font-size: var(--fs-2xl); font-weight: 900; line-height: 1; }
+.flow-pipe-arrow { position: absolute; right: -14px; top: 50%; transform: translateY(-50%); color: var(--panel-muted); z-index: 1; }
+.flow-case { gap: 10px; border-left: 4px solid var(--line-strong); }
+.flow-case.sev-P1 { border-left-color: var(--critical); }
+.flow-case.sev-P2 { border-left-color: var(--serious); }
+.flow-case.sev-P3 { border-left-color: var(--warning); }
+.flow-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.flow-stage { border-radius: var(--r-sm); padding: 6px 8px; background: var(--surface-2); font-size: var(--fs-xs); display: flex; flex-direction: column; gap: 2px; border-top: 3px solid var(--line-strong); min-width: 0; }
+.flow-stage.done { border-top-color: var(--good); }
+.flow-stage.current { border-top-color: var(--accent); background: var(--accent-soft); }
+.flow-stage-note { color: var(--ink-2); line-height: 1.4; overflow-wrap: anywhere; }
+.flow-link-row { display: flex; gap: 8px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 8px; }
+.flow-link-main { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; min-width: 0; }
+.flow-feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-height: 720px; overflow-y: auto; }
+.flow-ev { display: grid; grid-template-columns: 82px 36px 1fr; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); align-items: start; }
+.flow-ev:last-child { border-bottom: 0; }
+.flow-ev-body { display: flex; flex-direction: column; gap: 2px; border: 0; background: none; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; min-width: 0; }
+.flow-ev-body:disabled { cursor: default; opacity: 1; }
+.flow-stage-tag { font-size: 10.5px; font-weight: 700; border-radius: 4px; text-align: center; line-height: 18px; background: var(--surface-3); color: var(--ink-2); }
+.flow-stage-tag.s-detect { background: var(--warning-soft); color: var(--warning-ink); }
+.flow-stage-tag.s-assign { background: var(--surface-3); color: var(--ink); }
+.flow-stage-tag.s-action { background: var(--accent-soft); color: var(--accent-ink); }
+.flow-stage-tag.s-report { background: var(--good-soft); color: var(--good-ink); }
+
+/* ---------- 프로모션 점검 ---------- */
+.flow-promo {
+  display: flex; flex-direction: column; gap: 6px; text-align: left; font: inherit; color: inherit; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; min-width: 0;
+}
+.flow-promo:hover { border-color: var(--ink-2); }
+.flow-promo.active { border-color: var(--ink); box-shadow: var(--shadow); }
+.flow-group-dots { display: flex; gap: 4px; flex-wrap: wrap; }
+.flow-gdot { font-size: 10.5px; border-radius: 4px; padding: 0 6px; line-height: 18px; background: var(--surface-2); color: var(--ink-2); }
+.flow-gdot.lv-pass { background: var(--good-soft); color: var(--good-ink); }
+.flow-gdot.lv-warn { background: var(--warning-soft); color: var(--warning-ink); }
+.flow-gdot.lv-fail { background: var(--critical-soft); color: var(--critical-ink); font-weight: 700; }
+.flow-checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.flow-check-group { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px; }
+.flow-check-group-head { display: flex; gap: 8px; align-items: center; }
+.flow-check { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 6px 0; border-top: 1px solid var(--line); }
+.flow-check.lv-fail { background: color-mix(in srgb, var(--critical-soft) 45%, transparent); border-radius: var(--r-sm); padding: 6px; }
+
+/* ---------- 리포트 · 요청 ---------- */
+.flow-next { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; }
+.flow-basis { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--panel-ink); }
+.flow-big-approver { font-size: var(--fs-2xl); font-weight: 900; color: var(--accent); letter-spacing: -0.02em; }
+.flow-preview { display: flex; flex-direction: column; gap: 2px; border-top: 1px solid color-mix(in srgb, var(--panel-ink) 16%, transparent); padding-top: 8px; }
+
+/* ---------- 의사결정 체계 ---------- */
+.flow-org { display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--panel-muted); }
+.flow-org-node { border: 1px solid color-mix(in srgb, var(--panel-ink) 22%, transparent); border-radius: var(--r-md); padding: 6px 14px; color: var(--panel-ink); font-size: var(--fs-sm); display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.flow-org-node.main { border-color: var(--accent); font-weight: 700; }
+.flow-org-node.main .xs { color: var(--panel-muted); font-weight: 400; }
+.flow-org-node.sm { font-size: var(--fs-xs); padding: 4px 10px; }
+.flow-channels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.flow-channel { border-top: 2px solid color-mix(in srgb, var(--panel-ink) 22%, transparent); padding-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+
+@media (max-width: 1180px) {
+  .flow-hero { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .flow-board { grid-template-columns: repeat(3, minmax(190px, 1fr)); }
+  .flow-pipe { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .flow-pipe-arrow { display: none; }
+}
+@media (max-width: 900px) {
+  .flow-hero, .flow-board, .flow-pipe, .flow-stages, .flow-checklist, .flow-channels { grid-template-columns: 1fr; }
+  .flow-queue-row { flex-direction: column; align-items: stretch; }
+  .flow-check { grid-template-columns: 58px minmax(0, 1fr); }
+  .flow-kv { grid-template-columns: 1fr; gap: 0; }
+}

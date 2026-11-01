@@ -1,0 +1,95 @@
+/* SearchTuneOS · GEO 전용 스타일 — 접두사 geo-. 색은 토큰 변수만 사용 */
+
+/* ---------- 네 축 스트립 (p.29) ---------- */
+.geo-axes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.geo-axis {
+  border: 1px solid color-mix(in srgb, var(--panel-ink) 16%, transparent);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  text-align: left; background: transparent; color: inherit; cursor: pointer; font: inherit;
+}
+.geo-axis:hover { border-color: color-mix(in srgb, var(--panel-ink) 40%, transparent); }
+.geo-axis[aria-current='true'] { border-color: var(--accent); }
+.geo-axis-name { font-size: var(--fs-sm); font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.geo-axis-scope { font-size: var(--fs-xs); color: var(--panel-muted); line-height: 1.45; min-height: 2.9em; }
+.geo-axis-metric { font-size: var(--fs-2xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.geo-axis-foot { font-size: var(--fs-xs); color: var(--panel-muted); }
+.geo-axis .geo-basis { color: var(--panel-muted); }
+.geo-principle { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: var(--fs-sm); border-top: 1px solid color-mix(in srgb, var(--panel-ink) 12%, transparent); padding-top: 10px; }
+.geo-principle strong { color: var(--panel-ink); }
+
+/* ---------- 판정 배지 + 기준 ---------- */
+.geo-badge { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; min-width: 0; }
+.geo-badge.row { flex-direction: row; align-items: center; gap: 6px; flex-wrap: wrap; }
+.geo-basis { font-size: var(--fs-xs); color: var(--muted); line-height: 1.4; }
+.card.dark .geo-basis { color: var(--panel-muted); }
+.card.dark .pill.outline { border-color: color-mix(in srgb, var(--panel-ink) 30%, transparent); color: var(--panel-ink); }
+
+/* ---------- KPI ---------- */
+.geo-kpis { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 14px; }
+.geo-kpi { border-left: 2px solid var(--line); padding-left: 12px; min-width: 0; }
+.geo-kpi.hl { border-left-color: var(--accent); }
+
+/* ---------- 매트릭스 ---------- */
+.geo-matrix td, .geo-matrix th { padding: 6px 8px; }
+.geo-matrix th.eng { text-align: center; white-space: nowrap; }
+.geo-cell {
+  display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+  min-width: 46px; height: 24px; padding: 0 6px; border-radius: 6px;
+  font-size: var(--fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap;
+  background: var(--surface-2); color: var(--muted); border: 1px solid transparent;
+}
+.geo-cell.on { background: var(--good-soft); color: var(--good-ink); font-weight: 700; }
+.geo-cell.first { background: var(--good-soft); color: var(--good-ink); border-color: var(--good); font-weight: 700; }
+.geo-cell.live { border-style: dashed; border-color: var(--line-strong); }
+.geo-cell.amb { background: var(--warning-soft); color: var(--warning-ink); }
+.geo-cell .c { font-weight: 400; opacity: 0.85; }
+.geo-qtext { font-weight: 700; font-size: var(--fs-sm); }
+.geo-row-check { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.geo-legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: var(--fs-xs); color: var(--ink-2); }
+
+/* ---------- 상세 패널 ---------- */
+.geo-detail-row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; align-items: start; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: var(--fs-sm); }
+.geo-detail-row:last-child { border-bottom: 0; }
+.geo-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.geo-quote { background: var(--surface-2); border-radius: var(--r-sm); padding: 8px 10px; font-size: var(--fs-sm); line-height: 1.6; color: var(--ink-2); }
+
+/* ---------- 코드 · 입력 ---------- */
+.geo-code {
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 10px 12px; overflow: auto; max-height: 360px; white-space: pre; margin: 0; color: var(--ink);
+}
+.geo-html { font-family: var(--font-mono); font-size: 11.5px; min-height: 320px; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+
+/* ---------- 진단 ---------- */
+.geo-score { display: flex; align-items: baseline; gap: 8px; }
+.geo-score-num { font-size: 44px; font-weight: 900; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.geo-axis-bars { display: grid; grid-template-columns: 110px 1fr 54px; gap: 6px 10px; align-items: center; font-size: var(--fs-sm); }
+.geo-facts { display: grid; grid-template-columns: 120px 1fr; gap: 4px 10px; font-size: var(--fs-sm); }
+.geo-facts dt { color: var(--muted); }
+.geo-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* ---------- FAQ ---------- */
+.geo-faq { border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
+.geo-faq.block { border-left: 3px solid var(--critical); }
+.geo-faq.input, .geo-faq.warn { border-left: 3px solid var(--warning); }
+.geo-faq.ok, .geo-faq.check { border-left: 3px solid var(--good); }
+.geo-faq .textarea { min-height: 64px; font-size: var(--fs-sm); }
+.geo-hit { font-size: var(--fs-xs); display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.geo-topics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.geo-topic { border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+
+/* ---------- 진단 전후 ---------- */
+.geo-case-out { border: 1px dashed var(--line-strong); border-radius: var(--r-md); padding: 12px 14px; font-size: var(--fs-md); line-height: 1.6; }
+.geo-blank { color: var(--accent-ink); font-weight: 700; }
+
+@media (max-width: 1180px) {
+  .geo-axes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .geo-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .geo-topics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .geo-axes, .geo-kpis, .geo-topics { grid-template-columns: 1fr; }
+  .geo-axis-bars { grid-template-columns: 90px 1fr 48px; }
+}
