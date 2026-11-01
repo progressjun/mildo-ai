@@ -24,7 +24,7 @@ export function VerifyTab({ ap, keywordId, setKeywordId }: { ap: AdPilotCtx; key
 
   if (!k || !d) return <Card title="자동 입찰 검증"><div className="muted small">키워드 데이터가 없습니다.</div></Card>;
   const cfg = { ...ap.cfg, clickElasticity: clickE, cpcElasticity: cpcE, currentBids: ap.bids };
-  const v = verifyBidChange(ap.data, k, bid, cfg);
+  const v = verifyBidChange(ap.data, k, bid, cfg, ap.proposals);
   const curve = simulateCurve(k, current, cfg, STEPS);
   const active = latestChangeFor(ap.state.changes, 'adpilot', k.id, 'bid');
   const hasActive = !!active && ACTIVE.has(active.status);

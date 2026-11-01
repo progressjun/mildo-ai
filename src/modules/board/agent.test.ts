@@ -57,6 +57,31 @@ describe('board agent kit', () => {
     expect(king.제품군별[0].재고).toBe('품절');
   });
 
+  it('board_keywords: 알 수 없는 신호 값은 전체로 처리 (0건 오답 방지)', async () => {
+    const all = await run('board_keywords', { limit: 40 });
+    const bogus = await run('board_keywords', { signal: 'bogus', limit: 40 });
+    expect(bogus.조건.신호).toBe('all');
+    expect(bogus.요약.키워드수).toBe(all.요약.키워드수);
+  });
+
+  it('board_pacing: 예상 마감은 판정 기준 시각과 같다 (SA_일반 제품 20:22 · Meta_넓은 타겟 18:06)', async () => {
+    const p = await run('board_pacing');
+    const byName = (n: string) => p.캠페인.find((c: { 캠페인: string }) => c.캠페인 === n);
+    expect(byName('SA_일반 제품').예상마감).toBe('20:22');
+    expect(byName('Meta_넓은 타겟').예상마감).toBe('18:06');
+    expect(byName('SA_일반 제품').판정).toContain('20:22');
+  });
+
+  it('board_data_status: Google 비실명 권한 · GFA 자동충전 실패 · 오늘의집 검수가 원천별 계정 이슈로 나온다', async () => {
+    const s = await run('board_data_status');
+    const acc = (n: string) => s.원천.find((x: { 원천: string }) => x.원천 === n).계정;
+    expect(acc('Google').join(' ')).toContain('agency-shared@');
+    expect(acc('네이버 GFA').join(' ')).toContain('자동충전 실패');
+    expect(acc('버티컬 · 신규').join(' ')).toContain('검수');
+    expect(acc('네이버 SA')).toBe('정상');
+    expect(s.수집.전일배치).toContain('07:00 완료');
+  });
+
   it('board_pacing: 조기 소진 캠페인이 먼저 · 매체 필터', async () => {
     const p = await run('board_pacing');
     const early = p.캠페인.filter((c: { 판정: string }) => /소진/.test(c.판정)).map((c: { 캠페인: string }) => c.캠페인);

@@ -26,14 +26,14 @@ const RULE_FILTER: Record<(typeof RULE_TABLE)[number]['id'], ActionFilter> = {
 function ruleStats(ap: AdPilotCtx) {
   const ps = ap.proposals;
   const c = ap.cfg;
-  const watchBelow = ap.diag.filter((d) => d.ruleId === 'below_target' && d.verdict === 'watch').length;
+  const dn = ap.downInfo;
   const early = ap.paces.filter((p) => p.earlyExhaust).length;
   return {
     high_efficiency: { n: ps.filter((p) => p.action === 'bid_up').length, unit: '건 상향', th: `ROAS ≥ 목표×${c.highEfficiencyRoasRatio} · 손실 ≥ ${Math.round(c.lostShareTrigger * 100)}% · 상한 ${c.dailyChangeCapPct}% · 브랜드 ${fmt.roas(c.brandTargetRoas)}` },
-    below_target: { n: ps.filter((p) => p.action === 'bid_down').length, unit: `건 하향 · 표본 부족 ${watchBelow}`, th: `14일 · 직전 14일 모두 < ${fmt.roas(c.targetRoas)} · 전환 ≥ ${c.minConversionsForDown}` },
+    below_target: { n: ps.filter((p) => p.action === 'bid_down').length, unit: `건 하향 · 두 기간 미달 ${dn.belowBoth.length}${dn.sensitivity ? ` · 민감도 ${fmt.roas(dn.sensitivity.target)}에서 ${dn.sensitivity.proposals.length}건` : ''}`, th: `14일 · 직전 14일 모두 < ${fmt.roas(c.targetRoas)} · 전환 ≥ ${c.minConversionsForDown}` },
     early_exhaust: { n: early, unit: `개 캠페인 · 제안 ${ps.filter((p) => p.action === 'budget_shift').length}`, th: `예상 마감 ${c.exhaustBeforeHour}시 전 (시간대 가중 · 선형)` },
     new_intent: { n: ps.filter((p) => p.action === 'test_candidate').length, unit: '개 후보', th: '검색어 보고서 미등록 + 전환 발생' },
-    anomaly: { n: ps.filter((p) => p.action === 'hold').length, unit: '건 보류', th: `최근 3일 CPC · 전환 ±${c.anomalyHoldPct}% · 오늘 동시간 ±${c.anomalyHoldPct}% · 추적 단절` },
+    anomaly: { n: ps.filter((p) => p.action === 'hold').length, unit: `건 보류 · Alert 연계 ${ps.filter((p) => p.action === 'hold' && p.linkedIncidents?.length).length}`, th: `최근 3일 CPC · 전환 ±${c.anomalyHoldPct}% · 오늘 동시간 ±${c.anomalyHoldPct}% · 추적 단절 · MILDO Alert 열린 이슈` },
   };
 }
 
@@ -45,7 +45,7 @@ function HoldBanner({ holds }: { holds: AdPilotProposal[] }) {
       <div className="stack-sm" style={{ gap: 3 }}>
         {holds.map((h) => (
           <span key={h.id}>
-            <strong>{h.keyword}</strong> · {RULE_LABEL[h.ruleId]} — {h.basis}
+            <strong>{h.keyword}</strong> · {RULE_LABEL[h.ruleId]}{h.holdSource === 'alert' ? ' (MILDO Alert 이슈 기준)' : h.holdSource === 'both' ? ' (AD Pilot 판정 + MILDO Alert 이슈)' : ''} — {h.basis}
           </span>
         ))}
         <span className="row" style={{ gap: 8 }}><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.14 · p.44" /><a href="#alert">MILDO Alert 이슈 큐에서 조치 상태 보기 →</a></span>
@@ -108,7 +108,7 @@ export default function View() {
       <div className="stack-sm">
         <div className="row-between">
           <strong className="small">AD Pilot 규칙 (조건 → 자동 조정) · 오늘 탐지</strong>
-          <span className="row xs muted" style={{ gap: 6 }}><Src kind="PROPOSAL" page="p.14" />카드를 누르면 조정 후보가 해당 규칙으로 필터됩니다</span>
+          <span className="row xs muted" style={{ gap: 6 }}><Src kind="PROPOSAL" page="p.14" /><Src kind="DEMO" />카드를 누르면 조정 후보가 해당 규칙으로 필터됩니다</span>
         </div>
         <div className="adpilot-rules">
           {RULE_TABLE.map((r) => {

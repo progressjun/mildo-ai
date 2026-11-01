@@ -63,14 +63,37 @@ describe('MILDO Board 화면 렌더', () => {
     expect(sales).toContain('네이버 브랜드스토어');
     const hourly = await wrap(h(HourlyTab, { d: DEMO }));
     expect(hourly).toContain('전환 효율 지수');
+    expect(hourly).toContain('board-heat-grid');
+    expect(hourly).toContain('상위 3개 슬롯');
+    expect((hourly.match(/<td /g) ?? []).length).toBeGreaterThanOrEqual(7 * 24);
+    expect(hourly).not.toMatch(/#[0-9a-fA-F]{6}/);
     const data = await wrap(h(DataTab, { d: DEMO, incidents: [] }));
     expect(data).toContain('추적 단절 의심');
     expect(data).toContain('자동충전 실패');
     expect(data).toContain('p_main:k');
+    expect(data).toContain('비실명 권한');
+    expect(data).toContain('agency-shared@');
     for (const html of [media, kw, pace, sales, hourly, data]) expect(html).not.toMatch(/NaN|undefined/);
     const row = keywordRows(DEMO).find((r) => r.text === '매트리스 추천')!;
     const drawer = await wrap(h(KeywordDrawer, { row, onClose: () => undefined }));
     expect(drawer).toContain('최근 3일 CPC');
+    expect(drawer).toContain('최근 14일 vs 직전 14일');
+    // 판정 시각과 표시 시각 일치
+    expect(pace).toContain('20:22');
+    expect(pace).toContain('18:06');
+    expect(pace).not.toContain('selectors.');
+  });
+
+  it('수집 배치 전(06:30)에는 "07:00 완료"를 표시하지 않는다', async () => {
+    const { PipelineStrip } = await import('./DataTab');
+    const { generateDemoData } = await import('@/data/demo');
+    const early = generateDemoData('2026-10-31', 6);
+    const html = await wrap(h(PipelineStrip, { d: early, mer: 4, merLabel: '최근 7일', onOpen: () => undefined }));
+    expect(html).toContain('07:00 예정');
+    expect(html).not.toContain('07:00 완료');
+    const emptyHtml = await wrap(h(PipelineStrip, { d: empty, mer: NaN, merLabel: '최근 7일', onOpen: () => undefined }));
+    expect(emptyHtml).not.toContain('07:00 완료');
+    expect(emptyHtml).toContain('전일분 누락');
   });
 
   it('각 탭: 빈 데이터에서도 예외 없음', async () => {

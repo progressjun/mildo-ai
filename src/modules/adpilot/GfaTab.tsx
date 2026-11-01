@@ -186,7 +186,7 @@ export function GfaTab({ ap }: { ap: AdPilotCtx }) {
                   {(cv?.adGroups ?? []).map((g) => <option key={g.id} value={g.id}>{g.name} ({g.status.toUpperCase()}{g.note ? ` · ${g.note}` : ''})</option>)}
                 </select>
               </Field>
-              <Field label="변경 후 상태" id="adpilot-gfa-to">
+              <Field label="변경 후 상태">
                 <Segmented label="변경 후 상태" value={draft.toStatus ?? 'off'} onChange={(t) => set({ toStatus: t })} options={[{ id: 'on', label: 'ON' }, { id: 'off', label: 'OFF' }]} />
               </Field>
             </div>

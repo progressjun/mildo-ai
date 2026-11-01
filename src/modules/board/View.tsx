@@ -12,8 +12,10 @@ import { Icon } from '@/ui/Icon';
 import { AiInsight } from '@/ui/AiInsight';
 import { BOARD_PERIODS } from './data';
 import {
-  boardKpis, boardPrompt, budgetPacing, clock, collectionSummary, keywordRows, kpiDaily, mediaComparison, periodBrief, type BoardPeriod,
+  boardKpis, boardPrompt, budgetPacing, clock, collectionSummary, keywordRows, kpiDaily, mediaComparison, periodBrief, validationChecks, type BoardPeriod,
 } from './engine';
+import { NeutralDelta } from './parts';
+import { BOARD_RULES } from './data';
 import { DataTab, PipelineStrip } from './DataTab';
 import { MediaTab } from './MediaTab';
 import { KeywordTab } from './KeywordTab';
@@ -39,6 +41,7 @@ export default function View() {
   const pacing = useMemo(() => budgetPacing(d), [d]);
   const coll = useMemo(() => collectionSummary(d), [d]);
   const kw = useMemo(() => keywordRows(d, 14), [d]);
+  const checks = useMemo(() => validationChecks(d), [d]);
   const media = useMemo(() => mediaComparison(d, k.win), [d, k.win]);
 
   const kwAlerts = kw.filter((r) => r.signals.some((s) => s.id === 'soldout' || s.id === 'cpc_spike' || s.id === 'conv_drop' || s.id === 'no_conv'));
@@ -60,7 +63,7 @@ export default function View() {
     todo.push({
       key: 'pace', tab: 'pacing', tone: peak.length ? 'serious' : 'warning',
       title: `일 예산 조기 소진 예상 ${pacing.early.length}개${peak.length ? ` · 피크 전 ${peak.length}개` : ''}`,
-      basis: pacing.early.slice(0, 2).map((c) => `${c.name} ${clock(c.curveExhaustHour ?? c.linearExhaustHour)}`).join(' · ') + ' 마감 예상 (기준 23시 전)',
+      basis: `${pacing.early.slice(0, 2).map((c) => `${c.name} ${clock(c.exhaustHour)}`).join(' · ')} 마감 예상 (기준 ${BOARD_RULES.exhaustBeforeHour}시 전)`,
     });
   }
   for (const r of kwAlerts.slice(0, 2)) {
@@ -68,7 +71,8 @@ export default function View() {
     todo.push({ key: `kw-${r.id}`, tab: 'keywords', tone: s.id === 'soldout' ? 'serious' : 'warning', title: `'${r.text}' ${s.label}`, basis: s.basis });
   }
   if (coll.warnings) {
-    todo.push({ key: 'data', tab: 'data', tone: 'warning', title: `수집 · 검증 확인 필요 ${coll.warnings}건`, basis: '오늘 시간대 급변 · 전환 0 연속 · 계정 상태 (p.44 · p.45)' });
+    const warn = checks.filter((c) => c.level === 'warn');
+    todo.push({ key: 'data', tab: 'data', tone: 'warning', title: `수집 · 검증 확인 필요 ${coll.warnings}건`, basis: warn.map((c) => c.label).join(' · ') });
   }
   for (const m of mediaFlags.slice(0, 2)) todo.push({ key: `m-${m.media}`, tab: 'media', tone: m.flag.level === 'danger' ? 'serious' : 'warning', title: `${m.name} ${m.flag.label}`, basis: m.flag.basis });
 
@@ -95,7 +99,7 @@ export default function View() {
             actions={<Src kind="DEMO" />}
           >
             <div className="board-kpis">
-              <div className="board-kpi"><Stat label="광고비" value={fmt.krw(k.cur.cost)} delta={k.deltas.cost} invert foot={<span className="muted">6개 매체</span>} spark={spark('cost')} /></div>
+              <div className="board-kpi"><Stat label="광고비" value={fmt.krw(k.cur.cost)} foot={<><NeutralDelta pct={k.deltas.cost} /><span className="muted">6개 매체</span></>} spark={spark('cost')} /></div>
               <div className="board-kpi"><Stat label="광고 매출" value={fmt.krw(k.cur.revenue)} delta={k.deltas.revenue} foot={<span className="muted">매체 귀속</span>} spark={spark('revenue', '--series-3')} /></div>
               <div className="board-kpi"><Stat label="ROAS" value={fmt.roas(k.cur.roas)} delta={k.deltas.roas} foot={<span className="muted">광고 매출 ÷ 광고비</span>} spark={spark('roas', '--series-3')} /></div>
               <div className="board-kpi"><Stat label="판매 채널 실매출" value={fmt.krw(k.sales)} delta={k.deltas.sales} foot={<span className="muted">광고 외 포함 · 광고 경유 {fmt.ratio(k.adShareOfSales, 0)}</span>} spark={spark('sales', '--series-7')} /></div>

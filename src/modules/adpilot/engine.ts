@@ -11,8 +11,9 @@
  *  - 브랜드 키워드 별도 기준(목표 ROAS 800%, 순위 방어 우선)
  */
 import type {
-  AdAccount, ApprovalLevel, Campaign, ChangeKind, ChangeRequest, Dataset, Incident, IntentId, Keyword, KeywordStats, MediaId,
+  AdAccount, ApprovalLevel, Campaign, ChangeKind, ChangeRequest, Dataset, Incident, IntentId, Keyword, KeywordStats, MediaId, Severity,
 } from '@/core/types';
+import { heldMedia } from '@/modules/alert/engine';
 import { AD_PILOT, CAUSE_CANDIDATES, GFA_DELEGATION, INTENT_IDS, KEYWORD_TEST_RULES, MEDIA, MEDIA_IDS, SA_CAMPAIGNS } from '@/data/constants';
 import { campaignPacing, mediaRows, monthlyPacing, previousRange, rangeOf, totalsOf } from '@/core/selectors';
 import { addDays, clamp, fmt, fmtDate, metrics, sum, weekday } from '@/core/util';
@@ -425,7 +426,7 @@ export function simulateCurve(k: Pick<Keyword, 'last14' | 'impressionShareLost'>
 }
 
 function simText(s: BidSimulation): string {
-  return `일 기준 클릭 ${fmt.delta(s.delta.clicksPct)} · 비용 ${fmt.delta(s.delta.costPct)}(${s.projected.cost - s.base.cost >= 0 ? '+' : ''}${fmt.krw(s.projected.cost - s.base.cost)}) · 전환 ${fmt.delta(s.delta.convPct)} · 증분 ROAS ${fmt.roas(s.incrementalRoas)} (탄력성 가정)`;
+  return `일 기준 클릭 ${fmt.delta(s.delta.clicksPct)} · 비용 ${fmt.delta(s.delta.costPct)}(${s.projected.cost - s.base.cost >= 0 ? '+' : ''}${fmt.krw(s.projected.cost - s.base.cost)}원) · 전환 ${fmt.delta(s.delta.convPct)} · 증분 ROAS ${fmt.roas(s.incrementalRoas)} (탄력성 가정)`;
 }
 
 /* ================================================================== */
@@ -893,19 +894,29 @@ export interface AdPilotProposal extends BidProposal {
   approverReason: string;
   unit: 'won' | 'budget' | 'none';
   priority: number;
-  holdKind?: 'keyword_anomaly' | 'collection' | 'soldout' | 'data_spike' | 'tracking_break' | 'account' | 'efficiency' | 'monthly_over';
+  holdKind?: 'keyword_anomaly' | 'collection' | 'soldout' | 'data_spike' | 'tracking_break' | 'account' | 'efficiency' | 'monthly_over' | 'incident';
   causes?: CauseCandidate[];
   sim?: BidSimulation;
   donor?: { id: string; name: string; before: number; after: number };
   /** 비용 영향 (일, 원) — 대량 변경 점검용 */
   costDelta: number;
+  /** MILDO Alert 열린 이슈 연계 (보류 근거) */
+  linkedIncidents?: LinkedIncident[];
+  /** 보류 출처: AD Pilot 자체 판정 · MILDO Alert 이슈 · 둘 다 */
+  holdSource?: 'adpilot' | 'alert' | 'both';
+  /** 이슈 연계 보류로 바뀌기 전 원래 제안 */
+  suppressed?: { action: BidProposal['action']; before: number; after: number; changePct: number };
 }
+
+export interface LinkedIncident { id: string; ruleId: string; severity: Severity; title: string; isTest: boolean }
 
 const ACTION_ORDER: Record<BidProposal['action'], number> = { hold: 0, bid_up: 1, bid_down: 2, budget_shift: 3, test_candidate: 4 };
 
-function keywordProposals(data: Dataset, cfg: AdPilotConfig, diag: KeywordDiagnosis[]): AdPilotProposal[] {
+function keywordProposals(data: Dataset, cfg: AdPilotConfig, diag: KeywordDiagnosis[], paces: CampaignPace[] = []): AdPilotProposal[] {
   const out: AdPilotProposal[] = [];
   const kwById = new Map(data.keywords.map((k) => [k.id, k]));
+  /** 같은 의도의 SA 캠페인 소진 상태 — 조기 소진이면 노출 손실 일부가 예산 제한형일 수 있다 */
+  const saPace = (i: IntentId) => paces.find((c) => c.media === 'naver_sa' && c.intent === i && c.status !== 'off');
   for (const d of diag) {
     const k = kwById.get(d.id)!;
     const common = { keywordId: d.id, keyword: d.text, targetType: 'keyword' as const, changeTargetId: d.id, media: 'naver_sa' as MediaId, intent: d.intent, isBrand: d.isBrand };
@@ -948,6 +959,10 @@ function keywordProposals(data: Dataset, cfg: AdPilotConfig, diag: KeywordDiagno
       if (d.verdict === 'down') guard.push(`최소 전환 ${cfg.minConversionsForDown}건 충족 (${fmt.dec1(d.conversions)}건)`);
       if (d.isBrand) guard.push(`브랜드 별도 기준 (목표 ${fmt.roas(cfg.brandTargetRoas)} · 순위 ≤ ${cfg.brandRankTarget}위)`);
       if (d.limitedBy.length) guard.push(`제한 적용: ${d.limitedBy.join(' · ')}`);
+      const camp = d.verdict !== 'down' ? saPace(d.intent) : undefined;
+      const budgetLimited = !!camp?.earlyExhaust;
+      const campExhaust = camp ? clock(camp.curveExhaustHour ?? camp.linearExhaustHour) : '';
+      if (budgetLimited) guard.push(`같은 의도 캠페인 ${camp!.name} 조기 소진 예상 ${campExhaust} — 입찰만 올리면 마감이 더 빨라지므로 예산 재배분과 함께 승인`);
       out.push({
         ...common,
         id: `${d.verdict === 'down' ? 'bid_down' : 'bid_up'}:${d.id}:${data.today}`,
@@ -958,9 +973,11 @@ function keywordProposals(data: Dataset, cfg: AdPilotConfig, diag: KeywordDiagno
         reason: d.verdict === 'down'
           ? `최근 14일과 직전 14일 모두 목표 ROAS에 못 미쳤고 전환이 ${fmt.dec1(d.conversions)}건으로 판단 표본을 확보했습니다. 입찰을 낮춰 CPC를 줄이고 효율을 회복합니다.`
           : d.verdict === 'defend'
-            ? `브랜드 키워드 순위 ${d.rank.toFixed(1)}위 · 노출 손실 ${fmt.ratio(d.lost, 0)}로 점유 방어가 필요합니다. 브랜드 목표 ROAS를 충족해 순위 방어를 우선합니다.`
-            : `목표 대비 ${pct0(d.ratioPct)} 효율인데 노출 기회의 ${fmt.ratio(d.lost, 0)}를 잃고 있습니다. 평균 순위 ${d.rank.toFixed(1)}위로 순위 제한형 손실이라 입찰 상향으로 회수합니다.`,
-        expected: simText(sim),
+            ? `브랜드 키워드 ${[d.rank > cfg.brandRankTarget ? `평균 순위 ${d.rank.toFixed(1)}위(기준 ${cfg.brandRankTarget}위 이내)` : '', d.lost >= cfg.lostShareTrigger ? `노출 손실 ${fmt.ratio(d.lost, 0)}(기준 ${fmt.ratio(cfg.lostShareTrigger, 0)})` : ''].filter(Boolean).join(' · ')}로 점유 방어 기준을 넘었습니다. 브랜드 목표 ROAS ${fmt.roas(cfg.brandTargetRoas)}를 충족해 순위 방어를 우선합니다.`
+            : budgetLimited
+              ? `목표 대비 ${pct0(d.ratioPct)} 효율인데 노출 기회의 ${fmt.ratio(d.lost, 0)}를 잃고 있습니다. 평균 순위 ${d.rank.toFixed(1)}위라 순위 손실이 있지만 같은 의도 캠페인 ${camp!.name}이 ${campExhaust} 소진 예상이라 손실 일부는 예산 제한형일 수 있습니다. 예산 재배분이 함께 반영되는 조건으로 입찰 상향을 제안합니다.`
+              : `목표 대비 ${pct0(d.ratioPct)} 효율인데 노출 기회의 ${fmt.ratio(d.lost, 0)}를 잃고 있습니다. 평균 순위 ${d.rank.toFixed(1)}위이고 같은 의도 캠페인 예산은 마감 전 소진 예상이 없어 순위 제한형 손실로 보고 입찰 상향으로 회수합니다.`,
+        expected: budgetLimited ? `${simText(sim)} — 캠페인 예산 제한 시 실제 증분은 이보다 작음` : simText(sim),
         guard,
         kind: 'bid',
         basis: d.basis,
@@ -1023,7 +1040,7 @@ export function bidAlternative(data: Dataset, c: Pick<Campaign, 'media' | 'inten
     .sort((a, b) => a.roas - b.roas)
     .slice(0, 2);
   if (!low.length) return null;
-  return `입찰 조정 대안: 저효율 키워드 ${low.map((x) => `${x.k.text}(ROAS ${fmt.roas(x.roas)})`).join(' · ')} 입찰 하향 · 저효율 시간대 조정으로 소진 속도 완화`;
+  return `입찰 조정 대안: 같은 캠페인 효율 하위 키워드 ${low.map((x) => `${x.k.text}(ROAS ${fmt.roas(x.roas)})`).join(' · ')}(고효율 기준 ${fmt.roas(target * cfg.highEfficiencyRoasRatio)} 미만) 입찰 하향 · 저효율 시간대 조정으로 소진 속도 완화`;
 }
 
 function budgetProposals(data: Dataset, cfg: AdPilotConfig, guards: Record<MediaId, MediaGuard>, paces: CampaignPace[], ctx?: BudgetContext): AdPilotProposal[] {
@@ -1147,13 +1164,286 @@ export function generateBidProposals(data: Dataset, config?: Partial<AdPilotConf
   const diag = diagnoseKeywords(data, cfg);
   const guards = mediaGuards(data, cfg);
   const paces = paceCampaigns(data, data.campaigns, cfg);
+  const kws = keywordProposals(data, cfg, diag, paces);
+  const budgets = budgetProposals(data, cfg, guards, paces, ctx).map((p) => {
+    // 재원 캠페인 안에서 입찰 상향 후보가 함께 반영되면 재원 여유가 줄어든다
+    if (p.action !== 'budget_shift' || !p.donor) return p;
+    const donorIntent = data.campaigns.find((c) => c.id === p.donor!.id)?.intent;
+    const ups = donorIntent ? kws.filter((k) => k.action === 'bid_up' && k.intent === donorIntent && !k.isBrand) : [];
+    if (!ups.length) return p;
+    const add = sum(ups, (u) => safeNum(u.costDelta));
+    return { ...p, guard: [...p.guard, `재원 ${p.donor.name}의 입찰 상향 후보 ${ups.map((u) => u.keyword).join(' · ')}(일 비용 +${fmt.krw(add)}원 추정)와 함께 반영하면 재원 여유가 줄어듦 — 반영 순서 확인`] };
+  });
   const all = [
-    ...keywordProposals(data, cfg, diag),
+    ...kws,
     ...mediaHoldProposals(data, cfg, guards, paces),
-    ...budgetProposals(data, cfg, guards, paces, ctx),
+    ...budgets,
     ...testProposals(data, cfg),
   ];
-  return all.sort((a, b) => ACTION_ORDER[a.action] - ACTION_ORDER[b.action] || a.priority - b.priority || Math.abs(b.changePct) - Math.abs(a.changePct));
+  return all.sort(byProposalOrder);
+}
+
+function byProposalOrder(a: AdPilotProposal, b: AdPilotProposal) {
+  return ACTION_ORDER[a.action] - ACTION_ORDER[b.action] || a.priority - b.priority || Math.abs(b.changePct) - Math.abs(a.changePct);
+}
+
+/* ================================================================== */
+/* MILDO Alert 이슈 연계 보류 (p.14 성과 급변 → 자동 조정 보류 · p.45 전환 추적 단절) */
+/* ================================================================== */
+
+type HoldIncident = Incident & { holdMedia?: MediaId };
+/** 자동 조정을 보류시키는 MILDO Alert 이슈 유형 */
+export const INCIDENT_HOLD_RULES = ['tracking_break', 'data_spike', 'keyword_spike'] as const;
+const MEDIA_LEVEL_RULES = new Set<string>(['tracking_break', 'data_spike']);
+const isMediaId = (m: unknown): m is MediaId => typeof m === 'string' && (MEDIA_IDS as string[]).includes(m);
+const linkOf = (i: Incident): LinkedIncident => ({ id: i.id, ruleId: i.ruleId, severity: i.severity, title: i.title, isTest: !!i.isTest });
+const incRef = (ls: readonly LinkedIncident[]) => ls.map((l) => `MILDO Alert ${l.severity} ${l.title} (${l.id})`).join(' · ');
+
+/** 열린 보류 이슈 — 해결된 이슈와 보류 해제 요청(alert:<id>:release)이 반영된 이슈는 제외 */
+export function openHoldIncidents(incidents: readonly Incident[] | undefined, changes?: readonly ChangeRequest[]): HoldIncident[] {
+  const released = new Set(
+    (changes ?? [])
+      .filter((c) => c.status === 'applied' && typeof c.targetId === 'string' && c.targetId.startsWith('alert:') && c.targetId.endsWith(':release'))
+      .map((c) => c.targetId!.slice('alert:'.length, -':release'.length)),
+  );
+  return (incidents ?? []).filter((i): i is HoldIncident => !!i && i.status !== 'resolved' && !released.has(i.id)
+    && ((INCIDENT_HOLD_RULES as readonly string[]).includes(i.ruleId) || !!(i as HoldIncident).holdMedia));
+}
+
+/**
+ * 보류 대상 지도. 매체 단위는 MILDO Alert `heldMedia()` 결과(+ 전환 추적 단절 · 데이터 급변 이슈의 매체),
+ * 키워드 급변(keyword_spike)은 매체 전체가 아니라 해당 키워드만 보류한다.
+ */
+export function incidentHoldMap(incidents: readonly Incident[] | undefined, changes?: readonly ChangeRequest[]): { media: Map<MediaId, LinkedIncident[]>; keywords: Map<string, LinkedIncident[]> } {
+  const open = openHoldIncidents(incidents, changes);
+  const mediaLevel = open.filter((i) => i.ruleId !== 'keyword_spike');
+  const held = new Set<MediaId>(heldMedia(mediaLevel));
+  for (const i of mediaLevel) if (MEDIA_LEVEL_RULES.has(i.ruleId) && isMediaId(i.media)) held.add(i.media);
+  const media = new Map<MediaId, LinkedIncident[]>();
+  for (const m of MEDIA_IDS) {
+    if (!held.has(m)) continue;
+    const ls = mediaLevel.filter((i) => i.holdMedia === m || (MEDIA_LEVEL_RULES.has(i.ruleId) && i.media === m)).map(linkOf);
+    if (ls.length) media.set(m, ls);
+  }
+  const keywords = new Map<string, LinkedIncident[]>();
+  for (const i of open) {
+    if (i.ruleId !== 'keyword_spike' || !i.target) continue;
+    keywords.set(i.target, [...(keywords.get(i.target) ?? []), linkOf(i)]);
+  }
+  return { media, keywords };
+}
+
+const AUTO_ACTIONS = new Set<BidProposal['action']>(['bid_up', 'bid_down', 'budget_shift']);
+const ACTION_KO: Record<BidProposal['action'], string> = { bid_up: '입찰 상향', bid_down: '입찰 하향', budget_shift: '예산 조정', test_candidate: '테스트 후보', hold: '보류' };
+
+/**
+ * MILDO Alert 열린 이슈를 조정 후보에 반영한다 (state.incidents).
+ * 해당 매체 · 키워드의 자동 조정(입찰 상향 · 하향 · 예산 조정)은 보류로 바꾸고 이슈 id · 제목을 근거로 남긴다.
+ * AD Pilot 자체 보류와 대상이 같으면 새 행을 만들지 않고 한 건에 이슈를 연결한다 (중복 표기 방지).
+ */
+export function applyIncidentHolds(proposals: readonly AdPilotProposal[], incidents: readonly Incident[] | undefined, data: Dataset, changes?: readonly ChangeRequest[], cfgIn?: Partial<AdPilotConfig>): AdPilotProposal[] {
+  if (!data) return [...(proposals ?? [])];
+  const { media, keywords } = incidentHoldMap(incidents, changes);
+  if (!media.size && !keywords.size) return [...proposals];
+  const kwByText = new Map((data.keywords ?? []).map((k) => [k.text, k]));
+  const heldKw = new Map<string, LinkedIncident[]>();
+  for (const [text, ls] of keywords) { const k = kwByText.get(text); if (k) heldKw.set(k.id, ls); }
+  const attach = (p: AdPilotProposal, ls: LinkedIncident[]): AdPilotProposal => {
+    const fresh = ls.filter((l) => !(p.linkedIncidents ?? []).some((x) => x.id === l.id));
+    if (!fresh.length) return p;
+    return { ...p, linkedIncidents: [...(p.linkedIncidents ?? []), ...fresh], holdSource: p.holdSource === 'alert' ? 'alert' : 'both', basis: `${p.basis} · 연계 ${incRef(fresh)}` };
+  };
+  const out = new Map<string, AdPilotProposal>();
+  const put = (p: AdPilotProposal) => { const ex = out.get(p.id); out.set(p.id, ex ? attach(ex, p.linkedIncidents ?? []) : p); };
+  for (const p of proposals) {
+    const mls = p.targetType === 'search_term' ? undefined : media.get(p.media);
+    const kls = p.targetType === 'keyword' ? heldKw.get(p.keywordId) : undefined;
+    if (p.action === 'hold') {
+      if (p.targetType === 'media' && mls) put(attach(p, mls));
+      else if (p.targetType === 'keyword' && kls && (p.holdKind === 'keyword_anomaly' || p.holdKind === 'collection')) put(attach(p, kls));
+      else put(p);
+      continue;
+    }
+    if (!AUTO_ACTIONS.has(p.action) || (!mls && !kls)) { put(p); continue; }
+    const ls = [...(kls ?? []), ...(mls ?? [])];
+    const f = p.unit === 'budget' ? fmt.krw : fmt.won;
+    const tb = ls.some((l) => l.ruleId === 'tracking_break');
+    put({
+      ...p,
+      id: `hold:${p.keywordId}:${data.today}`,
+      action: 'hold', after: p.before, changePct: 0,
+      rule: RULE_LABEL.anomaly, ruleId: 'anomaly',
+      reason: `MILDO Alert에 ${tb ? '전환 추적 단절' : kls ? '키워드 성과 급변' : '데이터 급변'} 이슈가 열려 있어 ${p.keyword} ${ACTION_KO[p.action]} 제안(${f(p.before)} → ${f(p.after)})을 자동 조정 보류로 바꿨습니다. ${tb ? '전환이 집계되지 않는 동안의 성과로 입찰 · 예산을 움직이면 잘못된 방향으로 조정됩니다.' : '급변 원인이 확인되기 전에는 같은 데이터로 판정한 조정도 신뢰할 수 없습니다.'} 이슈가 해결되거나 보류 해제가 승인되면 다시 판정합니다.`,
+      expected: tb ? '30분 내 1차 조치 (P1) · 추적 정상화 확인 후 재판정' : '1시간 내 원인 보고 (P2) · 원인 확인 후 재판정',
+      guard: ['MILDO Alert 이슈 연계 자동 조정 보류', ...ls.map((l) => `${l.severity} ${l.title}${l.isTest ? ' (테스트 이슈)' : ''}`)],
+      basis: `${incRef(ls)} · 원래 제안 ${ACTION_KO[p.action]} ${f(p.before)} → ${f(p.after)}(${fmt.delta(p.changePct)})`,
+      approver: 'PM', approverReason: '보류 해제 판단은 PM',
+      priority: tb ? 0 : 1, holdKind: 'incident', holdSource: 'alert', linkedIncidents: ls,
+      suppressed: { action: p.action, before: p.before, after: p.after, changePct: p.changePct },
+      donor: undefined, costDelta: 0,
+    });
+  }
+  // AD Pilot 이 따로 잡지 못한 매체 · 키워드 보류도 행으로 보여준다
+  const guards = media.size ? mediaGuards(data, cfgIn) : null;
+  for (const [m, ls] of media) {
+    const id = `hold:media_${m}:${data.today}`;
+    if (out.has(id)) continue;
+    const tb = ls.some((l) => l.ruleId === 'tracking_break');
+    const n = (data.campaigns ?? []).filter((c) => c.media === m).length;
+    put({
+      id, keywordId: `media_${m}`, keyword: `${MEDIA[m].name} · 캠페인 ${n}개`,
+      rule: RULE_LABEL.anomaly, ruleId: 'anomaly', action: 'hold', before: 0, after: 0, changePct: 0,
+      reason: `MILDO Alert에 ${MEDIA[m].name} ${tb ? '전환 추적 단절' : '데이터 급변'} 이슈가 열려 있어 원인 확인 전까지 이 매체의 예산 · 입찰 자동 조정을 보류합니다. AD Pilot 시간대 점검(최근 2시간)과 판정 구간 · 기준이 달라 MILDO Alert 이슈를 근거로 삼습니다.`,
+      expected: tb ? '30분 내 1차 조치 (P1) · 추적 정상화 확인 후 재판정' : '1시간 내 원인 보고 (P2) · 원인 확인 후 재판정',
+      guard: ['MILDO Alert 이슈 연계 자동 조정 보류', `AD Pilot 시간대 점검: ${guards![m].basis}`],
+      kind: 'budget', basis: incRef(ls),
+      targetType: 'media', changeTargetId: `media:${m}`, media: m, isBrand: false,
+      approver: 'PM', approverReason: '보류 해제 판단은 PM', unit: 'none', priority: tb ? 0 : 1,
+      holdKind: tb ? 'tracking_break' : 'data_spike', holdSource: 'alert', linkedIncidents: ls, causes: [], costDelta: 0,
+    });
+  }
+  for (const [kid, ls] of heldKw) {
+    const id = `hold:${kid}:${data.today}`;
+    if (out.has(id)) continue;
+    const k = data.keywords.find((x) => x.id === kid)!;
+    put({
+      id, keywordId: k.id, keyword: k.text, rule: RULE_LABEL.anomaly, ruleId: 'anomaly', action: 'hold', before: k.bid, after: k.bid, changePct: 0,
+      reason: `MILDO Alert에 '${k.text}' 키워드 성과 급변 이슈가 열려 있어 원인 확인 전까지 이 키워드의 입찰 자동 조정을 보류합니다.`,
+      expected: '1시간 내 원인 보고 (P2) · 원인 확인 후 재판정',
+      guard: ['MILDO Alert 이슈 연계 자동 조정 보류'], kind: 'bid', basis: incRef(ls),
+      targetType: 'keyword', changeTargetId: k.id, media: 'naver_sa', intent: k.intent, isBrand: k.isBrand,
+      approver: 'PM', approverReason: '보류 해제 판단은 PM', unit: 'won', priority: 1,
+      holdKind: 'incident', holdSource: 'alert', linkedIncidents: ls, costDelta: 0,
+    });
+  }
+  return [...out.values()].sort(byProposalOrder);
+}
+
+/** 화면 · 에이전트 공용: 데이터 판정 후보 + MILDO Alert 이슈 연계 보류 */
+export function adpilotProposals(data: Dataset, config?: Partial<AdPilotConfig>, incidents?: readonly Incident[], changes?: readonly ChangeRequest[]): AdPilotProposal[] {
+  return applyIncidentHolds(generateBidProposals(data, config), incidents, data, changes, config);
+}
+
+const HOLD_RULE_OF: Partial<Record<NonNullable<AdPilotProposal['holdKind']>, string>> = {
+  tracking_break: 'tracking_break', data_spike: 'data_spike', keyword_anomaly: 'keyword_spike', collection: 'keyword_spike', soldout: 'soldout_landing', account: 'account_payment',
+};
+
+/** 보류 후보와 같은 대상의 열린 MILDO Alert 이슈 (알림 중복 생성 방지) */
+export function matchingIncident(p: AdPilotProposal, incidents: readonly Incident[] | undefined, data: Dataset): Incident | undefined {
+  const open = (incidents ?? []).filter((i) => i && i.status !== 'resolved');
+  const linked = p.linkedIncidents?.map((l) => l.id) ?? [];
+  const byLink = open.find((i) => linked.includes(i.id));
+  if (byLink) return byLink;
+  const ownId = `adpilot_hold:${p.keyword}:${data.today}`;
+  const rule = p.holdKind ? HOLD_RULE_OF[p.holdKind] : undefined;
+  return open.find((i) => i.id === ownId)
+    ?? (rule ? open.find((i) => i.ruleId === rule && (p.targetType === 'keyword' ? i.target === p.keyword : i.media === p.media)) : undefined);
+}
+
+/* ================================================================== */
+/* 입찰 하향 0건 설명 · 민감도 (공식 기준 아님)                              */
+/* ================================================================== */
+
+export interface BidDownExplain {
+  target: number;
+  minConv: number;
+  count: number;
+  downs: AdPilotProposal[];
+  pool: number;
+  belowBoth: { id: string; text: string; roas: number; prevRoas: number; conversions: number; why: string }[];
+  recentOnly: { text: string; roas: number; prevRoas: number }[];
+  aboveCount: number;
+  nearest: { text: string; roas: number; ratioPct: number; conversions: number }[];
+  note: string;
+  sensitivity: { target: number; proposals: AdPilotProposal[]; note: string } | null;
+  sensitivityNote: string;
+}
+
+/**
+ * 입찰 하향 규칙(p.14 목표 ROAS 미달 지속 · 최소 전환 확보 후)이 현재 기준에서 몇 건을 만드는지, 0건이면 왜인지 데이터로 설명하고
+ * 하향 후보가 처음 생기는 목표 ROAS(50%p 단위)를 찾아 그 기준의 하향안을 민감도 보기로 계산한다. 민감도 결과는 승인 요청 대상이 아니다.
+ */
+export function explainBidDown(data: Dataset, cfgIn?: Partial<AdPilotConfig>, base?: readonly AdPilotProposal[]): BidDownExplain {
+  const cfg = resolveConfig(cfgIn);
+  const t = cfg.targetRoas;
+  const min = cfg.minConversionsForDown;
+  const empty: BidDownExplain = { target: t, minConv: min, count: 0, downs: [], pool: 0, belowBoth: [], recentOnly: [], aboveCount: 0, nearest: [], note: '키워드 데이터가 없습니다.', sensitivity: null, sensitivityNote: '' };
+  if (!data || !Array.isArray(data.keywords) || !data.keywords.length) return empty;
+  const downs = (base ?? generateBidProposals(data, cfg)).filter((p) => p.action === 'bid_down');
+  const diag = diagnoseKeywords(data, cfg);
+  const pool = diag.filter((d) => !d.isBrand && d.status === 'on');
+  const why = (d: KeywordDiagnosis) => {
+    if (d.verdict === 'down') return '하향 후보';
+    if (d.verdict === 'hold') return d.ruleId === 'soldout' ? '품절 랜딩 보류' : '급변 보류';
+    if (d.verdict === 'capped') return `조정 여유 없음 (${d.note})`;
+    if (d.conversions < min) return `전환 ${fmt.dec1(d.conversions)}건 < ${min}건`;
+    return d.note || '판정 보류';
+  };
+  const belowBoth = pool
+    .filter((d) => finite(d.roas) && finite(d.prevRoas) && d.roas < t && d.prevRoas < t)
+    .map((d) => ({ id: d.id, text: d.text, roas: d.roas, prevRoas: d.prevRoas, conversions: d.conversions, why: why(d) }));
+  const recentOnly = pool.filter((d) => finite(d.roas) && d.roas < t && !(finite(d.prevRoas) && d.prevRoas < t)).map((d) => ({ text: d.text, roas: d.roas, prevRoas: d.prevRoas }));
+  const aboveList = pool.filter((d) => finite(d.roas) && d.roas >= t).sort((a, b) => a.roas - b.roas);
+  const nearest = aboveList.slice(0, 2).map((d) => ({ text: d.text, roas: d.roas, ratioPct: d.ratioPct, conversions: d.conversions }));
+  const note = downs.length
+    ? `목표 ROAS ${fmt.roas(t)} 기준 입찰 하향 ${downs.length}건: ${downs.map((d) => `${d.keyword} ${fmt.delta(d.changePct)}`).join(', ')}.`
+    : `목표 ROAS ${fmt.roas(t)} 기준 입찰 하향 0건입니다. 비브랜드 운영 키워드 ${pool.length}개 중 최근 14일 · 직전 14일 모두 목표 미달은 ${belowBoth.length}개${belowBoth.length ? `(${belowBoth.map((b) => `${b.text} ${fmt.roas(b.roas)} · ${b.why}`).join(', ')})` : ''}, 최근 14일만 미달 ${recentOnly.length}개, 목표 이상 ${aboveList.length}개입니다.${nearest.length ? ` 목표에 가장 가까운 키워드는 ${nearest.map((n) => `${n.text} ${fmt.roas(n.roas)}(목표 대비 ${pct0(n.ratioPct)} · 전환 ${fmt.dec1(n.conversions)}건)`).join(', ')}입니다.` : ''} 하향 조건은 두 기간 연속 미달과 전환 ${min}건 이상을 함께 요구합니다.`;
+  let sensitivity: BidDownExplain['sensitivity'] = null;
+  let sensitivityNote = '';
+  if (!downs.length) {
+    const cands = pool.filter((d) => d.verdict !== 'hold' && d.verdict !== 'off' && d.conversions >= min && finite(d.roas) && finite(d.prevRoas) && d.roas > 0);
+    const levels = [...new Set(cands.map((d) => (Math.floor(Math.max(d.roas, d.prevRoas) / 50) + 1) * 50))].filter((v) => v > t && v <= BOUNDS.targetRoas[1]).sort((a, b) => a - b);
+    for (const lv of levels) {
+      const sp = generateBidProposals(data, { ...cfg, targetRoas: lv }).filter((p) => p.action === 'bid_down');
+      if (!sp.length) continue;
+      sensitivity = {
+        target: lv,
+        proposals: sp,
+        note: `민감도 보기 · 목표 ROAS를 ${fmt.roas(lv)}로 가정하면 ${sp.map((p) => `${p.keyword} ${fmt.won(p.before)} → ${fmt.won(p.after)}(${fmt.delta(p.changePct)})`).join(', ')}가 입찰 하향 후보가 됩니다. 공식 기준(${fmt.roas(t)})이 아니며 승인 요청 대상이 아닙니다. 두 기간 미달 · 전환 ${min}건 이상 조건은 그대로 적용했습니다.`,
+      };
+      break;
+    }
+    if (!sensitivity) sensitivityNote = `전환 ${min}건 이상인 비브랜드 운영 키워드가 ${cands.length}개라 목표 ROAS를 올려도 하향 후보가 생기지 않습니다. 표본 확보가 먼저입니다.`;
+  }
+  return { target: t, minConv: min, count: downs.length, downs, pool: pool.length, belowBoth, recentOnly, aboveCount: aboveList.length, nearest, note, sensitivity, sensitivityNote };
+}
+
+/* ================================================================== */
+/* AD Pilot 반영 단계 검증 — 승인 뒤 보류가 생긴 대상은 반영하지 않고 보류       */
+/* ================================================================== */
+
+const EXEC_BLOCKING = new Set<NonNullable<AdPilotProposal['holdKind']>>(['data_spike', 'tracking_break', 'incident']);
+
+/** 대상(키워드 · 캠페인)에 걸린 매체 단위 보류 또는 MILDO Alert 이슈 연계 보류 */
+export function blockingHold(proposals: readonly AdPilotProposal[], media: MediaId | undefined, ids: readonly string[]): AdPilotProposal | undefined {
+  return (proposals ?? []).find((p) => p.action === 'hold' && !!p.holdKind && (
+    (p.targetType === 'media' && !!media && p.media === media && EXEC_BLOCKING.has(p.holdKind))
+    || (ids.includes(p.keywordId) && (p.holdKind === 'incident' || !!p.linkedIncidents?.length))
+  ));
+}
+
+export function validateAdpilotExecution(data: Dataset, c: ChangeRequest, proposals: readonly AdPilotProposal[]): { ok: boolean; reason: string } {
+  const okReason = 'AD Pilot 반영 (데모: 로컬 상태 · 실제 연동 시 네이버 SA API)';
+  if (c.status !== 'approved') return { ok: false, reason: '승인된 건만 반영할 수 있습니다' };
+  if (c.kind !== 'bid' && c.kind !== 'budget') return { ok: true, reason: okReason };
+  const tid = c.targetId ?? '';
+  let ids: string[] = [];
+  let media: MediaId | undefined;
+  if (c.kind === 'bid') {
+    ids = [tid];
+    media = 'naver_sa';
+    const k = data?.keywords?.find((x) => x.id === tid);
+    const v = Number(c.after);
+    if (!k || !(v > 0)) return { ok: false, reason: '실행 오류: 키워드 · 입찰가를 확인할 수 없습니다' };
+    if (v > k.maxBid) return { ok: false, reason: `실행 오류: 최대 입찰가 ${fmt.won(k.maxBid)} 초과` };
+  } else if (tid.startsWith('budget:')) {
+    const [, recv, donor] = tid.split(':');
+    ids = [recv, donor].filter(Boolean);
+    media = data?.campaigns?.find((x) => x.id === recv)?.media;
+  }
+  const b = blockingHold(proposals, media, ids);
+  if (b) return { ok: false, reason: `자동 조정 보류 중 — ${b.keyword}: ${b.basis}. 보류 해제 후 재실행` };
+  return { ok: true, reason: okReason };
 }
 
 /* ================================================================== */
@@ -1462,7 +1752,7 @@ export interface VerifyItem { id: string; label: string; level: 'pass' | 'warn' 
 export interface BidVerification { items: VerifyItem[]; blocked: boolean; warned: boolean; changePct: number; startPct: number; route: Route; sim: BidSimulation }
 
 /** 입찰 변경 검증: SAFETY 규칙 대조 + 탄력성 시뮬레이션 */
-export function verifyBidChange(data: Dataset, k: Keyword, after: number, cfgIn?: Partial<AdPilotConfig>): BidVerification {
+export function verifyBidChange(data: Dataset, k: Keyword, after: number, cfgIn?: Partial<AdPilotConfig>, holds?: readonly AdPilotProposal[]): BidVerification {
   const cfg = resolveConfig(cfgIn);
   const current = cfg.currentBids && finite(cfg.currentBids[k.id]) ? cfg.currentBids[k.id] : k.bid;
   const start = k.bid;
@@ -1478,6 +1768,8 @@ export function verifyBidChange(data: Dataset, k: Keyword, after: number, cfgIn?
   add('max', '최대 입찰가', finite(a) && a <= k.maxBid ? 'pass' : 'block', `${fmt.won(a)} / 상한 ${fmt.won(k.maxBid)}`);
   add('min', '최소 입찰가', finite(a) && a >= cfg.minBid ? 'pass' : 'block', `최소 ${fmt.won(cfg.minBid)}`);
   add('anomaly', '성과 급변 · 데이터 이상', d.anomaly.triggered ? 'warn' : 'pass', d.anomaly.triggered ? `${d.anomaly.basis} — 자동 조정 보류 중, 수동 변경은 PM 이상 승인` : d.anomaly.basis);
+  const bh = holds ? blockingHold(holds, 'naver_sa', [k.id]) : undefined;
+  if (holds) add('incident', '매체 · MILDO Alert 연계 보류', bh ? 'block' : 'pass', bh ? `${bh.keyword} 보류 중 — ${bh.basis}` : '네이버 SA 매체 보류 · 이 키워드의 열린 이슈 없음');
   const up = finite(a) && a > current;
   if (d.soldout) add('soldout', '품절 랜딩', up ? 'block' : 'warn', `'${d.soldout.option}' 품절 — ${up ? '입찰 상향 차단' : '일시 중지 검토'}`);
   if (finite(a) && a < current) {
@@ -1487,7 +1779,7 @@ export function verifyBidChange(data: Dataset, k: Keyword, after: number, cfgIn?
   if (up) add('efficiency', '상향 효율 전제', finite(d.roas) && d.roas >= d.target ? 'pass' : 'warn', `ROAS ${fmt.roas(d.roas)} · 목표 ${fmt.roas(d.target)}`);
   if (k.status === 'test') add('test', '테스트 그룹', 'warn', 'MILDO Lab 테스트 중 — 판정 전 입찰 변경은 표본을 흔듭니다');
   let route = routeByPct(changePct);
-  if ((k.isBrand || d.anomaly.triggered || d.soldout) && LEVEL_ORDER.indexOf(route.approver) < 1) route = { ...route, approver: 'PM', label: 'PM', reason: `${route.reason} · 브랜드 · 보류 대상은 PM 이상` };
+  if ((k.isBrand || d.anomaly.triggered || d.soldout || bh) && LEVEL_ORDER.indexOf(route.approver) < 1) route = { ...route, approver: 'PM', label: 'PM', reason: `${route.reason} · 브랜드 · 보류 대상은 PM 이상` };
   const sim = simulateBidChange(k, current, finite(a) && a > 0 ? a : current, cfg);
   return { items, blocked: items.some((i) => i.level === 'block'), warned: items.some((i) => i.level === 'warn'), changePct, startPct, route, sim };
 }
@@ -1518,6 +1810,12 @@ export function checkBulk(items: readonly BulkItem[], cfgIn?: Partial<AdPilotCon
 /* ================================================================== */
 /* 알림 (보류 → MILDO Alert 이슈)                                         */
 /* ================================================================== */
+
+/** MILDO Alert 이슈로 알릴 보류 유형 — 예산 판단 보류(월 예산 초과 · 효율 미달)는 이슈가 아니라 승인 안건이라 제외 */
+export const NOTIFY_HOLD_KINDS = new Set<NonNullable<AdPilotProposal['holdKind']>>(['keyword_anomaly', 'collection', 'data_spike', 'tracking_break', 'soldout', 'account', 'incident']);
+export function canNotify(p: AdPilotProposal): boolean {
+  return p.action === 'hold' && !!p.holdKind && NOTIFY_HOLD_KINDS.has(p.holdKind);
+}
 
 export function holdIncident(data: Dataset, p: AdPilotProposal, at: string): Incident {
   const tb = p.holdKind === 'tracking_break';
@@ -1583,17 +1881,21 @@ export function intentSummary(data: Dataset, cfgIn?: Partial<AdPilotConfig>) {
 }
 
 /** AD Pilot 조정안 브리프 (AI 미연결 시 규칙 엔진 해석) */
-export function adpilotBrief(data: Dataset, changes: readonly ChangeRequest[], cfgIn?: Partial<AdPilotConfig>): Brief {
+export function adpilotBrief(data: Dataset, changes: readonly ChangeRequest[], cfgIn?: Partial<AdPilotConfig>, incidents?: readonly Incident[]): Brief {
   const cfg = resolveConfig(cfgIn);
-  const ps = generateBidProposals(data, cfg);
+  const base = generateBidProposals(data, cfg);
+  const ps = applyIncidentHolds(base, incidents, data, changes, cfg);
+  const downInfo = explainBidDown(data, cfg, base);
+  const paces = data?.campaigns ? paceCampaigns(data, data.campaigns, cfg) : [];
   const n = proposalCounts(ps);
   const ups = ps.filter((p) => p.action === 'bid_up');
   const t = saKeywordTotals(data);
   const diag = diagnoseKeywords(data, cfg);
   const lowSample = diag.filter((d) => d.verdict === 'watch' && d.ruleId === 'below_target' && d.note.includes('표본'));
+  const budgetLimited = ups.filter((p) => !p.isBrand && paces.some((c) => c.media === 'naver_sa' && c.intent === p.intent && c.earlyExhaust));
   const rankLimited = ups.filter((p) => {
     const k = data.keywords.find((x) => x.id === p.keywordId);
-    return k && k.avgRank >= 3;
+    return k && k.avgRank >= 3 && !budgetLimited.includes(p);
   });
   const incRoas = ups.map((p) => p.sim?.incrementalRoas ?? NaN).filter(finite);
   const minInc = incRoas.length ? Math.min(...incRoas) : NaN;
@@ -1602,9 +1904,10 @@ export function adpilotBrief(data: Dataset, changes: readonly ChangeRequest[], c
     `AD Pilot 조정 후보는 ${n.total}건입니다. 입찰 상향 ${n.up}건, 하향 ${n.down}건, 예산 재배분 · 증액 ${n.budget}건, 테스트 그룹 등록 후보 ${n.test}건이고 자동 조정 보류가 ${n.hold}건입니다. 기준은 목표 ROAS ${fmt.roas(cfg.targetRoas)}, 브랜드 ${fmt.roas(cfg.brandTargetRoas)}, 일 조정 폭 상한 ${cfg.dailyChangeCapPct}%입니다. (TEST DATA)`,
     `네이버 SA 키워드 최근 14일 비브랜드 ROAS ${fmt.roas(t.nonBrand.roas)}(광고비 ${fmt.krw(t.nonBrand.cost)}), 브랜드 ROAS ${fmt.roas(t.brand.roas)}(광고비 ${fmt.krw(t.brand.cost)})입니다. 승인 대기 중인 AD Pilot 변경은 ${pending}건입니다. (TEST DATA)`,
     ...ups.slice(0, 3).map((p) => `${p.keyword}: ${fmt.won(p.before)} → ${fmt.won(p.after)}(${fmt.delta(p.changePct)}). 근거 ${p.basis}.`),
+    `${downInfo.note} (TEST DATA)`,
   ];
   const patterns: string[] = [];
-  if (ups.length) patterns.push(`상향 후보 ${ups.length}개 중 ${rankLimited.length}개는 평균 순위 3위 이하입니다. 같은 키워드의 캠페인 예산이 조기 소진되지 않는 한 노출 손실은 예산이 아니라 순위에서 생기는 구조로 읽힙니다.`);
+  if (ups.length) patterns.push(`상향 후보 ${ups.length}개 중 ${rankLimited.length}개는 평균 순위 3위 이하이고 같은 의도 캠페인 예산이 마감 전에 소진되지 않아 순위 제한형 손실로 읽힙니다.${budgetLimited.length ? ` ${budgetLimited.map((p) => p.keyword).join(', ')}는 같은 의도 캠페인이 조기 소진 예상이라 손실 일부가 예산 제한형일 수 있어 예산 재배분과 함께 판단해야 합니다.` : ''}`);
   if (lowSample.length) patterns.push(`목표 ROAS를 두 기간 연속 밑돈 키워드 ${lowSample.length}개(${lowSample.map((d) => d.text).join(', ')})는 전환이 ${cfg.minConversionsForDown}건 미만이라 하향하지 않았습니다. 전환 1건이 ROAS를 크게 흔드는 표본 크기입니다.`);
   const holds = ps.filter((p) => p.action === 'hold');
   if (holds.length) patterns.push(`보류 ${holds.length}건은 ${holds.map((h) => `${h.keyword}(${h.holdKind === 'tracking_break' ? '전환 추적 단절' : h.holdKind === 'data_spike' ? '데이터 급변' : h.holdKind === 'keyword_anomaly' ? 'CPC 급변' : h.holdKind === 'soldout' ? '품절 랜딩' : h.holdKind === 'account' ? '잔액 부족' : '증액 전제 미충족'})`).join(', ')}입니다.`);
@@ -1612,7 +1915,9 @@ export function adpilotBrief(data: Dataset, changes: readonly ChangeRequest[], c
     finite(minInc)
       ? `상향 후보의 증분 ROAS 추정 최저값은 ${fmt.roas(minInc)}로 목표 ${fmt.roas(cfg.targetRoas)}${minInc >= cfg.targetRoas ? '를 넘습니다. 탄력성 가정이 맞다면 상향분의 추가 광고비는 목표 효율로 회수되는 범위입니다' : '에 못 미치는 건이 있습니다. 평균 ROAS는 높아도 추가 비용의 회수 효율은 목표 미만일 수 있어 해당 건은 폭을 줄이는 쪽이 안전합니다'}.`
       : '상향 후보가 없어 증분 효율을 계산할 대상이 없습니다.',
-    `브랜드 키워드 상향은 효율이 아니라 점유 방어 목적입니다. 브랜드 ROAS가 목표의 수십 배여도 순위가 밀리면 경쟁사 광고가 브랜드 검색 지면을 가져가므로, CAC 관점에서는 이미 확보한 수요의 회수 비용으로 봅니다.`,
+    finite(t.brand.roas)
+      ? `브랜드 키워드 상향은 효율이 아니라 점유 방어 목적입니다. 브랜드 ROAS가 브랜드 목표의 ${fmt.dec1(t.brand.roas / cfg.brandTargetRoas)}배여도 순위가 밀리면 경쟁사 광고가 브랜드 검색 지면을 가져가므로, CAC 관점에서는 이미 확보한 수요의 회수 비용으로 봅니다.`
+      : '브랜드 키워드 집행 데이터가 없어 점유 방어 효율을 판단할 수 없습니다.',
   ];
   const conditions = [
     `탄력성 가정 클릭 ${cfg.clickElasticity} · CPC ${cfg.cpcElasticity} · CVR 불변. 실측이 아니며 반영 후 7일 실측으로 보정합니다.`,
@@ -1620,6 +1925,7 @@ export function adpilotBrief(data: Dataset, changes: readonly ChangeRequest[], c
   ];
   const counter = [
     '노출 손실이 경쟁사의 일시적 입찰 상승 때문이라면 상향은 CPC만 올리고 순위를 되찾지 못할 수 있습니다. 반영 후 3일 내 순위 · CPC를 확인해 개선이 없으면 롤백합니다.',
+    ...(downInfo.sensitivity ? [downInfo.sensitivity.note] : downInfo.sensitivityNote ? [downInfo.sensitivityNote] : []),
   ];
   const actions = [
     `담당 AE: 승인 범위(±10% 이내) 후보는 16:30 익일 조정안 공유 전에 승인 요청까지 마칩니다.`,
@@ -1629,13 +1935,15 @@ export function adpilotBrief(data: Dataset, changes: readonly ChangeRequest[], c
   return { title: 'AD Pilot 조정안 해석', facts, patterns, interpretation, conditions, counter, actions };
 }
 
-export function holdsBrief(data: Dataset, cfgIn?: Partial<AdPilotConfig>): Brief {
+export function holdsBrief(data: Dataset, cfgIn?: Partial<AdPilotConfig>, incidents?: readonly Incident[], changes?: readonly ChangeRequest[]): Brief {
   const cfg = resolveConfig(cfgIn);
-  const holds = generateBidProposals(data, cfg).filter((p) => p.action === 'hold');
+  const holds = adpilotProposals(data, cfg, incidents, changes).filter((p) => p.action === 'hold');
+  const linked = holds.filter((h) => h.linkedIncidents?.length);
   const facts = holds.length
     ? holds.map((h) => `${h.keyword}: ${h.basis}.`)
     : ['현재 자동 조정 보류 건이 없습니다. (TEST DATA)'];
   const patterns = holds.filter((h) => h.causes?.length).map((h) => `${h.keyword} 원인 후보 순위: ${h.causes!.map((c) => `${c.cause}(${c.evidence})`).join(' > ')}.`);
+  if (linked.length) patterns.push(`보류 ${holds.length}건 중 ${linked.length}건은 MILDO Alert 열린 이슈와 연결되어 있습니다(${linked.map((h) => `${h.keyword} ↔ ${h.linkedIncidents!.map((l) => l.id).join(', ')}`).join(' · ')}). AD Pilot 데이터 판정과 Alert 탐지가 같은 대상을 독립적으로 잡은 경우 한 건으로 합쳐 표시합니다.`);
   return {
     title: '자동 조정 보류 현황',
     facts,
@@ -1650,11 +1958,11 @@ export function holdsBrief(data: Dataset, cfgIn?: Partial<AdPilotConfig>): Brief
   };
 }
 
-export function budgetBrief(data: Dataset, cfgIn?: Partial<AdPilotConfig>): Brief {
+export function budgetBrief(data: Dataset, cfgIn?: Partial<AdPilotConfig>, incidents?: readonly Incident[], changes?: readonly ChangeRequest[]): Brief {
   const cfg = resolveConfig(cfgIn);
   const paces = paceCampaigns(data, data.campaigns, cfg);
   const early = paces.filter((p) => p.earlyExhaust);
-  const ps = generateBidProposals(data, cfg).filter((p) => p.ruleId === 'early_exhaust' || p.holdKind === 'data_spike');
+  const ps = adpilotProposals(data, cfg, incidents, changes).filter((p) => p.ruleId === 'early_exhaust' || p.holdKind === 'data_spike' || (p.holdKind === 'incident' && p.suppressed?.action === 'budget_shift'));
   return {
     title: '일 예산 조기 소진 · 재배분',
     facts: early.length
@@ -1755,6 +2063,7 @@ export function proposalsSnapshot(ps: readonly AdPilotProposal[], cfg: AdPilotCo
     후보: ps.slice(0, 40).map((p) => ({
       대상: p.keyword, 규칙: p.rule, 조치: p.action, 현재: Math.round(p.before), 제안: Math.round(p.after), 변경pct: p.changePct,
       근거: p.basis, 예상: p.expected, 승인: APPROVER_LABEL[p.approver], 원인후보: p.causes?.map((c) => c.cause),
+      연계이슈: p.linkedIncidents?.map((l) => l.id),
     })),
   };
 }

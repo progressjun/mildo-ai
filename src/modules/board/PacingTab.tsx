@@ -72,8 +72,13 @@ export function PacingTab({ d }: { d: Dataset }) {
     },
     { key: 'ratio', label: '예상 수요', align: 'right', sort: (r) => r.projectedRatio, render: (r) => <NumCell value={fmt.ratio(r.projectedRatio, 0)} sub="일 예산 대비" /> },
     {
-      key: 'exhaust', label: '예상 마감', align: 'right', sort: (r) => -(r.curveExhaustHour ?? 99),
-      render: (r) => <NumCell value={<strong>{r.curveExhaustHour !== null ? clock(r.curveExhaustHour) : '당일 마감 없음'}</strong>} sub={`시간대 가중 · 선형 ${clock(r.linearExhaustHour)}`} />,
+      key: 'exhaust', label: '예상 마감', align: 'right', sort: (r) => -(r.exhaustHour ?? 99),
+      render: (r) => (
+        <NumCell
+          value={<strong>{r.exhaustHour !== null ? clock(r.exhaustHour) : r.status === 'off' ? '—' : '당일 마감 없음'}</strong>}
+          sub={`${r.exhaustMethod && r.earlyExhaust ? `${r.exhaustMethod} 기준 · ` : ''}시간대 ${r.status === 'off' ? '—' : r.curveExhaustHour === null ? '마감 없음' : clock(r.curveExhaustHour)} / 선형 ${r.status === 'off' ? '—' : r.linearExhaustHour === null ? '마감 없음' : clock(r.linearExhaustHour)}`}
+        />
+      ),
     },
     { key: 'short', label: '부족 예상', align: 'right', sort: (r) => r.shortfall, render: (r) => (r.shortfall >= r.dailyBudget * 0.01 ? <NumCell value={fmt.krw(r.shortfall)} /> : <span className="xs muted">—</span>) },
     {
@@ -108,7 +113,7 @@ export function PacingTab({ d }: { d: Dataset }) {
             <div className="board-list">
               {p.early.slice(0, 4).map((c) => (
                 <div key={c.id} className="board-list-item">
-                  <Pill tone={LEVEL_TONE[c.level]} icon="clock">{clock(c.curveExhaustHour ?? c.linearExhaustHour)}</Pill>
+                  <Pill tone={LEVEL_TONE[c.level]} icon="clock">{clock(c.exhaustHour)}</Pill>
                   <span className="small"><strong>{c.name}</strong> <span className="muted">· 소진 {fmt.pct(c.pacePct, 0)}</span></span>
                   <span className="xs muted nowrap">{c.label}</span>
                 </div>
@@ -133,11 +138,11 @@ export function PacingTab({ d }: { d: Dataset }) {
 
       {peak.length ? (
         <Callout tone="warning" title={`피크 시간 전 예산 마감 예상 ${peak.length}개 캠페인`}>
-          {peak.map((c) => `${c.name} ${clock(c.curveExhaustHour ?? c.linearExhaustHour)} 마감 예상(소진 ${fmt.pct(c.pacePct, 0)} · 시간대 기대 ${fmt.pct(c.expectedPct, 0)} · 부족 ${fmt.krw(c.shortfall)})`).join(' / ')}. 시간대 가중 예상은 최근 {BOARD_RULES.curveDays}일 같은 매체의 시간대별 소진 곡선 기준이며, 선형 추정보다 이른 시각이 나오는 것은 저녁 시간대 비중이 크기 때문입니다.
+          {peak.map((c) => `${c.name} ${clock(c.exhaustHour)} 마감 예상(${c.exhaustMethod ?? '시간대 가중'} · 소진 ${fmt.pct(c.pacePct, 0)} · 시간대 기대 ${fmt.pct(c.expectedPct, 0)} · 부족 ${fmt.krw(c.shortfall)})`).join(' / ')}. 시간대 가중 예상은 최근 {BOARD_RULES.curveDays}일 같은 매체의 시간대별 소진 곡선 기준이며, 남은 시간대의 소진 비중이 클수록 선형 추정(현재까지 시간당 평균 유지)보다 이른 시각이 나옵니다.
         </Callout>
       ) : null}
 
-      <Card title="캠페인별 일 예산 소진" sub={`예상 마감 = 오늘 ${d.currentHour}시까지 소진 ÷ 시간대 누적 기대치로 추정한 예산 도달 시각 · 선형은 selectors.campaignPacing`}
+      <Card title="캠페인별 일 예산 소진" sub={`예상 마감 = 오늘 ${d.currentHour}시까지 소진 ÷ 시간대 누적 기대치로 추정한 예산 도달 시각 · 선형 = 현재까지 시간당 평균 속도 유지 가정 · 둘 중 ${BOARD_RULES.exhaustBeforeHour}시 전 마감이 있으면 조기 소진`}
         actions={<><Segmented options={[{ id: 'all', label: `전체 ${p.campaigns.length}` }, { id: 'early', label: `조기 소진 ${p.early.length}` }]} value={scope} onChange={setScope} label="캠페인 범위" /><Src kind="DEMO" /></>}>
         <DataTable rows={campaigns} columns={campCols} rowKey={(r) => r.id} initialSort={{ key: 'level', dir: 'asc' }} empty="조기 소진 예상 캠페인이 없습니다" />
       </Card>

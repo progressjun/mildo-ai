@@ -4,19 +4,22 @@
  */
 import type { AgentTool } from '@/ai/claude';
 import type { ModuleAgentKit, ToolContext } from '../types';
-import { APPROVER_LABEL, AUTO_CHARGE_LABEL, adpilotBrief, budgetBrief, canApprove, clock, diagnoseKeywords, effectiveBids, effectiveKeywordStatus,
-  generateBidProposals, gfaBrief, gfaOverview, holdsBrief, latestChangeFor, officialConfig, paceCampaigns, proposalChangeInput,
+import { APPROVER_LABEL, AUTO_CHARGE_LABEL, adpilotBrief, adpilotProposals, budgetBrief, canApprove, clock, diagnoseKeywords, effectiveBids, effectiveKeywordStatus,
+  explainBidDown, generateBidProposals, gfaBrief, gfaOverview, holdsBrief, latestChangeFor, officialConfig, paceCampaigns, proposalChangeInput,
   routeGfaChange, simulateBidChange, verifyBidChange, bidChangeInput, VERDICT_META, type GfaChangeType } from './engine';
 
 const r0 = (v: number) => (Number.isFinite(v) ? Math.round(v) : null);
 const r1 = (v: number) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
 const r2 = (v: number) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
 
+/** 공식 기준 + MILDO Alert 열린 이슈 연계 보류까지 반영한 조정 후보 (화면과 같은 결과) */
 function context(ctx: ToolContext) {
   const cfg = officialConfig(ctx.state.changes);
-  const proposals = generateBidProposals(ctx.state.data, cfg);
-  return { cfg, proposals };
+  const base = generateBidProposals(ctx.state.data, cfg);
+  const proposals = adpilotProposals(ctx.state.data, cfg, ctx.state.incidents, ctx.state.changes);
+  return { cfg, base, proposals };
 }
+const ACTIVE_STATUS = ['pending', 'approved', 'applied', 'held'];
 
 function statusOf(ctx: ToolContext, module: string, targetId: string, kind?: string) {
   const c = latestChangeFor(ctx.state.changes, module, targetId, kind as never);
@@ -38,8 +41,9 @@ export const agentKit: ModuleAgentKit = {
         },
       },
       execute: (inp) => {
-        const { cfg, proposals } = context(ctx);
+        const { cfg, base, proposals } = context(ctx);
         const action = String(inp.action ?? 'all');
+        const down = explainBidDown(ctx.state.data, cfg, base);
         const limit = Math.max(1, Math.min(60, Number(inp.limit) || 30));
         const list = proposals.filter((p) => action === 'all' || p.action === action).slice(0, limit);
         return {
@@ -51,8 +55,10 @@ export const agentKit: ModuleAgentKit = {
               proposalId: p.id, 대상: p.keyword, 규칙: p.rule, 조치: p.action, 현재: r0(p.before), 제안: r0(p.after), 변경pct: r1(p.changePct),
               근거: p.basis, 예상: p.expected, 승인주체: APPROVER_LABEL[p.approver], 상태: st ? STATUS_KO[st.status] : '후보',
               원인후보: p.causes?.slice(0, 3).map((c) => `${c.cause}: ${c.evidence}`),
+              연계이슈: p.linkedIncidents?.map((l) => `${l.severity} ${l.id}`),
             };
           }),
+          하향규칙: { 건수: down.count, 설명: down.note, 민감도: down.sensitivity ? { 목표ROAS: down.sensitivity.target, 하향후보: down.sensitivity.proposals.map((p) => `${p.keyword} ${r0(p.before)}→${r0(p.after)} (${r1(p.changePct)}%)`), 비고: '공식 기준 아님 · 승인 요청 대상 아님' } : down.sensitivityNote || null },
         };
       },
     },
@@ -93,11 +99,11 @@ export const agentKit: ModuleAgentKit = {
       execute: (inp) => {
         const k = ctx.state.data.keywords.find((x) => x.text === inp.keyword) ?? ctx.state.data.keywords.find((x) => x.text.includes(String(inp.keyword ?? '')));
         if (!k) return { error: '키워드를 찾지 못했습니다' };
-        const cfg = officialConfig(ctx.state.changes);
+        const { cfg, proposals } = context(ctx);
         const bids = effectiveBids(ctx.state.data, ctx.state.changes);
         const current = bids[k.id] ?? k.bid;
         const after = Number.isFinite(Number(inp.bid)) && Number(inp.bid) > 0 ? Number(inp.bid) : Math.round((current * (1 + (Number(inp.changePct) || 10) / 100)) / 10) * 10;
-        const v = verifyBidChange(ctx.state.data, k, after, { ...cfg, currentBids: bids });
+        const v = verifyBidChange(ctx.state.data, k, after, { ...cfg, currentBids: bids }, proposals);
         const s = simulateBidChange(k, current, after, cfg);
         return {
           키워드: k.text, 현재입찰: current, 새입찰: after, 변경pct: v.changePct, 시작가대비pct: v.startPct,
@@ -126,7 +132,7 @@ export const agentKit: ModuleAgentKit = {
           const p = proposals.find((x) => x.id === inp.proposalId);
           if (!p) return { error: '해당 proposalId 후보가 없습니다. adpilot_proposals 로 다시 조회하세요.' };
           const existing = latestChangeFor(ctx.state.changes, 'adpilot', p.changeTargetId);
-          if (existing && ['pending', 'approved', 'applied'].includes(existing.status)) return { 결과: '이미 요청됨', changeId: existing.id, 상태: STATUS_KO[existing.status] };
+          if (existing && ACTIVE_STATUS.includes(existing.status)) return { 결과: '이미 요청됨', changeId: existing.id, 상태: STATUS_KO[existing.status] };
           const input = proposalChangeInput(p, 'MILDO Agent');
           if (!input) return { error: `보류 후보는 승인 요청 대상이 아닙니다 — ${p.basis}` };
           const c = ctx.actions.addChange(input);
@@ -135,9 +141,11 @@ export const agentKit: ModuleAgentKit = {
         const k = ctx.state.data.keywords.find((x) => x.text === inp.keyword);
         const bid = Number(inp.bid);
         if (!k || !Number.isFinite(bid)) return { error: 'proposalId 또는 keyword + bid 가 필요합니다' };
+        const active = latestChangeFor(ctx.state.changes, 'adpilot', k.id);
+        if (active && ACTIVE_STATUS.includes(active.status)) return { 결과: '이미 진행 중인 변경이 있음', changeId: active.id, 상태: STATUS_KO[active.status] };
         const bids = effectiveBids(ctx.state.data, ctx.state.changes);
         const current = bids[k.id] ?? k.bid;
-        const v = verifyBidChange(ctx.state.data, k, bid, { ...cfg, currentBids: bids });
+        const v = verifyBidChange(ctx.state.data, k, bid, { ...cfg, currentBids: bids }, proposals);
         if (v.blocked) return { error: 'SAFETY 검증 차단', 사유: v.items.filter((i) => i.level === 'block').map((i) => `${i.label}: ${i.detail}`) };
         const c = ctx.actions.addChange(bidChangeInput(k, current, bid, v, 'MILDO Agent', String(inp.note ?? '')));
         return { 결과: '승인 요청 생성 (pending)', changeId: c.id, 대상: c.target, 변경: `${current} → ${bid}`, 승인주체: APPROVER_LABEL[c.approver] };
@@ -184,9 +192,10 @@ export const agentKit: ModuleAgentKit = {
     },
   ],
   briefs: [
-    { id: 'adpilot-holds', match: /(보류|급변|데이터 이상|수집 이상|이상 징후|매트리스 추천|CPC 급|전환 추적|추적 단절|전환 0)/, build: (ctx) => holdsBrief(ctx.state.data, officialConfig(ctx.state.changes)) },
-    { id: 'adpilot-budget', match: /(조기 소진|소진|재배분|일 예산|페이싱)/, build: (ctx) => budgetBrief(ctx.state.data, officialConfig(ctx.state.changes)) },
+    { id: 'adpilot-holds', match: /(보류|급변|데이터 이상|수집 이상|이상 징후|매트리스 추천|CPC 급|전환 추적|추적 단절|전환 0)/, build: (ctx) => holdsBrief(ctx.state.data, officialConfig(ctx.state.changes), ctx.state.incidents, ctx.state.changes) },
+    // GFA 잔액 · 자동충전 질문이 '소진'에 먼저 걸리지 않도록 GFA 브리프를 예산 브리프보다 앞에 둔다
     { id: 'gfa-control', match: /(GFA|위임|승인 주체|라우팅|잔액|자동충전)/i, build: (ctx) => gfaBrief(ctx.state.data, ctx.state.changes, officialConfig(ctx.state.changes)) },
-    { id: 'adpilot-proposals', match: /(입찰|AD ?Pilot|애드파일럿|조정 후보|키워드 (진단|효율|판정)|bid)/i, build: (ctx) => adpilotBrief(ctx.state.data, ctx.state.changes, officialConfig(ctx.state.changes)) },
+    { id: 'adpilot-budget', match: /(조기 소진|소진|재배분|일 예산|페이싱)/, build: (ctx) => budgetBrief(ctx.state.data, officialConfig(ctx.state.changes), ctx.state.incidents, ctx.state.changes) },
+    { id: 'adpilot-proposals', match: /(입찰|AD ?Pilot|애드파일럿|조정 후보|키워드 (진단|효율|판정)|하향|bid)/i, build: (ctx) => adpilotBrief(ctx.state.data, ctx.state.changes, officialConfig(ctx.state.changes), ctx.state.incidents) },
   ],
 };

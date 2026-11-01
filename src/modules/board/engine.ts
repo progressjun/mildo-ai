@@ -5,7 +5,7 @@
  */
 import type { AdAccount, Dataset, IntentId, Keyword, KeywordStats, MediaId, Product, SalesChannelId } from '@/core/types';
 import type { Brief } from '@/ai/prompts';
-import { DATA_TIMETABLE, MEDIA, MEDIA_IDS, SALES_CHANNELS, SALES_CHANNEL_IDS, SA_CAMPAIGNS, INTENT_IDS } from '@/data/constants';
+import { AD_PILOT, DATA_TIMETABLE, GFA_DELEGATION, MEDIA, MEDIA_IDS, REPORT_CADENCE, SALES_CHANNELS, SALES_CHANNEL_IDS, SA_CAMPAIGNS, INTENT_IDS } from '@/data/constants';
 import {
   byMedia, campaignPacing, mediaRows, monthlyPacing, previousRange, rangeOf, salesByChannel, totalsOf, type Totals,
 } from '@/core/selectors';
@@ -14,6 +14,19 @@ import { toCsv } from '@/core/download';
 import { BOARD_PERIODS, BOARD_RULES as R, DAILY_BATCH_TIME, EXTERNAL_SOURCES, MEDIA_JUDGE_NOTE, SALES_NOTE, SOURCE_METHOD } from './data';
 
 const SALES_NOTE_TEXT = `${SALES_NOTE.replace(/\.$/, '')}(p.12).`;
+/** p.17 일간 리포트 시각 · 월간 리포트 시점 */
+const DAILY_REPORT_TIME = (REPORT_CADENCE.find((r) => r.id === 'daily')?.when ?? '08:00').replace(/^매일\s*/, '');
+const MONTHLY_REPORT_WHEN = REPORT_CADENCE.find((r) => r.id === 'monthly')?.when ?? '익월 3영업일';
+/** p.18 예산 소진율 점검 시각 */
+const PACE_CHECK_TIME = DATA_TIMETABLE.find((t) => t.title.includes('예산 소진'))?.time ?? '14:00';
+/** p.15 위임 범위 문장 (GFA_DELEGATION에서 생성) */
+export function delegationText(): string {
+  return GFA_DELEGATION.map((g, i) => {
+    const lo = i === 0 ? 0 : GFA_DELEGATION[i - 1].maxPct;
+    const range = Number.isFinite(g.maxPct) ? (lo === 0 ? `±${g.maxPct}% 이내` : `±${lo}~${g.maxPct}%`) : `${lo}% 초과`;
+    return `${josa(range, '은/는')} ${g.label}`;
+  }).join(', ');
+}
 
 /* ================================================================== */
 /* 공통                                                                */
@@ -29,6 +42,39 @@ const r0 = (v: number) => (Number.isFinite(v) ? Math.round(v) : null);
 const r1 = (v: number) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
 const r2 = (v: number) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
 export const round = { r0, r1, r2 };
+
+/**
+ * 받침에 맞는 조사 (동적으로 들어가는 매체 · 채널 · 캠페인 이름 뒤).
+ * 숫자 · 영문 · 기호는 읽는 소리 기준(예: 'SA' 에이 → 받침 없음, '%' 퍼센트 → 받침 없음, '만' → 받침 ㄴ).
+ */
+type JosaPair = '이/가' | '은/는' | '을/를' | '과/와' | '으로/로';
+const DIGIT_TAIL: Record<string, 'none' | 'rieul' | 'other'> = { '0': 'other', '1': 'rieul', '2': 'none', '3': 'other', '4': 'none', '5': 'none', '6': 'other', '7': 'rieul', '8': 'rieul', '9': 'none' };
+const LATIN_TAIL: Record<string, 'none' | 'rieul' | 'other'> = { l: 'rieul', r: 'none', m: 'other', n: 'other', k: 'none', t: 'none', p: 'none', b: 'none', d: 'none', g: 'other' };
+function tailOf(word: string): 'none' | 'rieul' | 'other' {
+  const w = word.replace(/[\s)\]'"’”·]+$/u, '');
+  const ch = w.slice(-1);
+  if (!ch) return 'none';
+  const code = ch.charCodeAt(0);
+  if (code >= 0xac00 && code <= 0xd7a3) {
+    const jong = (code - 0xac00) % 28;
+    return jong === 0 ? 'none' : jong === 8 ? 'rieul' : 'other';
+  }
+  if (/\d/.test(ch)) return DIGIT_TAIL[ch];
+  if (/le$/i.test(w)) return 'rieul'; // Google · Apple (구글 · 애플)
+  if (/[a-z]/i.test(ch)) return LATIN_TAIL[ch.toLowerCase()] ?? 'none';
+  return 'none';
+}
+export function josa(word: string, pair: JosaPair): string {
+  const t = tailOf(word);
+  const [withTail, noTail] = pair.split('/');
+  if (pair === '으로/로') return `${word}${t === 'other' ? withTail : noTail}`;
+  return `${word}${t === 'none' ? noTail : withTail}`;
+}
+/** 최대 n개를 나열하고 나머지는 '외 N개' */
+export function listMore<T>(arr: readonly T[], n: number, f: (x: T) => string, sep = ', '): string {
+  const head = arr.slice(0, n).map(f).join(sep);
+  return arr.length > n ? `${head} 외 ${arr.length - n}개` : head;
+}
 
 export function daysBetween(from: string, to: string): number {
   return Math.round((parseDate(to).getTime() - parseDate(from).getTime()) / 86400000);
@@ -238,7 +284,8 @@ export function mediaComparison(d: Dataset, win: PeriodWindow): MediaRow[] {
     const judgeValue: Record<MediaId, string> = {
       naver_sa: `ROAS ${fmt.roas(c.roas)} · 매출 ${fmt.krw(c.revenue)}`,
       naver_gfa: `신규 CPA ${fmt.won(c.cac)}`,
-      google: `자사몰 실매출 ${fmt.krw(ownMall)}`,
+      // 증분 매출은 홀드아웃 없이는 측정되지 않는다 — 자사몰 실매출 총액은 참고값(Google 귀속 아님)
+      google: `증분 미측정 · 자사몰 실매출 ${fmt.krw(ownMall)}`,
       meta: `CPA ${fmt.won(c.cpa)} · 신규 ${fmt.ratio(newShare, 0)}`,
       kakao: `전환 ${fmt.dec1(c.conversions)} · CPA ${fmt.won(c.cpa)}`,
       vertical: `ROAS ${fmt.roas(c.roas)}`,
@@ -302,8 +349,9 @@ export function mediaTrend(d: Dataset, win: PeriodWindow, medias: MediaId[], met
     m.set(r.media, r);
   }
   const rowsFor = (date: string, ms: MediaId[]) => ms.map((m) => byDate.get(date)?.get(m)).filter((x): x is NonNullable<typeof x> => !!x);
+  // 합계 시리즈는 특정 매체 색을 쓰지 않는다 (색은 엔티티에 고정)
   const series: TrendSeries[] = total
-    ? [{ id: 'total', label: medias.length === MEDIA_IDS.length ? '전체 매체 합계' : `선택 ${medias.length}개 매체 합계`, colorVar: '--series-1', points: dates.map((x) => ({ x, y: metricOf(totalsOf(rowsFor(x, medias)), metric) })) }]
+    ? [{ id: 'total', label: medias.length === MEDIA_IDS.length ? '전체 매체 합계' : `선택 ${medias.length}개 매체 합계`, colorVar: '--ink-2', points: dates.map((x) => ({ x, y: metricOf(totalsOf(rowsFor(x, medias)), metric) })) }]
     : medias.map((m) => ({ id: m, label: MEDIA[m].short, colorVar: MEDIA[m].colorVar, points: dates.map((x) => ({ x, y: metricOf(totalsOf(rowsFor(x, [m])), metric) })) }));
   return { series, ...tw };
 }
@@ -706,6 +754,9 @@ export interface CampaignPaceRow {
   linearExhaustHour: number | null;
   linearEarly: boolean;
   curveExhaustHour: number | null;
+  /** 판정에 쓴 예상 마감 시각: 시간대 가중이 23시 전이면 그 값, 아니면 선형이 23시 전이면 선형, 둘 다 아니면 시간대 가중 */
+  exhaustHour: number | null;
+  exhaustMethod: '시간대 가중' | '선형' | null;
   earlyExhaust: boolean;
   missesPeak: boolean;
   level: 'critical' | 'warning' | 'ok' | 'off';
@@ -730,22 +781,29 @@ export function campaignPaceRows(d: Dataset): CampaignPaceRow[] {
     const linHour = lin && fin(lin.exhaustHour as number) && budget > 0 ? (lin.exhaustHour as number) : null;
     const linearEarly = !off && budget > 0 && !!lin?.earlyExhaust;
     const curveEarly = curveHour !== null && curveHour < R.exhaustBeforeHour;
-    const exhaust = curveHour ?? (linearEarly ? linHour : null);
+    // 판정 시각과 표시 시각을 일치시킨다 (시간대 가중이 23시 이후인데 선형만 조기면 선형 시각을 쓴다)
+    const exhaust = curveEarly ? curveHour : linearEarly ? linHour : curveHour;
+    const exhaustMethod: CampaignPaceRow['exhaustMethod'] = exhaust === null ? null : curveEarly || !linearEarly ? '시간대 가중' : '선형';
     const earlyExhaust = linearEarly || curveEarly;
     const missesPeak = earlyExhaust && exhaust !== null && exhaust < R.peakStartHour;
-    const projectedSpend = fin(ratio) ? budget * ratio : spent;
+    // 선형 추정만 조기인 경우 예상 수요도 선형 기준(23시 마감 시점 환산)으로 본다
+    const linRatio = linHour !== null && linHour > 0 ? 24 / linHour : NaN;
+    const demandRatio = exhaustMethod === '선형' && fin(linRatio) ? linRatio : ratio;
+    const projectedSpend = fin(demandRatio) ? budget * demandRatio : spent;
     const pacePct = budget > 0 ? (spent / budget) * 100 : NaN;
+    const via = exhaustMethod === '선형' ? ' · 선형 추정' : '';
     let level: CampaignPaceRow['level'] = 'ok';
     let label = '정상';
     let basis = `소진 ${fmt.pct(pacePct, 0)} · 시간대 기대 ${fmt.pct(cumNow * 100, 0)} · 예상 수요 ${fmt.ratio(ratio, 0)}`;
     if (off) { level = 'off'; label = '중지'; basis = '캠페인 상태 OFF'; }
     else if (!(budget > 0)) { level = 'ok'; label = '예산 미설정'; basis = '일 예산 0'; }
-    else if (missesPeak) { level = 'critical'; label = '피크 전 소진'; basis = `예상 마감 ${clock(exhaust)} · ${R.peakStartHour}~23시 피크 전 (기준 ${R.exhaustBeforeHour}시 전 마감)`; }
-    else if (earlyExhaust) { level = 'warning'; label = '조기 소진 예상'; basis = `예상 마감 ${clock(exhaust)} (기준 ${R.exhaustBeforeHour}시 전 마감)`; }
+    else if (missesPeak) { level = 'critical'; label = '피크 전 소진'; basis = `예상 마감 ${clock(exhaust)}${via} · ${R.peakStartHour}~23시 피크 전 (기준 ${R.exhaustBeforeHour}시 전 마감)`; }
+    else if (earlyExhaust) { level = 'warning'; label = '조기 소진 예상'; basis = `예상 마감 ${clock(exhaust)}${via} (기준 ${R.exhaustBeforeHour}시 전 마감)`; }
     return {
       id: c.id, name: c.name, media: c.media, status: c.status, dailyBudget: budget, spentToday: spent, hourOfData: hour,
-      pacePct, expectedPct: cumNow * 100, projectedRatio: ratio, projectedSpend, shortfall: Math.max(0, projectedSpend - budget),
-      linearExhaustHour: linHour, linearEarly, curveExhaustHour: curveHour, earlyExhaust, missesPeak, level, label, basis,
+      pacePct, expectedPct: cumNow * 100, projectedRatio: demandRatio, projectedSpend, shortfall: Math.max(0, projectedSpend - budget),
+      linearExhaustHour: linHour, linearEarly, curveExhaustHour: curveHour, exhaustHour: off || !(budget > 0) ? null : exhaust, exhaustMethod: off || !(budget > 0) ? null : exhaustMethod,
+      earlyExhaust, missesPeak, level, label, basis,
     };
   });
 }
@@ -832,7 +890,7 @@ export function budgetPacing(d: Dataset): BudgetPacing {
   const status: 'over' | 'under' | 'ok' = projected > budget * R.monthOverRatio ? 'over' : projected < budget * R.monthUnderRatio ? 'under' : 'ok';
   const dim = daysInMonth(d.today);
   const dom = Number(d.today.slice(8, 10));
-  const early = campaigns.filter((c) => c.earlyExhaust).sort((a, b) => nz(a.curveExhaustHour ?? a.linearExhaustHour ?? 99) - nz(b.curveExhaustHour ?? b.linearExhaustHour ?? 99));
+  const early = campaigns.filter((c) => c.earlyExhaust).sort((a, b) => (a.exhaustHour ?? 99) - (b.exhaustHour ?? 99));
   const warnings: string[] = [];
   for (const c of early) warnings.push(`${c.name} ${c.label} · ${c.basis}`);
   for (const m of media) if (m.status !== 'ok') warnings.push(`${m.name} 월 예산 ${m.statusLabel} · ${m.basis}`);
@@ -922,7 +980,7 @@ export function reconciliation(d: Dataset, win: PeriodWindow): Reconciliation {
     sales, adCost: t.cost, mediaRevenue: t.revenue, channelAdRevenue,
     organicRevenue: Math.max(0, sales - channelAdRevenue), organicShare: sales > 0 ? Math.max(0, sales - channelAdRevenue) / sales : NaN,
     gapPct, within, mer: t.cost > 0 ? sales / t.cost : NaN,
-    basis: fin(gapPct) ? `매체 집계 ÷ 채널 광고 경유 ${fmt.delta(gapPct)} (허용 ±${R.reconTolerancePct}%)` : '비교 데이터 없음',
+    basis: fin(gapPct) ? `채널 광고 경유 추정 대비 ${fmt.delta(gapPct)} (허용 ±${R.reconTolerancePct}%)` : '비교 데이터 없음',
   };
 }
 
@@ -1023,23 +1081,34 @@ export interface SourceStatus {
   missingDays: number;
   rows: number;
   inDataset: boolean;
-  account?: { name: string; status: AdAccount['status']; autoCharge: AdAccount['autoCharge']; balance: number; avgDailySpend: number; label: string; tone: 'good' | 'warning' | 'critical' | 'neutral' };
+  account?: { name: string; status: AdAccount['status']; autoCharge: AdAccount['autoCharge']; balance: number; avgDailySpend: number; label: string; tone: 'good' | 'warning' | 'critical' | 'neutral'; issues: string[] };
   state: 'ok' | 'warn' | 'snapshot';
   note: string;
   route?: string;
 }
 
-function accountInfo(a: AdAccount | undefined): SourceStatus['account'] {
+/**
+ * 계정 · 결제 · 권한 점검 (p.44 계정 · 결제 기준 · p.50 접근 권한 = 담당자 실명 계정).
+ * 해당하는 항목을 모두 모아 보여주고, 가장 높은 등급을 배지 톤으로 쓴다.
+ */
+export function accountInfo(a: AdAccount | undefined): SourceStatus['account'] {
   if (!a) return undefined;
   const runway = a.balance >= 0 && a.avgDailySpend > 0 ? a.balance / a.avgDailySpend : Infinity;
-  let label = '정상';
-  let tone: 'good' | 'warning' | 'critical' | 'neutral' = 'good';
-  if (a.status === 'restricted') { label = '계정 제재'; tone = 'critical'; }
-  else if (a.autoCharge === 'failed' && runway < 1) { label = `자동충전 실패 · 잔액 ${fmt.dec1(runway)}일치`; tone = 'critical'; }
-  else if (a.autoCharge === 'failed') { label = '자동충전 실패'; tone = 'warning'; }
-  else if (a.status === 'review') { label = '검수 · 확인 필요'; tone = 'warning'; }
-  else if (fin(runway) && runway < 1) { label = `잔액 ${fmt.dec1(runway)}일치`; tone = 'warning'; }
-  return { name: a.name, status: a.status, autoCharge: a.autoCharge, balance: a.balance, avgDailySpend: a.avgDailySpend, label, tone };
+  const issues: { text: string; tone: 'warning' | 'critical' }[] = [];
+  if (a.status === 'restricted') issues.push({ text: '계정 제재', tone: 'critical' });
+  if (a.autoCharge === 'failed') {
+    issues.push(fin(runway) && runway < 1 ? { text: `자동충전 실패 · 잔액 ${fmt.dec1(runway)}일치`, tone: 'critical' } : { text: '자동충전 실패', tone: 'warning' });
+  } else if (fin(runway) && runway < 1) {
+    issues.push({ text: `잔액 ${fmt.dec1(runway)}일치`, tone: 'warning' });
+  }
+  if (a.status === 'review') issues.push({ text: '검수 · 확인 필요', tone: 'warning' });
+  const nonReal = (a.permissions ?? []).filter((p) => !p.realName);
+  if (nonReal.length) issues.push({ text: `비실명 권한 ${nonReal.map((p) => `${p.user}(${p.role})`).join(', ')}`, tone: 'warning' });
+  const tone: 'good' | 'warning' | 'critical' = issues.some((i) => i.tone === 'critical') ? 'critical' : issues.length ? 'warning' : 'good';
+  return {
+    name: a.name, status: a.status, autoCharge: a.autoCharge, balance: a.balance, avgDailySpend: a.avgDailySpend,
+    label: issues.length ? issues.map((i) => i.text).join(' · ') : '정상', tone, issues: issues.map((i) => i.text),
+  };
 }
 
 export function sourceStatuses(d: Dataset): SourceStatus[] {
@@ -1226,7 +1295,7 @@ export function validationChecks(d: Dataset): ValidationCheck[] {
     id: 'account_state', source: '계정 · 결제', label: '광고 계정 상태 (집행 · 수집 중단 위험)',
     level: accIssues.length ? 'warn' : 'ok',
     detail: accIssues.length ? accIssues.map((x) => `${x.a.name}: ${x.info.label}${x.a.autoCharge === 'failed' && x.a.balance >= 0 ? ` (잔액 ${fmt.krw(x.a.balance)} · 일 평균 ${fmt.krw(x.a.avgDailySpend)})` : ''}`).join(' / ') : '전 계정 정상',
-    basis: '잔액 1일치 미만 · 자동충전 실패 · 검수 상태 (p.44 · p.50)', route: accIssues.length ? 'alert' : undefined,
+    basis: '잔액 1일치 미만 · 자동충전 실패 · 검수 상태 · 비실명 권한 계정 (p.44 · p.50)', route: accIssues.length ? 'alert' : undefined,
   });
   // 키워드 보고서
   const kwShort = (d.keywords ?? []).filter((k) => (k.daily ?? []).length < 14).length;
@@ -1249,6 +1318,8 @@ export interface CollectionSummary {
   sales: { ok: number; total: number };
   external: { inDataset: number; total: number };
   warnings: number;
+  /** 전일분 배치 상태: 기준 시각이 배치 시각 전이면 pending, 지났는데 전일 행이 빠진 원천이 있으면 missing */
+  batch: { state: 'done' | 'pending' | 'missing'; missing: string[]; text: string };
   timetable: { time: string; title: string; channel: string; done: boolean; state: 'done' | 'pending' | 'moved'; note?: string }[];
 }
 
@@ -1258,9 +1329,19 @@ export function collectionSummary(d: Dataset): CollectionSummary {
   const asOf = asOfClock(d);
   const hours = (d.mediaHourly ?? []).filter((r) => r.date === d.today).map((r) => r.hour);
   const off = isOffDay(d.today);
+  const y = addDays(d.today, -1);
+  const missing = [
+    ...MEDIA_IDS.filter((m) => !d.mediaDaily.some((r) => r.media === m && r.date === y)).map((m) => MEDIA[m].short),
+    ...SALES_CHANNEL_IDS.filter((c) => !d.salesDaily.some((r) => r.channel === c && r.date === y)).map((c) => SALES_CHANNELS[c].name),
+  ];
+  const batchState: CollectionSummary['batch']['state'] = asOf < DAILY_BATCH_TIME ? 'pending' : missing.length ? 'missing' : 'done';
+  const batchText = batchState === 'done' ? `${DAILY_BATCH_TIME} 완료`
+    : batchState === 'pending' ? `${DAILY_BATCH_TIME} 예정`
+      : `${DAILY_BATCH_TIME} 배치 · 전일분 누락 ${missing.length}개 원천`;
   return {
+    batch: { state: batchState, missing, text: batchText },
     batchTime: DAILY_BATCH_TIME,
-    batchDate: addDays(d.today, -1),
+    batchDate: y,
     hourlyThrough: hours.length ? Math.max(...hours) : null,
     asOf,
     offDay: off,
@@ -1271,8 +1352,11 @@ export function collectionSummary(d: Dataset): CollectionSummary {
     timetable: DATA_TIMETABLE.map((t) => {
       // p.18: 주말 · 공휴일 이슈 브리핑은 다음 영업일 09:30으로 이동
       const moved = off.off && t.kind === 'brief';
-      const done = !moved && t.time <= asOf;
-      return { time: t.time, title: t.title, channel: t.channel, done, state: moved ? 'moved' as const : done ? 'done' as const : 'pending' as const, note: moved ? `${off.label} · 다음 영업일 09:30` : undefined };
+      // 수집 · 검증 항목은 시각이 지나도 전일 행이 빠져 있으면 완료로 보지 않는다
+      const dataGap = t.kind === 'data' && missing.length > 0;
+      const done = !moved && !dataGap && t.time <= asOf;
+      const note = moved ? `${off.label} · 다음 영업일 09:30` : dataGap && t.time <= asOf ? `전일분 누락: ${missing.join(', ')}` : undefined;
+      return { time: t.time, title: t.title, channel: t.channel, done, state: moved ? 'moved' as const : done ? 'done' as const : 'pending' as const, note };
     }),
   };
 }
@@ -1358,10 +1442,21 @@ export function periodBrief(d: Dataset, preset: BoardPeriod = 'last7'): Brief {
   }
   const patterns: string[] = [];
   const sa = rows.find((r) => r.media === 'naver_sa');
-  if (sa && sa.share > 0) patterns.push(`네이버 SA는 광고비 비중 ${fmt.ratio(sa.share, 0)}에 광고 매출 비중 ${fmt.ratio(sa.revenueShare, 0)}로, 수요 회수 매체가 매출 귀속을 많이 가져가는 구조가 이 구간에서도 관측됩니다. 이 비중 차이는 DA의 기여가 SA로 넘어간 몫을 포함할 수 있어 매체 단독 효율로 읽지 않습니다.`);
-  const prospect = rows.filter((r) => r.media === 'meta' || r.media === 'naver_gfa').filter((r) => r.cost > 0);
-  if (prospect.length) patterns.push(`신규 고객 비중은 ${prospect.map((r) => `${r.short} ${fmt.ratio(r.newShare, 0)}`).join(' · ')}로, 신규 획득 역할(p.37) 매체가 ROAS보다 신규 비중에서 차이를 냅니다.`);
-  if (topCh) patterns.push(`판매 채널 중 ${topCh.name}이 실매출의 ${fmt.ratio(topCh.share, 0)}를 차지합니다. 매체 집계 광고 매출과 채널 광고 경유 추정치 차이는 ${rec.basis}입니다.`);
+  if (sa && sa.share > 0) {
+    const gapPp = (sa.revenueShare - sa.share) * 100;
+    patterns.push(Math.abs(gapPp) < 2
+      ? `네이버 SA는 광고비 비중 ${fmt.ratio(sa.share, 0)}와 광고 매출 비중 ${fmt.ratio(sa.revenueShare, 0)}가 비슷합니다(차이 ${gapPp.toFixed(1)}pp).`
+      : gapPp > 0
+        ? `네이버 SA는 광고비 비중 ${fmt.ratio(sa.share, 0)}에 광고 매출 비중 ${fmt.ratio(sa.revenueShare, 0)}(+${gapPp.toFixed(1)}pp)로 매출 귀속이 광고비 비중보다 큽니다. 수요 회수 매체(p.37)는 DA가 만든 수요를 마지막에 회수하므로, 이 차이를 SA 단독 효율로 읽지 않습니다.`
+        : `네이버 SA는 광고비 비중 ${fmt.ratio(sa.share, 0)}에 광고 매출 비중 ${fmt.ratio(sa.revenueShare, 0)}(${gapPp.toFixed(1)}pp)로 매출 귀속이 광고비 비중보다 작습니다. 수요 회수 매체에서 이 방향은 비브랜드 키워드 효율 저하나 브랜드 검색량 감소 여부를 먼저 확인할 신호입니다.`);
+  }
+  const prospect = rows.filter((r) => r.media === 'meta' || r.media === 'naver_gfa').filter((r) => r.cost > 0 && fin(r.newShare));
+  const allNew = k.cur.conversions > 0 ? k.cur.newCustomers / k.cur.conversions : NaN;
+  if (prospect.length && fin(allNew)) {
+    const higher = prospect.filter((r) => r.newShare > allNew);
+    patterns.push(`신규 고객 비중은 ${prospect.map((r) => `${r.short} ${fmt.ratio(r.newShare, 0)}`).join(' · ')}로 전체 평균 ${fmt.ratio(allNew, 0)} 대비 ${higher.length === prospect.length ? '모두 높습니다' : higher.length ? `${higher.map((r) => r.short).join(' · ')}만 높습니다` : '높지 않습니다'}. 신규 획득 역할(p.37) 매체는 ROAS와 함께 이 비중으로 판단합니다.`);
+  }
+  if (topCh) patterns.push(`판매 채널 중 ${josa(topCh.name, '이/가')} 실매출의 ${fmt.ratio(topCh.share, 0)}를 차지합니다. 매체 집계 광고 매출은 ${rec.basis}입니다.`);
   const interpretation = [
     `MER ${fmt.dec1(k.mer)}배는 광고 외 유입을 포함한 합산 매출 기준이라 광고 ROAS ${fmt.roas(k.cur.roas)}보다 CAC 회수 판단에 가깝습니다. 다만 오가닉 매출이 광고 노출의 지연 효과인지 독립 수요인지는 이 데이터만으로 구분되지 않습니다.`,
   ];
@@ -1376,9 +1471,11 @@ export function periodBrief(d: Dataset, preset: BoardPeriod = 'last7'): Brief {
   ];
   if (worstRoas && (worstRoas.media === 'meta' || worstRoas.media === 'naver_gfa')) counter.push(`${worstRoas.name}의 낮은 ROAS는 신규 수요 환기 역할을 감안하면 감액 근거가 되지 않을 수 있으며, 브랜드 검색량 동행(DA→SA) 결과와 함께 판단합니다.`);
   const actions = [
-    `담당 AE가 다음 일간 리포트(08:00) 전까지 변동 기준을 넘은 매체의 키워드 · 시간대 원인을 확인하고, PM이 예산 구조 변경 필요 여부를 판단합니다.`,
+    flagged.length
+      ? `담당 AE가 다음 일간 리포트(${DAILY_REPORT_TIME}) 전까지 변동 기준을 넘은 매체(${flagged.map((r) => r.short).join(', ')})의 키워드 · 시간대 원인을 확인하고, PM이 예산 구조 변경 필요 여부를 판단합니다.`
+      : `담당 AE가 다음 일간 리포트(${DAILY_REPORT_TIME})에서 같은 기준으로 변동을 다시 확인하고, 매체 간 구조 조정은 월간 리뷰(${MONTHLY_REPORT_WHEN})에서 PM이 한계 효율 비교로 판단합니다.`,
   ];
-  if (pacing.early.length) actions.push(`오늘 조기 소진 예상 캠페인 ${pacing.early.length}개(${pacing.early.slice(0, 3).map((c) => `${c.name} ${clock(c.curveExhaustHour ?? c.linearExhaustHour)}`).join(', ')})는 AD Pilot에서 예산 재배분 · 입찰 조정안을 만들고 위임 범위에 따라 승인합니다.`);
+  if (pacing.early.length) actions.push(`오늘 조기 소진 예상 캠페인 ${pacing.early.length}개(${listMore(pacing.early, 3, (c) => `${c.name} ${clock(c.exhaustHour)}`)})는 AD Pilot에서 예산 재배분 · 입찰 조정안을 만들고 위임 범위에 따라 승인합니다.`);
   return { title, facts, patterns, interpretation, conditions, counter, actions };
 }
 
@@ -1394,33 +1491,48 @@ export function pacingBrief(d: Dataset): Brief {
   ];
   const reached = p.media.filter((x) => x.reachedDate);
   if (reached.length) facts.push(`월 예산에 이미 도달한 매체는 ${reached.map((x) => `${x.name}(${fmtDate(x.reachedDate!)})`).join(', ')}입니다.`);
-  if (p.early.length) facts.push(`오늘 ${d.currentHour}시 기준 일 예산 조기 소진 예상 캠페인은 ${p.early.map((c) => `${c.name}(소진 ${fmt.pct(c.pacePct, 0)} · 예상 마감 ${clock(c.curveExhaustHour ?? c.linearExhaustHour)})`).join(', ')}입니다.`);
+  if (p.early.length) facts.push(`오늘 ${d.currentHour}시 기준 일 예산 조기 소진 예상 캠페인은 ${p.early.map((c) => `${c.name}(소진 ${fmt.pct(c.pacePct, 0)} · 예상 마감 ${clock(c.exhaustHour)})`).join(', ')}입니다.`);
   else facts.push(`오늘 ${d.currentHour}시 기준 ${R.exhaustBeforeHour}시 전 마감이 예상되는 캠페인은 없습니다.`);
-  const patterns = [
-    `시간대 가중 예상은 최근 ${R.curveDays}일 매체별 시간대 소진 곡선을 쓰며, 저녁 시간대 비중이 커서 선형 추정보다 마감 시각이 이르게 나옵니다.`,
-  ];
+  const patterns: string[] = [];
+  const both = p.early.filter((c) => c.curveExhaustHour !== null && c.linearExhaustHour !== null);
+  const curveFirst = both.filter((c) => c.curveExhaustHour! < c.linearExhaustHour!);
+  if (p.early.length) {
+    const rest = [...new Set(p.early.map((c) => c.media))].map((mm) => {
+      const cum = hourlyCostCurve(d, mm);
+      const h = clamp(d.currentHour, 0, 23);
+      return `${MEDIA[mm].short} ${fmt.ratio(1 - cum[h], 0)}`;
+    });
+    patterns.push(`조기 소진 캠페인 ${p.early.length}개 중 ${curveFirst.length}개는 시간대 가중 예상(최근 ${R.curveDays}일 매체별 시간대 소진 곡선)이 선형 추정보다 이른 마감 시각을 냅니다. 같은 곡선에서 ${d.currentHour + 1}시 이후 남은 소진 비중은 ${rest.join(' · ')}이며, 이 비중이 클수록 선형 추정이 마감 시각을 늦게 잡습니다.`);
+  } else {
+    patterns.push(`시간대 가중 예상은 최근 ${R.curveDays}일 매체별 시간대 소진 곡선 기준이며, 현재 소진 속도로는 모든 캠페인이 ${R.exhaustBeforeHour}시 이후까지 예산이 남습니다.`);
+  }
   const peak = p.early.filter((c) => c.missesPeak);
-  if (peak.length) patterns.push(`${peak.map((c) => c.name).join(', ')}는 ${R.peakStartHour}~23시 피크 전에 예산이 닫히는 패턴으로, 전환 효율이 높은 시간대 노출을 놓칩니다.`);
+  if (peak.length) patterns.push(`${josa(peak.map((c) => c.name).join(', '), '은/는')} ${R.peakStartHour}~23시 피크 전에 예산이 닫히는 패턴으로, 전환 효율이 높은 시간대 노출을 놓칩니다.`);
   const promos = (d.promotions ?? []).filter((x) => x.start.slice(0, 7) <= m.key && x.end.slice(0, 7) >= m.key && x.status !== 'planned');
   const interpretation = [
     m.status === 'over'
-      ? `월 단위로는 ${m.basis}로 연 배분 ÷ 12 기준을 넘습니다. ${promos.length ? `이번 달 진행 프로모션(${promos.map((x) => x.name).join(', ')}) 수요가 반영된 결과일 수 있어, ` : ''}초과분을 줄일지 시즌 배분으로 인정할지는 수면밀도 승인 사항입니다.`
+      ? `월 단위로는 ${josa(m.basis, '으로/로')} 연 배분 ÷ 12 기준을 넘습니다. ${promos.length ? `이번 달 진행 프로모션(${promos.map((x) => x.name).join(', ')}) 수요가 반영된 결과일 수 있어, ` : ''}초과분을 줄일지 시즌 배분으로 인정할지는 수면밀도 승인 사항입니다.`
       : `월 단위로는 ${m.basis}입니다.`,
   ];
   if (p.early.length) interpretation.push(`조기 소진 캠페인은 예산 부족 예상액이 ${p.early.map((c) => `${c.name} ${fmt.krw(c.shortfall)}`).join(', ')}입니다. 증액은 캠페인 ROAS가 목표 이상일 때만 의미가 있으며, 같은 매체 안의 저소진 캠페인 재원 이동을 먼저 검토합니다.`);
   const next = p.media.filter((x) => fin(x.next.projectedPct));
   const nextOver = next.filter((x) => x.next.projectedPct > R.monthOverRatio * 100);
   const conditions = [
-    `조기 소진 기준은 ${R.exhaustBeforeHour}시 전 마감 예상(selectors.campaignPacing과 같은 기준), 피크 시간은 ${R.peakStartHour}~23시(모듈 가정)입니다. 월 상태는 예상 월말 ${Math.round(R.monthOverRatio * 100)}% 초과 · ${Math.round(R.monthUnderRatio * 100)}% 미만 기준입니다.`,
+    `조기 소진 기준은 ${R.exhaustBeforeHour}시 전 마감 예상(공용 선형 페이싱과 같은 기준), 피크 시간은 ${R.peakStartHour}~23시(모듈 가정)입니다. 월 상태는 예상 월말 ${Math.round(R.monthOverRatio * 100)}% 초과 · ${Math.round(R.monthUnderRatio * 100)}% 미만 기준입니다.`,
   ];
   if (nextOver.length) conditions.push(`최근 7일 속도를 유지하면 ${nextOver[0].next.month} 예상 소진이 ${nextOver.map((x) => `${x.name} ${fmt.pct(x.next.projectedPct, 0)}`).join(', ')}로 월 예산을 넘습니다.`);
   const spikes = todaySignals(d).filter((x) => x.kind === 'spike');
   const counter = [
     `오늘 소진 속도는 ${d.currentHour}시까지의 관측치이며, 수집 이상이나 일시적 급변이 섞이면 예상 마감이 과대 추정될 수 있습니다.${spikes.length ? ` 현재 급변 신호(${spikes.map((x) => `${x.text}`).join(', ')})가 있는 매체는 자동 조정을 보류하고 원인 확인을 먼저 합니다.` : ''}`,
   ];
+  const overMedia = p.media.filter((x) => x.status === 'over');
   const actions = [
-    `담당 AE가 14:00 예산 소진율 점검(p.18)에서 조기 소진 캠페인의 재배분 · 입찰 조정안을 AD Pilot으로 올리고, 일 예산 ±10% 이내는 AE, ±10~30%는 PM, 30% 초과는 수면밀도 승인으로 처리합니다(p.15).`,
-    `PM이 월말 기준 초과 매체의 다음 달 일 예산(권장 ${next.slice(0, 2).map((x) => `${x.name} ${fmt.krw(x.next.recommendedDaily)}`).join(', ')})을 수면밀도와 확정합니다.`,
+    p.early.length
+      ? `담당 AE가 ${PACE_CHECK_TIME} 예산 소진율 점검(p.18)에서 조기 소진 캠페인의 재배분 · 입찰 조정안을 AD Pilot으로 올리고, 위임 범위(일 예산 ${delegationText()})에 따라 승인합니다(p.15).`
+      : `담당 AE가 ${PACE_CHECK_TIME} 예산 소진율 점검(p.18)에서 같은 기준으로 캠페인별 예상 마감을 다시 확인합니다.`,
+    overMedia.length
+      ? `PM이 월 예산 초과 예상 매체(${overMedia.map((x) => x.name).join(', ')})의 다음 달 일 예산을 권장치(${listMore(overMedia, 3, (x) => `${x.name} ${fmt.krw(x.next.recommendedDaily)}/일`)}) 기준으로 수면밀도와 확정합니다.`
+      : `PM이 월간 리뷰(${MONTHLY_REPORT_WHEN})에서 다음 달 매체별 일 예산(연 배분 ÷ 12 ÷ 일수)을 수면밀도와 확정합니다.`,
   ];
   return { title, facts, patterns, interpretation, conditions, counter, actions };
 }
@@ -1445,15 +1557,28 @@ export function keywordBrief(d: Dataset, filter: KeywordFilter = {}, window: Key
   if (spike.length) facts.push(`CPC 급변 신호: ${spike.map((r) => `'${r.text}'(${r.signals.find((x) => x.id === 'cpc_spike')!.basis})`).join(', ')}.`);
   const patterns: string[] = [];
   if (opp.length) patterns.push(`고효율 · 노출 손실 신호 키워드 ${opp.length}개(${opp.slice(0, 4).map((r) => `'${r.text}' 손실 ${fmt.ratio(r.lost, 0)}`).join(', ')})는 목표 대비 ${Math.round(R.highEfficiencyRatio * 100)}% 이상이면서 노출 기회 손실 ${fmt.ratio(R.lostShareTrigger, 0)} 이상으로 순위 · 예산 제약에 걸린 상태입니다.`);
-  patterns.push(`전환 ${R.minConversionsForVerdict}건 미만으로 표본 부족 표기된 키워드가 ${lowSample}개입니다. 일반 · 문제 해결 · 생활 상황 키워드는 건별 전환 수가 작아 14일 단위로도 판정이 흔들립니다.`);
+  const lowByIntent = intents.map((i) => ({ label: i.label, n: i.count, low: rows.filter((r) => r.intent === i.id && !r.verdict.sampleOk).length })).filter((x) => x.low > 0);
+  patterns.push(lowSample
+    ? `전환 ${R.minConversionsForVerdict}건 미만으로 표본 부족 표기된 키워드가 ${lowSample}개입니다(${lowByIntent.map((x) => `${x.label} ${x.low}/${x.n}`).join(' · ')}). 이 키워드들의 ${window}일 판정은 전환 1~2건 차이로 바뀔 수 있어 확대 · 중단 근거로 쓰지 않습니다.`
+    : `조회 키워드 모두 전환 ${R.minConversionsForVerdict}건 이상으로 ${window}일 판정 표본을 갖췄습니다.`);
+  const brandRows = rows.filter((r) => r.isBrand);
+  const nonBrand = keywordSummary(rows.filter((r) => !r.isBrand));
+  const brandS = keywordSummary(brandRows);
   const interpretation = [
-    `키워드 단위 ROAS는 브랜드 키워드가 크게 끌어올리므로, 비브랜드 키워드의 확장 여지는 브랜드를 제외한 묶음 ROAS와 노출 손실을 함께 보고 판단합니다.`,
+    brandRows.length && nonBrand.count
+      ? `브랜드 키워드 ROAS ${fmt.roas(brandS.roas)}, 비브랜드 ${fmt.roas(nonBrand.roas)}로 묶음 ROAS ${fmt.roas(s.roas)}에서 브랜드를 빼면 ${fmt.roas(nonBrand.roas)}입니다. 비브랜드 확장 여지는 이 값과 노출 손실로 판단하고, 브랜드는 점유 방어 기준(목표 ${R.brandTargetRoas}%)으로 따로 봅니다.`
+      : brandRows.length
+        ? `조회 결과가 브랜드 키워드뿐이므로 목표 ROAS ${R.brandTargetRoas}%(점유 방어 기준) 대비로만 판단합니다.`
+        : `조회 결과가 비브랜드 키워드뿐이며 묶음 ROAS ${fmt.roas(s.roas)}는 목표 ${R.targetRoas}% 대비 ${fmt.int((s.roas / R.targetRoas) * 100)}%입니다.`,
   ];
   if (spike.length) interpretation.push(`CPC 급변 키워드는 경쟁사 입찰 상승 또는 집계 이상이 원인 후보이며, AD Pilot 자동 조정은 원인 확인 전까지 보류하는 것이 p.14 기준입니다.`);
   const conditions = [`목표 ROAS ${R.targetRoas}% · 브랜드 ${R.brandTargetRoas}% · 고효율 ${Math.round(R.highEfficiencyRatio * 100)}% · 노출 손실 ${fmt.ratio(R.lostShareTrigger, 0)} · 급변 ±${R.keywordAnomalyPct}%(최근 ${R.keywordAnomalyDays}일, 클릭 ${R.keywordAnomalyMinClicks}회 이상)는 제안서 p.14 초기값과 모듈 가정입니다.`];
   const counter = [`노출 손실이 큰 고효율 키워드도 검색량 상한(월간 검색량)에 막히면 입찰 상향의 한계 효율이 빠르게 떨어집니다. 상향 후 7일 CPC · 전환 실측으로 확대 여부를 다시 판정합니다.`];
-  const actions = [`담당 AE가 품절 랜딩 키워드의 랜딩 교체 또는 일시 중지를 당일 처리하고(p.45), CPC 급변 키워드는 원인 확인 후 AD Pilot 조정 후보로 넘깁니다.`];
-  if (opp.length) actions.push(`SA Lead AE가 고효율 · 노출 손실 키워드의 입찰 상향안(최대 입찰가 내 · 일 조정 폭 20% 상한)을 AD Pilot에서 승인 요청합니다.`);
+  const actions: string[] = [];
+  if (sold.length) actions.push(`담당 AE가 품절 랜딩 키워드(${sold.map((r) => `'${r.text}'`).join(', ')})의 랜딩 교체 또는 일시 중지를 당일 처리합니다(p.45).`);
+  if (spike.length) actions.push(`담당 AE가 CPC 급변 키워드(${spike.map((r) => `'${r.text}'`).join(', ')})의 원인을 확인한 뒤 AD Pilot 조정 후보로 넘깁니다.`);
+  if (opp.length) actions.push(`SA Lead AE가 고효율 · 노출 손실 키워드의 입찰 상향안(최대 입찰가 내 · 일 조정 폭 ${AD_PILOT.dailyChangeCapPct}% 상한)을 AD Pilot에서 승인 요청합니다.`);
+  if (!actions.length) actions.push(`담당 AE가 다음 주간 리포트에서 같은 필터 조건으로 직전 대비 변화를 다시 확인합니다.`);
   return { title, facts, patterns, interpretation, conditions, counter, actions };
 }
 
@@ -1467,20 +1592,26 @@ export function channelBrief(d: Dataset, preset: BoardPeriod = 'last7'): Brief {
   const lowCvr = topBy(rows, (r) => -r.cvr)[0];
   const facts = [
     `${w.label} 판매 채널 실매출 ${fmt.krw(rec.sales)}, 광고비 ${fmt.krw(rec.adCost)}, MER ${fmt.dec1(rec.mer)}배입니다. 채널별 매출은 ${rows.map((r) => `${r.name} ${fmt.krw(r.revenue)}(${fmt.ratio(r.share, 0)})`).join(' · ')}입니다. 시연용 테스트 데이터 기준입니다.`,
-    `광고 경유 추정 매출은 ${fmt.krw(rec.channelAdRevenue)}, 광고 외 매출은 ${fmt.krw(rec.organicRevenue)}(${fmt.ratio(rec.organicShare, 0)})입니다. 매체 집계 광고 매출과의 차이는 ${rec.basis}입니다.`,
+    `광고 경유 추정 매출은 ${fmt.krw(rec.channelAdRevenue)}, 광고 외 매출은 ${fmt.krw(rec.organicRevenue)}(${fmt.ratio(rec.organicShare, 0)})입니다. 매체 집계 광고 매출은 ${rec.basis}입니다.`,
   ];
+  const aovs = rows.map((r) => r.aov).filter(fin);
+  const aovList = rows.map((r) => `${r.name} ${fmt.krw(r.aov)}`).join(' · ');
+  const aovSpread = aovs.length > 1 && Math.min(...aovs) > 0 ? ((Math.max(...aovs) - Math.min(...aovs)) / Math.min(...aovs)) * 100 : NaN;
   const patterns = [
-    `채널 CVR은 ${rows.map((r) => `${r.name} ${fmt.pct(r.cvr, 2)}`).join(' · ')}이며, 객단가는 ${rows.map((r) => `${r.name} ${fmt.krw(r.aov)}`).join(' · ')}로 채널 간 차이가 작습니다.`,
+    `채널 CVR은 ${rows.map((r) => `${r.name} ${fmt.pct(r.cvr, 2)}`).join(' · ')}이며, 객단가는 ${fin(aovSpread) ? `${josa(aovList, '으로/로')} 최고 · 최저 차이가 ${fmt.pct(aovSpread, 0)}입니다` : `${aovList}입니다`}.${fin(aovSpread) && aovSpread < 10 ? ' 객단가 차이가 작으므로 채널 간 매출 차이는 주로 유입 · 전환 수에서 납니다.' : ''}`,
   ];
   const interpretation = [
-    top ? `${top.name} 비중이 ${fmt.ratio(top.share, 0)}로 커서 네이버 SA · GFA 효율 변화가 실매출에 가장 크게 전달됩니다. 채널 간 잠식이 있을 수 있어 개별 채널 증감보다 합산 매출 기준으로 판단합니다.` : '채널 비중을 판단할 데이터가 부족합니다.',
+    !top ? '채널 비중을 판단할 데이터가 부족합니다.'
+      : top.channel === 'brandstore'
+        ? `${top.name} 비중이 ${fmt.ratio(top.share, 0)}로 가장 커서 네이버 SA · GFA 효율 변화가 실매출에 가장 크게 전달됩니다. 채널 간 잠식이 있을 수 있어 개별 채널 증감보다 합산 매출 기준으로 판단합니다.`
+        : `${top.name} 비중이 ${fmt.ratio(top.share, 0)}로 가장 큽니다. 이 채널의 유입이 어떤 매체에서 오는지는 판매 채널 유입 경로 연동 범위에 따라 달라지므로, 채널 간 잠식을 감안해 합산 매출 기준으로 판단합니다.`,
   ];
   if (lowCvr) interpretation.push(`${lowCvr.name} CVR ${fmt.pct(lowCvr.cvr, 2)}는 유입 대비 구매 전환이 가장 낮은 구간으로, 전용 혜택 랜딩 · 리타겟팅 개선의 우선 대상 후보입니다(p.41).`);
   return {
     title, facts, patterns, interpretation,
     conditions: [`광고 경유 매출은 판매 채널 유입 경로 기준 추정치이며 매체 귀속 매출과 기준이 다릅니다. 대조 허용 범위 ±${R.reconTolerancePct}%는 모듈 가정입니다. ${SALES_NOTE_TEXT}`],
     counter: ['광고 외 매출이 늘어도 광고 노출의 지연 효과가 섞여 있으면 광고 감액 시 함께 줄어들 수 있습니다. 홀드아웃 없이 광고 외 매출을 독립 수요로 단정하지 않습니다.'],
-    actions: ['데이터 애널리스트가 월간 리포트(익월 3영업일)에 채널별 매출 기여와 광고 경유 비중 추이를 넣고, PM이 다음 달 채널별 프로모션 · 예산 계획에 반영합니다.'],
+    actions: [`데이터 애널리스트가 월간 리포트(${MONTHLY_REPORT_WHEN})에 채널별 매출 기여와 광고 경유 비중 추이를 넣고, PM이 다음 달 채널별 프로모션 · 예산 계획에 반영합니다.`],
   };
 }
 
@@ -1492,12 +1623,12 @@ export function dataBrief(d: Dataset): Brief {
   const src = sourceStatuses(d);
   const title = `MILDO Board 데이터 수집 · 검증 · ${fmtDate(d.today)} ${s.asOf} 기준`;
   const facts = [
-    `전일(${fmtDate(s.batchDate)}) 데이터는 ${s.batchTime} 수집 · 검증 배치 기준이며, 오늘 시간대 데이터는 ${s.hourlyThrough === null ? '아직 없습니다' : `${s.hourlyThrough}시까지 반영되어 있습니다`}. 광고 매체 ${s.media.ok}/${s.media.total}, 판매 채널 ${s.sales.ok}/${s.sales.total}, 외부 데이터 ${s.external.inDataset}/${s.external.total}이 이 데이터셋에 들어 있습니다. 시연용 테스트 데이터 기준입니다.`,
+    `전일(${fmtDate(s.batchDate)}) 데이터 수집 · 검증 배치는 ${s.batch.text}${s.batch.missing.length ? `(${s.batch.missing.join(', ')})` : ''}이며, 오늘 시간대 데이터는 ${s.hourlyThrough === null ? '아직 없습니다' : `${s.hourlyThrough}시까지 반영되어 있습니다`}. 광고 매체 ${s.media.ok}/${s.media.total}, 판매 채널 ${s.sales.ok}/${s.sales.total}, 외부 데이터 ${s.external.inDataset}/${s.external.total}이 이 데이터셋에 들어 있습니다. 시연용 테스트 데이터 기준입니다.`,
     `검증 ${checks.length}항목 중 확인 필요 ${warn.length}항목입니다.${warn.length ? ` ${warn.map((c) => `${c.label}: ${c.detail}`).join(' / ')}` : ''}`,
   ];
   const snapshot = src.filter((x) => x.state === 'snapshot');
   const patterns = [
-    `광고 매체 · 판매 채널은 날짜 · 채널 키로 묶이고, 키워드는 구매 의도 5분류, 상품은 랜딩 URL과 옵션 라벨로 표준 키에 매핑됩니다.${snapshot.length ? ` ${snapshot.map((x) => x.name).join(', ')}은 이 데이터셋에 없고 해당 모듈 스냅샷으로 봅니다.` : ''}`,
+    `광고 매체 · 판매 채널은 날짜 · 채널 키로 묶이고, 키워드는 구매 의도 5분류, 상품은 랜딩 URL과 옵션 라벨로 표준 키에 매핑됩니다.${snapshot.length ? ` ${josa(snapshot.map((x) => x.name).join(', '), '은/는')} 이 데이터셋에 없고 해당 모듈 스냅샷으로 봅니다.` : ''}`,
   ];
   const interpretation = [
     warn.some((c) => c.id === 'zero_conv' || c.id === 'hourly_spike')
@@ -1531,7 +1662,7 @@ export function boardPromptPayload(d: Dataset, preset: BoardPeriod): string {
     },
     매체: rows.map((r) => ({ 매체: r.name, 역할: r.role, 판단지표: r.judgeMetric, 광고비: r0(r.cost), 비중pct: r1(r.share * 100), 가안비중pct: r1(r.planShare * 100), ROAS: r0(r.roas), CPA: r0(r.cpa), CVRpct: r2(r.cvr), 신규비중pct: r1(r.newShare * 100), ROAS증감pct: r1(r.deltas.roas), 판정: `${r.flag.label} · ${r.flag.basis}` })),
     판매채널: ch.map((c) => ({ 채널: c.name, 매출: r0(c.revenue), 비중pct: r1(c.share * 100), 주문: r0(c.orders), CVRpct: r2(c.cvr), 객단가: r0(c.aov), 광고경유pct: r1(c.adShare * 100), 매출증감pct: r1(c.revenueDelta) })),
-    예산: { 월소진pct: r1(p.month.pacePct), 예상월말pct: r1(p.month.projectedPct), 조기소진: p.early.map((c) => `${c.name} ${clock(c.curveExhaustHour ?? c.linearExhaustHour)} · ${c.basis}`) },
+    예산: { 월소진pct: r1(p.month.pacePct), 예상월말pct: r1(p.month.projectedPct), 조기소진: p.early.map((c) => `${c.name} ${clock(c.exhaustHour)} · ${c.basis}`) },
     키워드신호: flagged.slice(0, 10).map((r) => ({ 키워드: r.text, 신호: r.signals.filter((s) => s.id !== 'new').map((s) => `${s.label}: ${s.basis}`) })),
   };
   return JSON.stringify(payload);

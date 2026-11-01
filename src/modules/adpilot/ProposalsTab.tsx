@@ -3,7 +3,7 @@ import type { ChangeRequest } from '@/core/types';
 import { fmt } from '@/core/util';
 import { AiInsight } from '@/ui/AiInsight';
 import { Button, Callout, Card, type Column, DataTable, Pill, Segmented, Src } from '@/ui/primitives';
-import { type AdPilotProposal, type BulkCheck, adpilotBrief, proposalsSnapshot } from './engine';
+import { type AdPilotProposal, type BulkCheck, adpilotBrief, canNotify, proposalsSnapshot, resolveConfig } from './engine';
 import { ACTIVE, type AdPilotCtx } from './useAdPilot';
 import { ActionPill, ApproverPill, BeforeAfter, ProposalDrawer, StatusPill, targetSub } from './parts';
 import { SafetyPanel } from './SafetyPanel';
@@ -36,7 +36,7 @@ export function ChangeButtons({ ap, c }: { ap: AdPilotCtx; c: ChangeRequest }) {
   if (c.status === 'held') {
     return (
       <>
-        <Button size="sm" icon="refresh" title="충전 확인 후 재실행" onClick={() => ap.retry(c)}>재실행</Button>
+        <Button size="sm" icon="refresh" title={c.module === 'gfa' ? '충전 확인 후 재실행' : '보류 해제 확인 후 재실행'} onClick={() => ap.retry(c)}>재실행</Button>
         <Button size="sm" icon="x" onClick={() => ap.cancel(c)}>실행 취소</Button>
       </>
     );
@@ -47,9 +47,12 @@ export function ChangeButtons({ ap, c }: { ap: AdPilotCtx; c: ChangeRequest }) {
 export function ProposalActions({ ap, p }: { ap: AdPilotCtx; p: AdPilotProposal }) {
   const c = ap.changeOf(p);
   const active = c && ACTIVE.has(c.status);
+  const inc = p.action === 'hold' ? ap.linkedIncident(p) : undefined;
   return (
     <span className="adpilot-row-actions" onClick={(e) => e.stopPropagation()}>
-      {p.action === 'hold' ? <Button size="sm" icon="bell" onClick={() => ap.notify(p)}>알림 발송</Button> : null}
+      {p.action === 'hold' && inc ? <a className="btn sm" href="#alert" title={`${inc.severity} · ${inc.title} (${inc.id})`}>Alert 이슈 {inc.severity}</a> : null}
+      {!inc && canNotify(p) ? <Button size="sm" icon="bell" onClick={() => ap.notify(p)}>알림 발송</Button> : null}
+      {!inc && p.action === 'hold' && !canNotify(p) ? <span className="xs muted" title={p.approverReason}>{p.approver === 'CLIENT' ? '수면밀도 협의 안건' : 'PM 검토 안건'}</span> : null}
       {ap.requestable(p) ? (
         <Button size="sm" variant="primary" icon={p.holdKind === 'soldout' ? 'pause' : 'send'} onClick={() => ap.request(p)}>
           {p.holdKind === 'soldout' ? '일시 중지 요청' : c ? '재요청' : '승인 요청'}
@@ -123,7 +126,12 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
     { key: 'ba', label: '현재 → 제안', align: 'right', sort: (p) => p.changePct, render: (p) => <BeforeAfter p={p} /> },
     { key: 'expected', label: '예상 효과', render: (p) => <div className="adpilot-basis">{p.expected}</div> },
     { key: 'approver', label: '승인', sort: (p) => p.approver, render: (p) => <ApproverPill level={p.approver} title={p.approverReason} /> },
-    { key: 'status', label: '상태', sort: (p) => ap.statusOf(p), render: (p) => (p.action === 'hold' && ap.statusOf(p) === 'none' ? <Pill tone="warning" icon="pause">보류 중</Pill> : <StatusPill status={ap.statusOf(p)} />) },
+    { key: 'status', label: '상태', sort: (p) => ap.statusOf(p), render: (p) => (
+      <div className="stack-sm" style={{ gap: 2 }}>
+        {p.action === 'hold' && ap.statusOf(p) === 'none' ? <Pill tone="warning" icon="pause">보류 중</Pill> : <StatusPill status={ap.statusOf(p)} />}
+        {p.linkedIncidents?.length ? <Pill tone="outline" icon="bell" title={p.linkedIncidents.map((l) => `${l.severity} ${l.title} (${l.id})`).join(' · ')}>{p.holdSource === 'both' ? 'AD Pilot + Alert' : 'Alert 이슈 연계'}</Pill> : null}
+      </div>
+    ) },
     { key: 'act', label: '', align: 'right', render: (p) => <ProposalActions ap={ap} p={p} /> },
   ];
 
@@ -131,7 +139,7 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
     { id: 'all', label: `전체 ${ap.proposals.length}` },
     { id: 'bid_up', label: `상향 ${ap.proposals.filter((p) => p.action === 'bid_up').length}` },
     { id: 'bid_down', label: `하향 ${ap.proposals.filter((p) => p.action === 'bid_down').length}` },
-    { id: 'budget', label: `예산 ${ap.proposals.filter((p) => p.ruleId === 'early_exhaust').length}` },
+    { id: 'budget', label: `조기 소진 ${ap.proposals.filter((p) => p.ruleId === 'early_exhaust').length}` },
     { id: 'test_candidate', label: `테스트 후보 ${ap.proposals.filter((p) => p.action === 'test_candidate').length}` },
     { id: 'hold', label: `보류 ${ap.proposals.filter((p) => p.action === 'hold').length}` },
   ];
@@ -176,6 +184,7 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
         </Card>
         <SafetyPanel ap={ap} onHistory={onHistory} />
       </div>
+      <BidDownCard ap={ap} onFilter={() => setFilter('bid_down')} />
       <AiInsight
         title="AD Pilot 조정안 해석"
         sub="승인 우선순위 · 증분 효율 · 반례 — AI 미연결 시 규칙 엔진 결과"
@@ -186,11 +195,58 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
           '수치는 시연용 테스트 데이터(TEST DATA)다.',
           `데이터:\n${JSON.stringify(proposalsSnapshot(ap.proposals, ap.cfg))}`,
         ].join('\n')}
-        fallback={() => adpilotBrief(ap.data, ap.changes, ap.cfg)}
+        fallback={() => adpilotBrief(ap.data, ap.state.changes, ap.cfg, ap.state.incidents)}
       />
       {open ? (
         <ProposalDrawer p={open} change={ap.changeOf(open)} onClose={() => setOpen(null)} actions={<ProposalActions ap={ap} p={open} />} />
       ) : null}
     </div>
+  );
+}
+
+/** 입찰 하향 규칙 결과 — 0건이면 데이터로 이유를 보이고, 하향 후보가 처음 생기는 목표 ROAS를 민감도 보기로 계산 (공식 기준 아님) */
+export function BidDownCard({ ap, onFilter }: { ap: AdPilotCtx; onFilter: () => void }) {
+  const x = ap.downInfo;
+  const s = x.sensitivity;
+  return (
+    <Card title={`입찰 하향 규칙 · 현재 기준 ${x.count}건`}
+      sub={`목표 ROAS 미달 지속(최근 14일 · 직전 14일 모두 < ${fmt.roas(ap.cfg.targetRoas)}) + 최소 전환 ${x.minConv}건 이상일 때만 하향합니다`}
+      actions={<><Src kind="PROPOSAL" page="p.14" /><Src kind="DEMO" />{x.count ? <Button size="sm" onClick={onFilter}>하향 후보 보기</Button> : null}</>}>
+      <div className="row" style={{ gap: 6 }}>
+        <Pill tone={x.count ? 'serious' : 'neutral'} icon={x.count ? 'down' : 'check'}>하향 {x.count}건 · 기준 목표 {fmt.roas(ap.cfg.targetRoas)} · 전환 ≥ {x.minConv}건</Pill>
+        <span className="xs muted">비브랜드 운영 키워드 {x.pool}개 · 두 기간 미달 {x.belowBoth.length} · 최근 14일만 미달 {x.recentOnly.length} · 목표 이상 {x.aboveCount}</span>
+      </div>
+      <p className="small">{x.note}</p>
+      {s ? (
+        <div className="stack-sm">
+          <div className="row" style={{ gap: 6 }}>
+            <Pill tone="outline" icon="filter">민감도 보기 · 목표 ROAS {fmt.roas(s.target)} 가정</Pill>
+            <span className="xs muted">공식 기준({fmt.roas(ap.official.targetRoas)}) 아님 · 이 표에서는 승인 요청을 만들지 않습니다</span>
+          </div>
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead><tr><th>키워드</th><th>판정 근거 (가정 기준)</th><th className="r">현재 → 하향안</th><th>예상 효과 (탄력성 가정)</th></tr></thead>
+              <tbody>
+                {s.proposals.map((p) => (
+                  <tr key={p.id}>
+                    <td><strong className="small">{p.keyword}</strong><div className="xs muted">{targetSub(p)}</div></td>
+                    <td><div className="adpilot-basis">{p.basis}</div></td>
+                    <td className="r"><BeforeAfter p={p} /></td>
+                    <td><div className="adpilot-basis">{p.expected}</div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="row-between">
+            <span className="xs muted">{s.note}</span>
+            <Button size="sm" icon="target" title="화면 판정만 바뀝니다. 공식 기준은 기준 변경 승인 · 반영 후 바뀝니다" disabled={ap.draft.targetRoas === s.target} onClick={() => ap.setDraft(resolveConfig({ ...ap.draft, targetRoas: s.target }))}>
+              목표 {fmt.roas(s.target)}로 화면 판정 시뮬레이션
+            </Button>
+          </div>
+        </div>
+      ) : x.sensitivityNote ? <div className="xs muted">{x.sensitivityNote}</div> : null}
+      {ap.dirty.length ? <div className="xs muted">현재 화면은 미승인 기준으로 판정 중입니다. SAFETY 패널의 [공식 기준으로]로 되돌리거나 [기준 변경 승인 요청]으로 공식 기준 변경을 요청합니다.</div> : null}
+    </Card>
   );
 }

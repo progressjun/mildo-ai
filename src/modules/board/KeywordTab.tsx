@@ -9,7 +9,7 @@ import {
   filterKeywords, groupRollup, intentRollup, keywordCsv, keywordRows, keywordScope, keywordSummary, productGroups, SIGNAL_LABEL,
   type KeywordFilter, type KeywordRow, type KeywordWindow, type SignalId,
 } from './engine';
-import { NumCell, SignalPills, VerdictBadge } from './parts';
+import { GroupField, NeutralDelta, NumCell, SignalPills, VerdictBadge } from './parts';
 import { BOARD_RULES, KEYWORD_WINDOWS } from './data';
 
 type SparkMetric = 'cost' | 'conversions' | 'revenue';
@@ -28,9 +28,11 @@ export function KeywordTab({ d }: { d: Dataset }) {
   const [signal, setSignal] = useState<'all' | 'any' | SignalId>('all');
   const [query, setQuery] = useState('');
   const [spark, setSpark] = useState<SparkMetric>('cost');
-  const [open, setOpen] = useState<KeywordRow | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const all = useMemo(() => keywordRows(d, win), [d, win]);
+  // 집계 창이 바뀌면 드로어도 같은 창의 값으로 다시 계산된 행을 보여준다
+  const open = useMemo(() => (openId ? all.find((r) => r.id === openId) ?? null : null), [all, openId]);
   const rows = useMemo(() => {
     const f: KeywordFilter = { intents, status, group, signal, query };
     return filterKeywords(all, f);
@@ -56,7 +58,7 @@ export function KeywordTab({ d }: { d: Dataset }) {
       ),
     },
     { key: 'intent', label: '구매 의도', sort: (r) => r.intent, render: (r) => <span className="small nowrap">{r.intentName}</span> },
-    { key: 'cost', label: '광고비', align: 'right', sort: (r) => r.cur.cost, render: (r) => <NumCell value={fmt.krw(r.cur.cost)} delta={r.costDelta} invert sub={r.isNew ? '신규' : undefined} /> },
+    { key: 'cost', label: '광고비', align: 'right', sort: (r) => r.cur.cost, render: (r) => <NumCell value={fmt.krw(r.cur.cost)} delta={r.costDelta} neutral sub={r.isNew ? '신규' : undefined} /> },
     { key: 'conv', label: '전환', align: 'right', sort: (r) => r.cur.conversions, render: (r) => <NumCell value={fmt.dec1(r.cur.conversions)} delta={r.convDelta} /> },
     { key: 'revenue', label: '매출', align: 'right', sort: (r) => r.cur.revenue, render: (r) => <NumCell value={fmt.krw(r.cur.revenue)} /> },
     { key: 'roas', label: 'ROAS', align: 'right', sort: (r) => r.roas, render: (r) => <NumCell value={<strong>{fmt.roas(r.roas)}</strong>} delta={r.roasDelta} /> },
@@ -90,9 +92,9 @@ export function KeywordTab({ d }: { d: Dataset }) {
             </div>
           </div>
           <div className="board-filters">
-            <Field label="상태" id="board-kw-status">
+            <GroupField label="상태">
               <Segmented options={[{ id: 'all', label: '전체' }, { id: 'on', label: 'ON' }, { id: 'test', label: '테스트' }]} value={status} onChange={setStatus} label="키워드 상태" />
-            </Field>
+            </GroupField>
             <Field label="제품군 (사이즈)" id="board-kw-group">
               <select id="board-kw-group" className="select" value={group} onChange={(e) => setGroup(e.target.value)}>
                 <option value="all">전체</option>
@@ -107,24 +109,24 @@ export function KeywordTab({ d }: { d: Dataset }) {
             <Field label="검색어" id="board-kw-q">
               <input id="board-kw-q" className="input" placeholder="키워드 · 광고그룹" value={query} onChange={(e) => setQuery(e.target.value)} />
             </Field>
-            <Field label="집계 창" id="board-kw-win">
+            <GroupField label="집계 창">
               <Segmented options={KEYWORD_WINDOWS.map((w) => ({ id: w.id, label: w.label }))} value={String(win) as '7' | '14'} onChange={(v) => setWin(v === '7' ? 7 : 14)} label="집계 창" />
-            </Field>
-            <Field label="스파크라인" id="board-kw-spark">
+            </GroupField>
+            <GroupField label="스파크라인">
               <Segmented options={[{ id: 'cost', label: '광고비' }, { id: 'conversions', label: '전환' }, { id: 'revenue', label: '매출' }]} value={spark} onChange={setSpark} label="스파크라인 지표" />
-            </Field>
+            </GroupField>
             {dirty ? <Button size="sm" icon="x" onClick={reset}>필터 초기화</Button> : null}
           </div>
         </div>
 
         <div className="board-mini-stats">
           <Stat label="키워드" value={`${s.count}개`} foot={<span className="muted">신호 {sigCount}개</span>} />
-          <Stat label={`광고비 (${win}일)`} value={fmt.krw(s.cur.cost)} delta={s.costDelta} invert />
+          <Stat label={`광고비 (${win}일)`} value={fmt.krw(s.cur.cost)} foot={<NeutralDelta pct={s.costDelta} />} />
           <Stat label="매출 · ROAS" value={fmt.roas(s.roas)} delta={s.roasDelta} foot={<span className="muted">매출 {fmt.krw(s.cur.revenue)}</span>} />
           <Stat label="전환 · CPA" value={fmt.dec1(s.cur.conversions)} delta={s.convDelta} foot={<span className="muted">CPA {fmt.won(s.cpa)}</span>} />
         </div>
 
-        <DataTable rows={rows} columns={columns} rowKey={(r) => r.id} initialSort={{ key: 'cost', dir: 'desc' }} maxHeight={620} onRowClick={setOpen} selectedKey={open?.id}
+        <DataTable rows={rows} columns={columns} rowKey={(r) => r.id} initialSort={{ key: 'cost', dir: 'desc' }} maxHeight={620} onRowClick={(r) => setOpenId(r.id)} selectedKey={openId}
           empty={<span>조건에 맞는 키워드가 없습니다. <button type="button" className="board-linkbtn" onClick={reset}>필터 초기화</button></span>} />
         <div className="xs muted">
           판정은 목표 ROAS {BOARD_RULES.targetRoas}%(브랜드 {BOARD_RULES.brandTargetRoas}%) 대비 비율이며 {Math.round(BOARD_RULES.highEfficiencyRatio * 100)}% 이상 고효율(p.14). 전환 {BOARD_RULES.minConversionsForVerdict}건 미만은 표본 부족으로 표기합니다. CPC 급변은 최근 {BOARD_RULES.keywordAnomalyDays}일 ±{BOARD_RULES.keywordAnomalyPct}%(클릭 {BOARD_RULES.keywordAnomalyMinClicks}회 이상), 고효율 · 노출 손실은 노출 기회 손실 {Math.round(BOARD_RULES.lostShareTrigger * 100)}% 이상. 행을 누르면 일별 상세가 열립니다.
@@ -156,12 +158,12 @@ export function KeywordTab({ d }: { d: Dataset }) {
         </Card>
       </div>
 
-      {open ? <KeywordDrawer row={open} onClose={() => setOpen(null)} /> : null}
+      {open ? <KeywordDrawer row={open} windowDays={win} onClose={() => setOpenId(null)} /> : null}
     </div>
   );
 }
 
-export function KeywordDrawer({ row: r, onClose }: { row: KeywordRow; onClose: () => void }) {
+export function KeywordDrawer({ row: r, windowDays = 14, onClose }: { row: KeywordRow; windowDays?: KeywordWindow; onClose: () => void }) {
   const cpc = r.daily.map((x, i) => ({ x: r.dailyDates[i] ?? String(i), y: metrics.cpc(x.cost, x.clicks) }));
   const li = r.landingInfo;
   return (
@@ -171,9 +173,10 @@ export function KeywordDrawer({ row: r, onClose }: { row: KeywordRow; onClose: (
         <Pill tone="outline">{r.intentName}</Pill>
         <Pill tone="outline">{r.adgroup}</Pill>
         <Pill tone={r.status === 'test' ? 'accent' : 'neutral'}>{r.status === 'test' ? '테스트 그룹' : 'ON'}</Pill>
+        <span className="xs muted">최근 {windowDays}일 vs 직전 {windowDays}일</span>
       </div>
       <div className="board-mini-stats">
-        <Stat label="광고비" value={fmt.krw(r.cur.cost)} delta={r.costDelta} invert />
+        <Stat label={`광고비 (${windowDays}일)`} value={fmt.krw(r.cur.cost)} foot={<NeutralDelta pct={r.costDelta} />} />
         <Stat label="매출" value={fmt.krw(r.cur.revenue)} delta={r.revenueDelta} />
         <Stat label="ROAS" value={fmt.roas(r.roas)} delta={r.roasDelta} />
         <Stat label="전환" value={fmt.dec1(r.cur.conversions)} delta={r.convDelta} />

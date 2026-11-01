@@ -8,7 +8,9 @@ import { DEMO, generateDemoData } from '@/data/demo';
 import { MEDIA, MEDIA_IDS } from '@/data/constants';
 import { campaignPacing, headline, mediaRows, monthlyPacing, salesByChannel, totalsOf } from '@/core/selectors';
 import { addDays, monthKey, sum } from '@/core/util';
+import { heatLevel } from './BoardHeatmap';
 import {
+  accountInfo, dataBrief, delegationText,
   BOARD_PERIOD_IDS, boardKpis, boardPromptPayload, budgetPacing, campaignPaceRows, changeFlag, channelBrief, channelRows, channelTrend, clock,
   collectionSummary, curveExhaustHour, filterKeywords, groupRollup, hourWeekHeatmap, hourlyCostCurve, intentRollup, keyMappingSamples, keywordAnomaly,
   keywordBrief, keywordCsv, keywordRows, keywordSummary, keywordVerdict, landingInfo, mediaComparison, mediaTrend, monthPaceRows, pacingBrief,
@@ -535,5 +537,180 @@ describe('키워드 집계 범위', () => {
     expect(sc.keywordCost).toBe(sum(DEMO.keywords, (k) => k.last14.cost));
     expect(sc.saMediaCost).toBe(totalsOf(mediaRows(DEMO, sc.from, sc.to, 'naver_sa')).cost);
     expect(keywordScope(empty(), 7).keywordCost).toBe(0);
+  });
+});
+
+describe('리뷰 보강 — 계정 권한 · 예상 마감 일관성 · 배치 상태 · 데이터 기반 문구', () => {
+  it('데모: Google 비실명 공유 계정(agency-shared@ · 관리자)을 권한 이슈로 탐지 (실명 전환 시 해제)', () => {
+    const g = sourceStatuses(DEMO).find((s) => s.id === 'google')!;
+    expect(g.account!.tone).toBe('warning');
+    expect(g.account!.issues.join(' ')).toContain('agency-shared@');
+    expect(g.state).toBe('warn');
+    expect(g.route).toBe('alert');
+    const acc = validationChecks(DEMO).find((c) => c.id === 'account_state')!;
+    expect(acc.detail).toContain('Google');
+    expect(acc.basis).toContain('비실명');
+    const d = fresh();
+    for (const p of d.accounts.find((a) => a.id === 'acc_google')!.permissions) p.realName = true;
+    expect(sourceStatuses(d).find((s) => s.id === 'google')!.account!.tone).toBe('good');
+  });
+
+  it('계정 점검: 여러 이슈를 모두 모으고 가장 높은 등급을 쓴다', () => {
+    const a = { ...DEMO.accounts.find((x) => x.id === 'acc_gfa')!, status: 'review' as const, permissions: [{ user: 'x@', role: '관리자', realName: false, lastLogin: '2026-10-01' }] };
+    const info = accountInfo(a)!;
+    expect(info.tone).toBe('critical');
+    expect(info.issues).toHaveLength(3);
+    expect(accountInfo(undefined)).toBeUndefined();
+    const ok = accountInfo({ ...a, status: 'active', autoCharge: 'ok', balance: 10_000_000, permissions: [] })!;
+    expect(ok.tone).toBe('good');
+    expect(ok.label).toBe('정상');
+  });
+
+  it('데모: 예상 마감 표시 시각 = 판정 시각 (SA_일반 제품 20:22 · Meta_넓은 타겟 18:06, 시간대 가중)', () => {
+    const rows = campaignPaceRows(DEMO);
+    const sa = rows.find((r) => r.name === 'SA_일반 제품')!;
+    const meta = rows.find((r) => r.name === 'Meta_넓은 타겟')!;
+    expect(clock(sa.exhaustHour)).toBe('20:22');
+    expect(clock(meta.exhaustHour)).toBe('18:06');
+    for (const r of rows) {
+      if (r.earlyExhaust) {
+        expect(r.exhaustHour!).toBeLessThan(BOARD_RULES.exhaustBeforeHour);
+        expect(r.basis).toContain(clock(r.exhaustHour));
+      }
+    }
+    expect(budgetPacing(DEMO).early.map((r) => r.exhaustHour!)).toEqual([...budgetPacing(DEMO).early.map((r) => r.exhaustHour!)].sort((a, b) => a - b));
+  });
+
+  it('선형만 조기 · 시간대 가중은 23시 이후인 경우: 선형 시각으로 판정 · 표시 (모순 없음)', () => {
+    // 앞쪽이 무겁고 23시 비중이 큰 곡선: 15시까지 75%, 22시까지 90%
+    const share = Array.from({ length: 24 }, (_, h) => (h <= 15 ? 0.75 / 16 : h <= 22 ? 0.15 / 7 : 0.1));
+    const today = '2026-10-31';
+    const mediaHourly = [] as Dataset['mediaHourly'];
+    for (let k = 1; k <= 28; k++) {
+      const date = addDays(today, -k);
+      share.forEach((w, hour) => mediaHourly.push({ date, hour, weekday: 0, media: 'google', impressions: 0, clicks: 0, cost: Math.round(w * 1_000_000), conversions: 0, revenue: 0 }));
+    }
+    const d: Dataset = { ...empty(), mediaHourly, campaigns: [{ id: 'c1', media: 'google', name: 'G', dailyBudget: 100_000, spentToday: 78_750, status: 'on', hourOfData: 15 }] };
+    const r = campaignPaceRows(d)[0];
+    expect(r.linearEarly).toBe(true);
+    expect(r.curveExhaustHour!).toBeGreaterThanOrEqual(23);
+    expect(r.earlyExhaust).toBe(true);
+    expect(r.exhaustMethod).toBe('선형');
+    expect(r.exhaustHour).toBe(r.linearExhaustHour);
+    expect(r.exhaustHour!).toBeLessThan(23);
+    expect(r.basis).toContain(clock(r.linearExhaustHour));
+    expect(r.basis).toContain('선형 추정');
+    expect(r.shortfall).toBeGreaterThan(0);
+  });
+
+  it('수집 배치 상태: 07:00 이후 + 전일분 모두 있음 = 완료 · 07:00 전 = 예정 · 전일 행 누락 = 누락', () => {
+    expect(collectionSummary(DEMO).batch).toEqual({ state: 'done', missing: [], text: '07:00 완료' });
+    const early = generateDemoData('2026-10-31', 6);
+    const e = collectionSummary(early);
+    expect(e.asOf).toBe('06:30');
+    expect(e.batch.state).toBe('pending');
+    expect(e.batch.text).toBe('07:00 예정');
+    expect(e.timetable[0].state).toBe('pending');
+    const gap = fresh();
+    gap.mediaDaily = gap.mediaDaily.filter((r) => !(r.media === 'google' && r.date === '2026-10-30'));
+    const g = collectionSummary(gap);
+    expect(g.batch.state).toBe('missing');
+    expect(g.batch.missing).toEqual(['Google']);
+    expect(g.timetable[0].state).toBe('pending');
+    expect(g.timetable[0].note).toContain('Google');
+    expect(collectionSummary(empty()).batch.state).toBe('missing');
+    expect(dataBriefText(gap)).toContain('누락');
+  });
+
+  it('매체 판단 지표: Google은 증분 미측정을 명시 (자사몰 총액을 Google 성과로 표기하지 않음)', () => {
+    const g = mediaComparison(DEMO, periodWindow(DEMO, 'last7')).find((r) => r.media === 'google')!;
+    expect(g.judge.value).toContain('증분 미측정');
+  });
+
+  it('매출 대조 문구: 방향과 기준을 함께 표기', () => {
+    const rec = reconciliation(DEMO, periodWindow(DEMO, 'last7'));
+    expect(rec.basis).toMatch(/^채널 광고 경유 추정 대비 [+-]?\d/);
+    expect(rec.basis).toContain('허용 ±10%');
+  });
+
+  it('위임 범위 문장은 GFA_DELEGATION에서 생성 (p.15 ±10% AE · ±10~30% PM · 30% 초과 수면밀도)', () => {
+    expect(delegationText()).toBe('±10% 이내는 담당 AE, ±10~30%는 PM, 30% 초과는 수면밀도 승인');
+    expect(briefText(pacingBrief(DEMO))).toContain(delegationText());
+  });
+
+  it('기간 브리프: SA 매출 귀속 문장은 데이터 방향을 따른다', () => {
+    expect(briefText(periodBrief(DEMO, 'last7'))).toContain('매출 귀속이 광고비 비중보다 큽니다');
+    const d = fresh();
+    const w = periodWindow(d, 'last7');
+    for (const r of d.mediaDaily) if (r.media === 'naver_sa' && r.date >= w.from && r.date <= w.to) r.revenue = Math.round(r.revenue * 0.2);
+    const t = briefText(periodBrief(d, 'last7'));
+    expect(t).toContain('매출 귀속이 광고비 비중보다 작습니다');
+    expect(t).not.toContain('매출 귀속이 광고비 비중보다 큽니다');
+  });
+
+  it('판매 채널 브리프: 최대 채널 · 객단가 차이 문장은 데이터에서 계산', () => {
+    const base = briefText(channelBrief(DEMO, 'last7'));
+    expect(base).toContain('네이버 SA · GFA 효율 변화');
+    expect(base).toMatch(/최고 · 최저 차이가 \d+%/);
+    const d = fresh();
+    for (const r of d.salesDaily) if (r.channel === 'own_mall') { r.revenue *= 12; r.adAttributedRevenue *= 12; }
+    const t = briefText(channelBrief(d, 'last7'));
+    expect(t).toContain('자사몰 비중이');
+    expect(t).not.toContain('네이버 SA · GFA 효율 변화');
+    expect(t).not.toContain('객단가 차이가 작으므로');
+  });
+
+  it('키워드 브리프: 브랜드 / 비브랜드 ROAS 분리 · 신호 없는 조건이면 품절 · 급변 액션 없음', () => {
+    const t = briefText(keywordBrief(DEMO));
+    expect(t).toContain('비브랜드');
+    expect(t).toMatch(/표본 부족 표기된 키워드가 \d+개입니다\(/);
+    const brand = keywordBrief(DEMO, { intents: ['brand'] });
+    expect(brand.actions.join(' ')).not.toContain('품절 랜딩');
+    expect(brand.interpretation.join(' ')).toContain('브랜드 키워드뿐');
+    expect(briefText(keywordBrief(DEMO))).toContain(`일 조정 폭 ${20}% 상한`);
+  });
+
+  it('예산 브리프: 조기 소진이 없으면 재배분 액션 대신 재확인 액션', () => {
+    const d = fresh();
+    for (const c of d.campaigns) c.spentToday = Math.round(c.spentToday * 0.6);
+    const b = pacingBrief(d);
+    expect(budgetPacing(d).early).toHaveLength(0);
+    expect(b.actions[0]).toContain('다시 확인');
+    expect(briefText(b)).not.toMatch(NO_BAD_TEXT);
+  });
+
+  it('히트맵 색 단계: NaN = 데이터 없음 · 최소 = 0 · 최대 = 6 · 값이 모두 같으면 중간', () => {
+    expect(heatLevel(NaN, 0, 10)).toBe(-1);
+    expect(heatLevel(0, 0, 10)).toBe(0);
+    expect(heatLevel(10, 0, 10)).toBe(6);
+    expect(heatLevel(5, 5, 5)).toBe(3);
+    expect(heatLevel(4, NaN, NaN)).toBe(3);
+  });
+});
+
+function dataBriefText(d: Dataset): string {
+  return briefText(dataBrief(d));
+}
+
+describe('조사 · 나열 (동적 이름 문장)', () => {
+  it('받침에 맞는 조사', async () => {
+    const { josa, listMore } = await import('./engine');
+    expect(josa('네이버 브랜드스토어', '이/가')).toBe('네이버 브랜드스토어가');
+    expect(josa('자사몰', '이/가')).toBe('자사몰이');
+    expect(josa('SA_일반 제품', '은/는')).toBe('SA_일반 제품은');
+    expect(josa('Meta_넓은 타겟', '은/는')).toBe('Meta_넓은 타겟은');
+    expect(josa('104만', '으로/로')).toBe('104만으로');
+    expect(josa('101만 · 자사몰', '으로/로')).toBe('101만 · 자사몰로');
+    expect(josa('108% (기준 105% 초과)', '으로/로')).toBe('108% (기준 105% 초과)로');
+    expect(josa('Google', '이/가')).toBe('Google이');
+    expect(josa('SA', '이/가')).toBe('SA가');
+    expect(listMore([1, 2, 3, 4], 3, String)).toBe('1, 2, 3 외 1개');
+    expect(listMore([1, 2], 3, String)).toBe('1, 2');
+  });
+  it('데모 브리프 문장에 조사 오류가 없다', () => {
+    const all = [periodBrief(DEMO), pacingBrief(DEMO), channelBrief(DEMO)].map(briefText).join('\n');
+    expect(all).not.toMatch(/스토어이 |제품는 |만로 /);
+    expect(all).toContain('네이버 브랜드스토어가 실매출의');
+    expect(all).toMatch(/외 \d+개/);
   });
 });

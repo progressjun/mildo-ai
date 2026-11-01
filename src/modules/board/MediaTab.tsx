@@ -6,7 +6,7 @@ import { fmt, fmtDate, metrics, sum } from '@/core/util';
 import { Card, DataTable, Delta, Pill, Segmented, Src, Swatch, Toggle, type Column } from '@/ui/primitives';
 import { LineChart, ShareBar } from '@/ui/charts';
 import { mediaComparison, mediaTrend, TREND_METRICS, type MediaRow, type PeriodWindow, type TrendMetric } from './engine';
-import { FlagBadge, MediaChips, metricFormat, NumCell } from './parts';
+import { FlagBadge, MediaChips, metricFormat, NeutralDelta, NumCell } from './parts';
 import { BOARD_RULES } from './data';
 
 export function MediaTab({ d, win }: { d: Dataset; win: PeriodWindow }) {
@@ -42,7 +42,7 @@ export function MediaTab({ d, win }: { d: Dataset; win: PeriodWindow }) {
         </div>
       ),
     },
-    { key: 'cost', label: '광고비', align: 'right', sort: (r) => r.cost, render: (r) => <NumCell value={fmt.krw(r.cost)} delta={r.deltas.cost} invert /> },
+    { key: 'cost', label: '광고비', align: 'right', sort: (r) => r.cost, render: (r) => <NumCell value={fmt.krw(r.cost)} delta={r.deltas.cost} neutral /> },
     {
       key: 'share', label: '비중 · 가안', align: 'right', sort: (r) => r.share,
       render: (r) => <NumCell value={fmt.ratio(r.share, 1)} sub={<>가안 {fmt.ratio(r.planShare, 0)} · {r.planGapPp >= 0 ? '+' : ''}{r.planGapPp.toFixed(1)}pp</>} />,
@@ -67,7 +67,7 @@ export function MediaTab({ d, win }: { d: Dataset; win: PeriodWindow }) {
   const footer = (
     <tr>
       <td>합계 · 6개 매체</td>
-      <td className="r"><NumCell value={fmt.krw(tot.cost)} delta={tot.costDelta} invert /></td>
+      <td className="r"><NumCell value={fmt.krw(tot.cost)} delta={tot.costDelta} neutral /></td>
       <td className="r">100%</td>
       <td className="r">{fmt.krw(tot.revenue)}</td>
       <td className="r"><NumCell value={fmt.roas(tot.roas)} delta={tot.roasDelta} /></td>
@@ -101,7 +101,7 @@ export function MediaTab({ d, win }: { d: Dataset; win: PeriodWindow }) {
             <div className="stack-sm"><span className="xs muted">연 배분 가안 (p.37)</span><ShareBar parts={rows.map((r) => ({ label: r.short, value: r.planShare, colorVar: r.colorVar }))} format={(v) => `${Math.round(v * 100)}%`} /></div>
           </div>
         </Card>
-        <Card title="매체별 판단 지표 해석 기준" sub="제안서 p.37 매체별 역할 · 판단 지표" actions={<Src kind="PROPOSAL" page="p.37" />}>
+        <Card title="매체별 판단 지표 해석 기준" sub={`제안서 p.37 매체별 역할 · 판단 지표 · 값은 ${win.label}`} actions={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.37" /></>}>
           <div className="board-list">
             {rows.map((r) => (
               <div key={r.media} className="board-list-item">
@@ -136,7 +136,8 @@ export function MediaTab({ d, win }: { d: Dataset; win: PeriodWindow }) {
               const pts = s.points.filter((p) => Number.isFinite(p.y));
               const first = pts[0]?.y ?? NaN;
               const last = pts.at(-1)?.y ?? NaN;
-              return <span key={s.id} className="num">{s.label} 시작 {fmtY(first)} → 마지막 {fmtY(last)} (<Delta pct={metrics.pctChange(last, first)} invert={metric === 'cost' || metric === 'cpa'} digits={0} />)</span>;
+              const ch = metrics.pctChange(last, first);
+              return <span key={s.id} className="num">{s.label} 시작 {fmtY(first)} → 마지막 {fmtY(last)} ({metric === 'cost' || metric === 'conversions' ? <NeutralDelta pct={ch} digits={0} /> : <Delta pct={ch} invert={metric === 'cpa'} digits={0} />})</span>;
             })}
           </div>
         ) : null}

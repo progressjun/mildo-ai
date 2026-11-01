@@ -21,6 +21,12 @@ export function DiagnosisTab({ ap, onVerify }: { ap: AdPilotCtx; onVerify: (keyw
     return c;
   }, [ap.diag]);
   const intents = useMemo(() => intentSummary(ap.data, ap.cfg), [ap.data, ap.cfg]);
+  /** MILDO Alert 이슈 연계 보류 (키워드 단위 · 네이버 SA 매체 단위) — 데이터 판정 배지와 별도로 표시 */
+  const alertHold = useMemo(() => {
+    const byKw = new Map(ap.proposals.filter((p) => p.action === 'hold' && p.targetType === 'keyword' && p.linkedIncidents?.length).map((p) => [p.keywordId, p]));
+    const sa = ap.proposals.find((p) => p.action === 'hold' && p.targetType === 'media' && p.media === 'naver_sa' && p.linkedIncidents?.length);
+    return (id: string) => byKw.get(id) ?? sa;
+  }, [ap.proposals]);
 
   const columns: Column<KeywordDiagnosis>[] = [
     { key: 'text', label: '키워드', sort: (d) => d.text, render: (d) => <div className="stack-sm" style={{ gap: 0 }}><strong className="small">{d.text}</strong><span className="xs muted">{d.adgroup}{d.isBrand ? ' · 브랜드' : ''}</span></div> },
@@ -29,6 +35,10 @@ export function DiagnosisTab({ ap, onVerify }: { ap: AdPilotCtx; onVerify: (keyw
         <span className="row" style={{ gap: 6 }}><VerdictPill d={d} />{d.proposedBid !== null ? <span className="small num">{fmt.won(d.bid)} → <strong>{fmt.won(d.proposedBid)}</strong> <Delta pct={d.proposedPct ?? NaN} /></span> : null}</span>
         <span className="adpilot-basis">{d.basis}</span>
         {d.note ? <span className="xs muted">{d.note}</span> : null}
+        {(() => {
+          const h = alertHold(d.id);
+          return h ? <span className="row" style={{ gap: 6 }}><Pill tone="warning" icon="bell">MILDO Alert 연계 보류</Pill><span className="xs muted">{h.linkedIncidents!.map((l) => `${l.severity} ${l.title}`).join(' · ')}</span></span> : null;
+        })()}
       </div>
     ) },
     { key: 'roas', label: 'ROAS 14일', align: 'right', sort: (d) => d.roas, render: (d) => fmt.roas(d.roas) },

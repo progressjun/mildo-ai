@@ -9,7 +9,7 @@ import type { ModuleAgentKit, ToolContext } from '../types';
 import {
   BOARD_PERIOD_IDS, boardKpis, budgetPacing, channelBrief, channelRows, clock, collectionSummary, dataBrief, filterKeywords, groupRollup,
   hourWeekHeatmap, intentRollup, isBoardPeriod, keywordBrief, keywordRows, keywordSummary, mediaComparison, pacingBrief, periodBrief,
-  reconciliation, round, sortKeywords, sourceStatuses, validationChecks, type BoardPeriod, type HeatMetric, type KeywordFilter, type KeywordSort,
+  reconciliation, round, SIGNAL_LABEL, sortKeywords, sourceStatuses, validationChecks, type BoardPeriod, type HeatMetric, type KeywordFilter, type KeywordSort, type SignalId,
 } from './engine';
 import { BOARD_RULES } from './data';
 
@@ -19,6 +19,12 @@ const SRC = 'TEST DATA (시연용 테스트 데이터) · 제안서 p.12–13 �
 
 function periodOf(v: unknown): BoardPeriod {
   return isBoardPeriod(v) ? v : 'last7';
+}
+
+const SIGNAL_INPUTS = ['all', 'any', ...(Object.keys(SIGNAL_LABEL) as SignalId[])] as const;
+/** 알 수 없는 신호 값은 전체로 본다 (잘못된 입력으로 결과가 0건이 되지 않게) */
+function signalOf(v: unknown): NonNullable<KeywordFilter['signal']> {
+  return typeof v === 'string' && (SIGNAL_INPUTS as readonly string[]).includes(v) ? (v as NonNullable<KeywordFilter['signal']>) : 'all';
 }
 
 export const agentKit: ModuleAgentKit = {
@@ -64,7 +70,7 @@ export const agentKit: ModuleAgentKit = {
           status: { type: 'string', enum: ['all', 'on', 'test'], description: '키워드 상태 (기본 all)' },
           query: { type: 'string', description: '키워드 텍스트 일부' },
           size: { type: 'string', description: '제품군(사이즈) 라벨: 슈퍼싱글 · 퀸 · 킹 · 사이즈 미지정' },
-          signal: { type: 'string', enum: ['all', 'any', 'soldout', 'cpc_spike', 'conv_drop', 'opportunity', 'new', 'no_conv'], description: '신호 필터 (any = 신호 있는 키워드)' },
+          signal: { type: 'string', enum: [...SIGNAL_INPUTS], description: '신호 필터 (any = 신호 있는 키워드 · soldout 랜딩 옵션 품절 · cpc_spike CPC 급변 · conv_drop 전환 급감 · opportunity 고효율 · 노출 손실 · new 신규 집행 · no_conv 전환 없음)' },
           sort: { type: 'string', enum: ['cost', 'revenue', 'roas', 'conversions', 'costDelta', 'ratio', 'lost'], description: '정렬 기준 (기본 cost)' },
           window: { type: 'number', enum: [7, 14], description: '집계 창 일수 (기본 14)' },
           limit: { type: 'number', description: '최대 건수 (기본 15, 최대 40)' },
@@ -79,7 +85,7 @@ export const agentKit: ModuleAgentKit = {
           status: inp.status === 'on' || inp.status === 'test' ? inp.status : 'all',
           query: typeof inp.query === 'string' ? inp.query : undefined,
           group: size ? (size === '사이즈 미지정' ? 'none' : `size:${size}`) : 'all',
-          signal: typeof inp.signal === 'string' ? (inp.signal as KeywordFilter['signal']) : 'all',
+          signal: signalOf(inp.signal),
         };
         const sort = (['cost', 'revenue', 'roas', 'conversions', 'costDelta', 'ratio', 'lost'] as const).includes(inp.sort as KeywordSort) ? (inp.sort as KeywordSort) : 'cost';
         const limit = Math.max(1, Math.min(40, Number(inp.limit) || 15));
@@ -118,7 +124,7 @@ export const agentKit: ModuleAgentKit = {
           })),
           캠페인: p.campaigns.filter((c) => !media || c.media === media).sort((a, b) => Number(b.earlyExhaust) - Number(a.earlyExhaust)).map((c) => ({
             캠페인: c.name, 매체: MEDIA[c.media].short, 일예산: r0(c.dailyBudget), 오늘소진: r0(c.spentToday), 소진pct: r1(c.pacePct), 시간대기대pct: r1(c.expectedPct),
-            예상수요pct: r1(c.projectedRatio * 100), 예상마감_시간대가중: clock(c.curveExhaustHour), 예상마감_선형: clock(c.linearExhaustHour), 부족예상액: r0(c.shortfall), 판정: `${c.label} · ${c.basis}`,
+            예상수요pct: r1(c.projectedRatio * 100), 예상마감: clock(c.exhaustHour), 예상마감기준: c.exhaustMethod ?? '—', 예상마감_시간대가중: clock(c.curveExhaustHour), 예상마감_선형: clock(c.linearExhaustHour), 부족예상액: r0(c.shortfall), 판정: `${c.label} · ${c.basis}`,
           })),
         };
       },
@@ -131,8 +137,8 @@ export const agentKit: ModuleAgentKit = {
         const s = collectionSummary(d);
         return {
           출처: SRC,
-          수집: { 전일배치: `${s.batchDate} 데이터 · ${s.batchTime} 수집·검증`, 시간대반영: s.hourlyThrough === null ? '없음' : `${s.hourlyThrough}시까지`, 기준시각: s.asOf, 광고매체: `${s.media.ok}/${s.media.total}`, 판매채널: `${s.sales.ok}/${s.sales.total}`, 외부데이터: `${s.external.inDataset}/${s.external.total} (나머지는 Watch · GEO 스냅샷)`, 확인필요: s.warnings },
-          원천: sourceStatuses(d).map((x) => ({ 원천: x.name, 구분: x.group, 방식: x.method, 최근일: x.lastDate, 일수: x.days, 결측일: x.missingDays, 상태: x.state, 메모: x.note, 계정: x.account?.label })),
+          수집: { 전일배치: `${s.batchDate} 데이터 · ${s.batch.text}${s.batch.missing.length ? ` (${s.batch.missing.join(', ')})` : ''}`, 시간대반영: s.hourlyThrough === null ? '없음' : `${s.hourlyThrough}시까지`, 기준시각: s.asOf, 광고매체: `${s.media.ok}/${s.media.total}`, 판매채널: `${s.sales.ok}/${s.sales.total}`, 외부데이터: `${s.external.inDataset}/${s.external.total} (나머지는 Watch · GEO 스냅샷)`, 확인필요: s.warnings },
+          원천: sourceStatuses(d).map((x) => ({ 원천: x.name, 구분: x.group, 방식: x.method, 최근일: x.lastDate, 일수: x.days, 결측일: x.missingDays, 상태: x.state, 메모: x.note, 계정: x.account ? (x.account.issues.length ? x.account.issues : '정상') : undefined })),
           검증: validationChecks(d).map((c) => ({ 항목: c.label, 결과: c.level === 'ok' ? '통과' : '확인 필요', 내용: c.detail, 기준: c.basis })),
           시간표: s.timetable.map((t) => `${t.time} ${t.title} · ${t.state === 'done' ? '완료' : t.state === 'moved' ? `이동(${t.note})` : '예정'}`),
         };

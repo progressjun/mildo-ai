@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createElement as h } from 'react';
 import { renderToString } from 'react-dom/server';
-import type { ChangeRequest } from '@/core/types';
+import type { ChangeRequest, Incident } from '@/core/types';
 import { StoreProvider } from '@/core/store';
 import View from './View';
 import { useAdPilot } from './useAdPilot';
@@ -31,9 +31,10 @@ const seeded: ChangeRequest[] = [
 
 const g = globalThis as unknown as { localStorage?: unknown };
 let prev: unknown;
+let stored: Record<string, unknown> = { changes: seeded, role: 'PM' };
 beforeAll(() => {
   prev = g.localStorage;
-  g.localStorage = { getItem: () => JSON.stringify({ changes: seeded, role: 'PM' }), setItem: () => undefined, removeItem: () => undefined };
+  g.localStorage = { getItem: () => JSON.stringify(stored), setItem: () => undefined, removeItem: () => undefined };
 });
 afterAll(() => { g.localStorage = prev; });
 
@@ -79,5 +80,37 @@ describe('AD Pilot 화면 렌더', () => {
     const html = render(h(Harness, { tab: 'proposals' }));
     expect(html).toContain('롤백');
     expect(html).toContain('승인 대기');
+  });
+  it('입찰 하향 0건 사유 + 민감도 보기 카드 (기본 목표 400%)', () => {
+    const html = render(h(Harness, { tab: 'proposals' }));
+    expect(html).toContain('입찰 하향 규칙 · 현재 기준 0건');
+    expect(html).toContain('민감도 보기 · 목표 ROAS 1,050% 가정');
+    expect(html).toContain('킹 매트리스 334% · 품절 랜딩 보류');
+  });
+  it('MILDO Alert 열린 이슈(테스트 Google 급변 · 카카오 추적 단절)가 조정 후보 보류로 연결된다', () => {
+    const at2 = '2026-10-31T06:10:00.000Z';
+    const mkInc = (p: Partial<Incident> & { holdMedia?: string }): Incident => ({
+      id: 'x', ruleId: 'data_spike', severity: 'P2', title: 't', detectedAt: at2, occurredAt: at2, detectPath: 'test', causeCandidates: [], impact: {},
+      status: 'open', timeline: [], isTest: true, autoActions: [], ...p,
+    }) as Incident;
+    const incidents = [
+      mkInc({ id: 'data_spike:Google:2026-10-31:test-1', media: 'google', holdMedia: 'google', title: '[테스트] Google 데이터 급변 · 광고비 +85%' }),
+      mkInc({ id: 'tracking_break:카카오:2026-10-31', ruleId: 'tracking_break', severity: 'P1', media: 'kakao', holdMedia: 'kakao', title: '카카오 전환 추적 단절 의심 · 13시 이후 전환 0', isTest: false }),
+    ];
+    const before = stored;
+    stored = { ...stored, incidents };
+    try {
+      const html = render(h(Harness, { tab: 'proposals' }));
+      expect(html).toContain('Google · 캠페인');
+      expect(html).toContain('data_spike:Google:2026-10-31:test-1');
+      expect(html).toContain('Alert 이슈 연계');
+      expect(html).toContain('AD Pilot + Alert');
+      expect(html).toContain('Alert 이슈 P1');
+      expect(html).not.toMatch(/>NaN<|>undefined<|\[object Object\]/);
+      const page = render(h(View));
+      expect(page).toContain('(MILDO Alert 이슈 기준)');
+    } finally {
+      stored = before;
+    }
   });
 });

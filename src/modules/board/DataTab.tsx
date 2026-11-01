@@ -67,7 +67,10 @@ export function PipelineStrip({ d, mer, merLabel, onOpen }: { d: Dataset; mer: n
 function PipeFoot({ s, onOpen }: { s: CollectionSummary; onOpen: () => void }) {
   return (
     <div className="board-pipe-foot">
-      <span className="row" style={{ gap: 6 }}><StatusDot state="ok" /><span>최근 수집 <strong>{s.batchTime} 완료</strong> · {fmtDate(s.batchDate)} 전일분 검증</span></span>
+      <span className="row" style={{ gap: 6 }}>
+        <StatusDot state={s.batch.state === 'done' ? 'ok' : s.batch.state === 'pending' ? 'pending' : 'warn'} />
+        <span>최근 수집 <strong>{s.batch.text}</strong> · {fmtDate(s.batchDate)} 전일분{s.batch.state === 'done' ? ' 검증' : ''}{s.batch.missing.length ? ` (${s.batch.missing.join(', ')})` : ''}</span>
+      </span>
       <span>시간대 데이터 <strong>{s.hourlyThrough === null ? '없음' : `${String(s.hourlyThrough).padStart(2, '0')}:00까지`}</strong></span>
       <span>기준 시각 <strong>{s.asOf}</strong>{s.offDay.off ? ` · ${s.offDay.label}` : ''}</span>
       <span className="row" style={{ gap: 6 }}>
@@ -100,7 +103,13 @@ export function DataTab({ d, incidents }: { d: Dataset; incidents: Incident[] })
     { key: 'rows', label: '행', align: 'right', sort: (r) => r.rows, render: (r) => <span className="num small">{r.rows ? fmt.int(r.rows) : '—'}</span> },
     {
       key: 'account', label: '계정 · 결제',
-      render: (r) => (r.account ? <div className="board-badge"><Pill tone={r.account.tone} icon={r.account.tone === 'good' ? 'check' : 'alert'}>{r.account.label}</Pill>{r.account.balance >= 0 ? <span className="board-basis">잔액 {fmt.krw(r.account.balance)} · 일 평균 {fmt.krw(r.account.avgDailySpend)}</span> : <span className="board-basis">후불</span>}</div> : <span className="xs muted">—</span>),
+      render: (r) => (r.account ? (
+        <div className="board-badge">
+          <Pill tone={r.account.tone} icon={r.account.tone === 'good' ? 'check' : 'alert'}>{r.account.tone === 'good' ? '정상' : r.account.tone === 'critical' ? '조치 필요' : '확인 필요'}</Pill>
+          {r.account.issues.length ? <span className="board-basis">{r.account.issues.join(' · ')}</span> : null}
+          <span className="board-basis">{r.account.balance >= 0 ? `잔액 ${fmt.krw(r.account.balance)} · 일 평균 ${fmt.krw(r.account.avgDailySpend)}` : '후불'} · 기준 p.44 · p.50</span>
+        </div>
+      ) : <span className="xs muted">—</span>),
     },
     {
       key: 'note', label: '상태',
@@ -110,7 +119,7 @@ export function DataTab({ d, incidents }: { d: Dataset; incidents: Incident[] })
 
   return (
     <div className="stack-lg">
-      <Card title="통합 데이터 아키텍처" sub="광고 매체 · 판매 채널 · 외부 데이터를 같은 키로 표준화해 광고비와 실제 매출을 한 화면에서 연결합니다." actions={<Src kind="PROPOSAL" page="p.12" />}>
+      <Card title="통합 데이터 아키텍처" sub="광고 매체 · 판매 채널 · 외부 데이터를 같은 키로 표준화해 광고비와 실제 매출을 한 화면에서 연결합니다." actions={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.12" /></>}>
         <div className="board-arch">
           <div className="board-pipe-col">
             {SOURCE_GROUPS.map((g) => (

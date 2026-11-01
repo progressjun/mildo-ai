@@ -109,6 +109,25 @@ export function ProposalDrawer({ p, change, onClose, actions }: { p: AdPilotProp
           {p.guard.map((g) => <li key={g}>{g}</li>)}
         </ul>
       </div>
+      {p.suppressed ? (
+        <div className="stack-sm">
+          <strong className="small">보류 전 원래 제안</strong>
+          <p className="small">{ACTION_META[p.suppressed.action].label} {(p.unit === 'budget' ? fmt.krw : fmt.won)(p.suppressed.before)} → {(p.unit === 'budget' ? fmt.krw : fmt.won)(p.suppressed.after)} ({fmt.delta(p.suppressed.changePct)}) — 이슈 해결 · 보류 해제 승인 후 다시 판정합니다.</p>
+        </div>
+      ) : null}
+      {p.linkedIncidents?.length ? (
+        <div className="stack-sm">
+          <strong className="small">MILDO Alert 연계 이슈</strong>
+          {p.linkedIncidents.map((l) => (
+            <div key={l.id} className="row small" style={{ gap: 6 }}>
+              <Pill tone={l.severity === 'P1' ? 'critical' : l.severity === 'P2' ? 'warning' : 'neutral'} icon="alert">{l.severity}</Pill>
+              <span>{l.title}{l.isTest ? ' · 테스트 이슈' : ''}</span>
+              <span className="xs muted">{l.id}</span>
+            </div>
+          ))}
+          <a className="xs" href="#alert">MILDO Alert 이슈 큐에서 조치 상태 보기 →</a>
+        </div>
+      ) : null}
       {p.causes?.length ? (
         <div className="stack-sm">
           <strong className="small">원인 후보 (데이터 근거 순위 · p.47)</strong>

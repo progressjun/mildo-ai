@@ -24,6 +24,8 @@ function CommitNumber({ id, value, step, min, max, suffix, onCommit }: { id: str
   );
 }
 
+const cfgId = (k: NumericConfigKey) => `adpilot-cfg-${k}`;
+
 function CfgInput({ ap, k, pct = false }: { ap: AdPilotCtx; k: NumericConfigKey; pct?: boolean }) {
   const f = CONFIG_FIELDS.find((x) => x.key === k)!;
   const raw = ap.draft[k];
@@ -32,7 +34,7 @@ function CfgInput({ ap, k, pct = false }: { ap: AdPilotCtx; k: NumericConfigKey;
   return (
     <div className="row" style={{ gap: 6, flexWrap: 'nowrap', justifyContent: 'flex-end' }}>
       {changed ? <Pill tone="accent" title={`공식 기준 ${pct ? Math.round(ap.official[k] * 100) : ap.official[k]}${pct ? '%' : f.unit}`}>미승인</Pill> : null}
-      <CommitNumber id={`cfg-${k}`} value={v} step={pct ? 1 : f.step} min={pct ? f.min * 100 : f.min} max={pct ? f.max * 100 : f.max} suffix={pct ? '%' : f.unit}
+      <CommitNumber id={cfgId(k)} value={v} step={pct ? 1 : f.step} min={pct ? f.min * 100 : f.min} max={pct ? f.max * 100 : f.max} suffix={pct ? '%' : f.unit}
         onCommit={(n) => ap.setDraft(resolveConfig({ ...ap.draft, [k]: pct ? n / 100 : n }))} />
     </div>
   );
@@ -53,27 +55,27 @@ export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () =
       <div className="adpilot-sec" style={{ borderTop: 0, paddingTop: 0 }}>
         <div className="adpilot-sec-title"><Icon name="target" size={14} />{SAFETY_ITEMS[0].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[0].detail}</span></div>
         <div className="adpilot-kv">
-          <span>키워드별 1일 변동 한도 (시작 입찰가 기준)</span><CfgInput ap={ap} k="dailyChangeCapPct" />
+          <label htmlFor={cfgId('dailyChangeCapPct')}>키워드별 1일 변동 한도 (시작 입찰가 기준)</label><CfgInput ap={ap} k="dailyChangeCapPct" />
         </div>
       </div>
       <div className="adpilot-sec">
         <div className="adpilot-sec-title"><Icon name="shield" size={14} />{SAFETY_ITEMS[1].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[1].detail}</span></div>
         <div className="adpilot-kv">
-          <span>{label('brandTargetRoas')}</span><CfgInput ap={ap} k="brandTargetRoas" />
-          <span>{label('brandRankTarget')} <span className="xs adpilot-dim">(모듈 가정)</span></span><CfgInput ap={ap} k="brandRankTarget" />
+          <label htmlFor={cfgId('brandTargetRoas')}>{label('brandTargetRoas')}</label><CfgInput ap={ap} k="brandTargetRoas" />
+          <label htmlFor={cfgId('brandRankTarget')}>{label('brandRankTarget')} <span className="xs adpilot-dim">(모듈 가정)</span></label><CfgInput ap={ap} k="brandRankTarget" />
         </div>
         <div className="xs adpilot-dim">브랜드는 목표 미달이어도 자동 하향하지 않고 PM 검토. 브랜드 변경은 폭과 무관하게 PM 이상 승인.</div>
       </div>
       <div className="adpilot-sec">
         <div className="adpilot-sec-title"><Icon name="filter" size={14} />판정 기준 <span className="xs adpilot-dim">· 초기값 · 온보딩 중 확정</span></div>
         <div className="adpilot-kv">
-          <span>{label('targetRoas')}</span><CfgInput ap={ap} k="targetRoas" />
-          <span>{label('highEfficiencyRoasRatio')}</span><CfgInput ap={ap} k="highEfficiencyRoasRatio" />
-          <span>{label('lostShareTrigger')}</span><CfgInput ap={ap} k="lostShareTrigger" pct />
-          <span>{label('minConversionsForDown')}</span><CfgInput ap={ap} k="minConversionsForDown" />
-          <span>{label('anomalyHoldPct')}</span><CfgInput ap={ap} k="anomalyHoldPct" />
-          <span>{label('bulkWarnCount')}</span><CfgInput ap={ap} k="bulkWarnCount" />
-          <span>{label('bulkBlockCount')}</span><CfgInput ap={ap} k="bulkBlockCount" />
+          <label htmlFor={cfgId('targetRoas')}>{label('targetRoas')}</label><CfgInput ap={ap} k="targetRoas" />
+          <label htmlFor={cfgId('highEfficiencyRoasRatio')}>{label('highEfficiencyRoasRatio')}</label><CfgInput ap={ap} k="highEfficiencyRoasRatio" />
+          <label htmlFor={cfgId('lostShareTrigger')}>{label('lostShareTrigger')}</label><CfgInput ap={ap} k="lostShareTrigger" pct />
+          <label htmlFor={cfgId('minConversionsForDown')}>{label('minConversionsForDown')}</label><CfgInput ap={ap} k="minConversionsForDown" />
+          <label htmlFor={cfgId('anomalyHoldPct')}>{label('anomalyHoldPct')}</label><CfgInput ap={ap} k="anomalyHoldPct" />
+          <label htmlFor={cfgId('bulkWarnCount')}>{label('bulkWarnCount')}</label><CfgInput ap={ap} k="bulkWarnCount" />
+          <label htmlFor={cfgId('bulkBlockCount')}>{label('bulkBlockCount')}</label><CfgInput ap={ap} k="bulkBlockCount" />
         </div>
         {ap.dirty.length ? (
           <div className="stack-sm">

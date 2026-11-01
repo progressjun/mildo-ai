@@ -1,9 +1,10 @@
 /* MILDO Board 하위 공용 컴포넌트 — 판정 배지는 항상 기준값을 옆에 보여준다 (SPEC §0) */
-import type { ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 import type { MediaId } from '@/core/types';
 import { MEDIA, MEDIA_IDS } from '@/data/constants';
 import { fmt } from '@/core/util';
 import { Delta, Pill, type Tone } from '@/ui/primitives';
+import { Icon } from '@/ui/Icon';
 import type { Flag, Signal, TrendMetric, Verdict } from './engine';
 
 export function FlagBadge({ flag, compact }: { flag: Flag; compact?: boolean }) {
@@ -43,13 +44,39 @@ export function SignalPills({ signals, showBasis = false, max = 3 }: { signals: 
   );
 }
 
-/** 숫자 + 직전 대비 (오른쪽 정렬 셀) */
-export function NumCell({ value, delta, invert, sub }: { value: ReactNode; delta?: number; invert?: boolean; sub?: ReactNode }) {
+/**
+ * 방향만 보여주는 증감 (색으로 좋고 나쁨을 판정하지 않음).
+ * 광고비 증감은 효율 · 볼륨 조건 없이 좋다/나쁘다로 읽을 수 없으므로 중립색으로 표시한다 (SPEC §0).
+ */
+export function NeutralDelta({ pct, digits = 1 }: { pct: number; digits?: number }) {
+  if (!Number.isFinite(pct)) return <span className="delta-flat">—</span>;
+  const flat = Math.abs(pct) < 0.5 * 10 ** -digits;
+  return (
+    <span className="board-delta-neutral">
+      {!flat ? <Icon name={pct > 0 ? 'up' : 'down'} size={12} stroke={2.4} /> : null}
+      {fmt.delta(pct, digits)}
+    </span>
+  );
+}
+
+/** 숫자 + 직전 대비 (오른쪽 정렬 셀). neutral = 방향만 표시 */
+export function NumCell({ value, delta, invert, neutral, sub }: { value: ReactNode; delta?: number; invert?: boolean; neutral?: boolean; sub?: ReactNode }) {
   return (
     <div className="board-cell">
       <span className="num nowrap">{value}</span>
-      {delta !== undefined ? <span className="xs"><Delta pct={delta} invert={invert} digits={0} /></span> : null}
+      {delta !== undefined ? <span className="xs">{neutral ? <NeutralDelta pct={delta} digits={0} /> : <Delta pct={delta} invert={invert} digits={0} />}</span> : null}
       {sub ? <span className="board-sub">{sub}</span> : null}
+    </div>
+  );
+}
+
+/** 라벨 + 버튼 그룹 (Segmented 등 htmlFor 대상이 없는 컨트롤용 — 라벨을 aria-labelledby로 연결) */
+export function GroupField({ label, children }: { label: ReactNode; children: ReactNode }) {
+  const id = useId();
+  return (
+    <div className="field" role="group" aria-labelledby={id}>
+      <span id={id} className="field-label">{label}</span>
+      {children}
     </div>
   );
 }

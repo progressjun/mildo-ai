@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { ChangeRequest } from '@/core/types';
 import type { AppState } from '@/core/store';
 import { generateDemoData } from '@/data/demo';
+import { detectIncidents } from '@/modules/alert/engine';
 import type { ToolContext } from '../types';
 import { agentKit } from './agent';
 
-function ctx(role: AppState['role'] = 'PM') {
+function ctx(role: AppState['role'] = 'PM', withIncidents = false) {
   const changes: ChangeRequest[] = [];
-  const state = { data: generateDemoData(), changes, incidents: [], toasts: [], comments: [], role, offHoursMode: false, tf: {} } as unknown as AppState;
+  const data = generateDemoData();
+  const state = { data, changes, incidents: withIncidents ? detectIncidents(data) : [], toasts: [], comments: [], role, offHoursMode: false, tf: {} } as unknown as AppState;
   const actions = {
     toast: () => undefined,
     addChange: (c: Omit<ChangeRequest, 'id' | 'createdAt' | 'history' | 'status'>) => {
@@ -86,5 +88,34 @@ describe('agentKit', () => {
       expect(r.facts.length).toBeGreaterThan(0);
       expect(Array.isArray(r.actions)).toBe(true);
     }
+  });
+  it('adpilot_proposals: MILDO Alert 이슈 연계 보류 · 하향 0건 사유 · 민감도(공식 기준 아님)를 함께 반환', async () => {
+    const c = ctx('PM', true);
+    const t = agentKit.tools(c).find((x) => x.name === 'adpilot_proposals')!;
+    const r = (await t.execute({ action: 'hold' })) as { 후보: { 대상: string; 연계이슈?: string[] }[]; 하향규칙: { 건수: number; 설명: string; 민감도: { 목표ROAS: number; 하향후보: string[] } | string | null } };
+    const kakao = r.후보.find((p) => p.대상.startsWith('카카오'))!;
+    expect(kakao.연계이슈?.join(' ')).toContain('tracking_break');
+    expect(r.하향규칙.건수).toBe(0);
+    expect(r.하향규칙.설명).toContain('하향 0건');
+    expect(typeof r.하향규칙.민감도 === 'object' && r.하향규칙.민감도 !== null && r.하향규칙.민감도.하향후보.length > 0).toBe(true);
+    // 보류 브리프는 Alert 연계를 반복 관측 패턴으로 보여준다
+    const hb = agentKit.briefs!.find((b) => b.id === 'adpilot-holds')!.build(c);
+    expect(hb.patterns.join(' ')).toContain('MILDO Alert');
+  });
+
+  it('adpilot_request_change: 같은 키워드에 진행 중 변경이 있으면 수동 요청을 새로 만들지 않는다', async () => {
+    const c = ctx();
+    const req = agentKit.tools(c).find((t) => t.name === 'adpilot_request_change')!;
+    const first = (await req.execute({ keyword: '퀸 매트리스', bid: 1500 })) as { changeId?: string };
+    expect(first.changeId).toBeDefined();
+    const second = (await agentKit.tools(c).find((t) => t.name === 'adpilot_request_change')!.execute({ keyword: '퀸 매트리스', bid: 1520 })) as { 결과?: string };
+    expect(second.결과).toBe('이미 진행 중인 변경이 있음');
+    expect(c.changes.length).toBe(1);
+  });
+
+  it('브리프 매칭: GFA 잔액 질문은 예산 브리프가 아니라 GFA 브리프로 간다', () => {
+    const q = (text: string) => (agentKit.briefs ?? []).find((b) => b.match.test(text))?.id;
+    expect(q('GFA 잔액 언제 소진돼?')).toBe('gfa-control');
+    expect(q('입찰 하향 후보가 왜 없어?')).toBe('adpilot-proposals');
   });
 });

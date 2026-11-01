@@ -3,9 +3,11 @@ import { useMemo, useState } from 'react';
 import type { Dataset, MediaId } from '@/core/types';
 import { MEDIA, MEDIA_IDS } from '@/data/constants';
 import { fmt, fmtDate } from '@/core/util';
-import { Card, Field, Pill, Segmented, Src } from '@/ui/primitives';
-import { BarChart, Heatmap } from '@/ui/charts';
+import { Card, Empty, Field, Pill, Segmented, Src } from '@/ui/primitives';
+import { BarChart } from '@/ui/charts';
 import { hourWeekHeatmap, type HeatMetric } from './engine';
+import { BoardHeatmap } from './BoardHeatmap';
+import { GroupField } from './parts';
 
 const METRICS: { id: HeatMetric; label: string }[] = [
   { id: 'cost', label: '광고비' },
@@ -38,7 +40,7 @@ export function HourlyTab({ d }: { d: Dataset }) {
         actions={<><Src kind="DEMO" /></>}
       >
         <div className="board-filters">
-          <Field label="지표" id="board-heat-metric"><Segmented options={METRICS} value={metric} onChange={setMetric} label="히트맵 지표" /></Field>
+          <GroupField label="지표"><Segmented options={METRICS} value={metric} onChange={setMetric} label="히트맵 지표" /></GroupField>
           <Field label="매체" id="board-heat-media">
             <select id="board-heat-media" className="select" value={media} onChange={(e) => setMedia(e.target.value as MediaId | 'all')}>
               <option value="all">전체 매체</option>
@@ -48,21 +50,24 @@ export function HourlyTab({ d }: { d: Dataset }) {
         </div>
         {h.hasData ? (
           <>
-            <Heatmap rows={h.rows} cols={h.cols} values={h.values} format={format} highlight={h.top.map((t) => ({ r: t.r, c: t.c }))} />
+            <BoardHeatmap rows={h.rows} cols={h.cols} values={h.values} format={format} highlight={h.top.map((t) => ({ r: t.r, c: t.c }))}
+              label={`최근 4주 시간대 × 요일 ${METRICS.find((m) => m.id === metric)?.label} · ${media === 'all' ? '전체 매체' : MEDIA[media].name}`} />
             <div className="row xs" style={{ gap: 8 }}>
-              <span className="muted">색이 진할수록 값이 큼 · 테두리 = 상위 3개 슬롯</span>
-              {h.top.map((t, i) => <Pill key={i} tone="outline">{t.label} {format(t.value)}</Pill>)}
+              <span className="muted">색이 진할수록 값이 큼 (단일 색 순차 스케일) · 상위 3개 슬롯</span>
+              {h.top.map((t) => <Pill key={`${t.r}:${t.c}`} tone="outline">{t.label} {format(t.value)}</Pill>)}
             </div>
           </>
-        ) : <div className="small muted">최근 4주 시간대 데이터가 없습니다.</div>}
+        ) : <Empty title="최근 4주 시간대 데이터가 없습니다">시간대 수집 상태는 데이터 수집 탭에서 확인합니다.</Empty>}
       </Card>
 
       <div className="grid g-3">
         <Card title="시간대별 전환 효율 지수" sub="전환 비중 ÷ 광고비 비중 · 1 초과 = 광고비 대비 전환이 많음 · 최근 4주" className="span-2" actions={<Src kind="DEMO" />}>
-          <BarChart
-            data={eff.map((x) => ({ label: String(x.hour), value: Number.isFinite(x.index) ? x.index : 0, colorVar: '--series-1', note: `${x.hour}시 · 광고비 ${fmt.ratio(x.costShare, 1)} · 전환 ${fmt.ratio(x.convShare, 1)}` }))}
-            height={200} format={(v) => v.toFixed(2)} refValue={1}
-          />
+          {h.hasData && eff.some((x) => Number.isFinite(x.index)) ? (
+            <BarChart
+              data={eff.map((x) => ({ label: String(x.hour), value: Number.isFinite(x.index) ? x.index : 0, colorVar: '--series-1', note: `${x.hour}시 · 광고비 ${fmt.ratio(x.costShare, 1)} · 전환 ${fmt.ratio(x.convShare, 1)}` }))}
+              height={200} format={(v) => v.toFixed(2)} refValue={1} refLabel="1.0 = 광고비 비중과 같은 전환 비중"
+            />
+          ) : <Empty title="전환 효율을 계산할 데이터가 없습니다">최근 4주 시간대별 광고비 · 전환이 필요합니다.</Empty>}
         </Card>
         <Card title="시간대 블록 비교" sub={media === 'all' ? '전체 매체' : MEDIA[media].name} actions={<Src kind="DEMO" />}>
           <div className="board-list">
@@ -75,7 +80,7 @@ export function HourlyTab({ d }: { d: Dataset }) {
             ))}
           </div>
           <div className="xs muted">
-            효율 지수는 시간대별 평균 CVR 차이를 보여줄 뿐, 해당 시간 입찰을 올렸을 때의 한계 효율을 뜻하지 않습니다. 시간대 입찰 가중은 AD Pilot 테스트(동일 기간 대조)로 검증한 뒤 적용합니다.
+            효율 지수는 시간대별 광고비 1원당 전환(평균 CPA의 역수)의 상대 차이를 보여줄 뿐, 해당 시간 입찰을 올렸을 때의 한계 효율을 뜻하지 않습니다. 시간대 입찰 가중은 AD Pilot 테스트(동일 기간 대조)로 검증한 뒤 적용합니다.
           </div>
         </Card>
       </div>
