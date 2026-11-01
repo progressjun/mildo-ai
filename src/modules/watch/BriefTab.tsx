@@ -36,7 +36,7 @@ export function BriefTab({ w }: { w: WatchCtx }) {
 
   return (
     <div className="stack-lg">
-      <div className="grid g-5">
+      <div className="grid g-5 watch-kpis">
         <Card><Stat label="이번 주 감지" src={<Src kind="DEMO" />} value={`${b.counts.events}건`} foot={<span>공지 {b.counts.notices} · 데이터 {b.counts.signals}</span>} /></Card>
         <Card><Stat label="영향 확인 · 주의 이상" src={<Src kind="DEMO" />} value={`${b.counts.impact}건`} foot={<span>영향 큼 · 영향 있음 판정 (p.47 · p.44 기준)</span>} /></Card>
         <Card><Stat label="경쟁사 변경 · 높음" src={<Src kind="DEMO" />} value={`${b.counts.archive} · ${b.counts.archiveHigh}`} foot={<span>가상 스냅샷 · 7일</span>} /></Card>

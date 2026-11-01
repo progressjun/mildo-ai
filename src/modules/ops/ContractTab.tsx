@@ -49,7 +49,7 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
             <NumberInput id="ops-budget" value={local.annualBudget} min={0} step={100_000_000} onChange={(v) => patch({ annualBudget: v > 0 ? v : 0 })} suffix={`= ${fmt.krw(local.annualBudget)}원`} style={{ width: 280 }} />
           </Field>
           {local.annualBudget !== RFP.annualBudget ? <Button size="sm" icon="rollback" onClick={() => patch({ annualBudget: RFP.annualBudget })}>RFP {fmt.krw(RFP.annualBudget)}으로</Button> : null}
-          <Src kind="RFP" />
+          <span className="ops-input-badge"><Src kind="RFP" /></span>
         </div>
         {fee.warnings.length ? <Callout tone="warning">{fee.warnings.join(' / ')}</Callout> : null}
         <div className="table-wrap">
@@ -104,7 +104,7 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
         <div className="xs muted">수수료 · 페이백은 광고비(VAT 별도) 대비 비율로 계산합니다. 페이백은 광고주에게 돌려주는 금액으로 보고 순 수수료에서 차감합니다. 미입력 매체는 합계에서 제외되며 실효율은 입력된 매체 광고비 기준입니다.</div>
       </Card>
 
-      <div className="grid g-2">
+      <div className="ops-split">
         <Card title="계약 조건" sub="솔루션 이용 조건을 수수료와 분리해 명시 · 계정 · 결제는 수면밀도 소유" actions={<><Src kind="PROPOSAL" page="p.58" /><InputFlag missing={contract.missing} /></>}>
           <div className="table-wrap">
             <table className="tbl">
@@ -115,7 +115,7 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
                     <td className="small"><strong>{i.label}</strong></td>
                     <td className="small">
                       {i.id === 'termination' ? (
-                        <div className="ops-cell-wrap"><span className="xs muted">해지</span><input id="ops-contract-termination" aria-label="해지 통보 기한(일)" inputMode="numeric" className={`input ops-cell${i.status === 'invalid' ? ' ops-invalid' : i.status === 'missing' ? ' ops-blank' : ''}`} placeholder="[통보 기한]" value={local.contract.terminationDays ?? ''} onChange={(e) => setContract({ terminationDays: e.target.value })} /><span className="xs muted">일 전 서면 통보</span></div>
+                        <div className="ops-cell-wrap"><span className="xs muted nowrap">해지</span><input id="ops-contract-termination" aria-label="해지 통보 기한(일)" inputMode="numeric" className={`input ops-cell${i.status === 'invalid' ? ' ops-invalid' : i.status === 'missing' ? ' ops-blank' : ''}`} placeholder="[통보 기한]" value={local.contract.terminationDays ?? ''} onChange={(e) => setContract({ terminationDays: e.target.value })} /><span className="xs muted nowrap">일 전 서면 통보</span></div>
                       ) : i.id === 'solution' ? (
                         <div className="stack-sm" style={{ gap: 4 }}>
                           <Segmented<SolutionFeeChoice> label="솔루션 이용료" value={local.contract.solutionFee ?? 'unset'} onChange={(v) => setContract({ solutionFee: v })}

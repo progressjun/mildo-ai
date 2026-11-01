@@ -72,6 +72,15 @@ export function StackRows({ rows }: { rows: { label: string; shares: Shares }[] 
         </div>
       ))}
       <Legend items={MEDIA_IDS.map((m) => ({ label: MEDIA[m].short, colorVar: MEDIA[m].colorVar }))} />
+      {/* 막대만으로는 비중을 읽기 어려워 같은 값을 숫자로 함께 표시 */}
+      <table className="growth-share-tbl">
+        <thead><tr><th />{MEDIA_IDS.map((m) => <th key={m}>{MEDIA[m].short}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.label}><th scope="row">{r.label}</th>{MEDIA_IDS.map((m) => <td key={m}>{fmt.ratio(r.shares[m])}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

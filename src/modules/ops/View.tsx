@@ -99,7 +99,7 @@ export default function View() {
         <div className="ops-strip">
           <Tile label="제안서 제출 마감" value={dl.passed ? '마감' : ddayLabel(dl.days)} accent active={tab === 'coverage'} onClick={() => setTab('coverage')}
             foot={`${shortDate(dl.date)} ${dl.hour}시 · ${dl.passed ? '지남' : `${fmt.int(dl.hoursLeft)}시간`} · 내부 확정 ${shortDate(dl.freeze)}`} />
-          <Tile label="TF 명단 (필수 제출물 4)" value={<>{s.tf.total}<span className="small"> / {s.tf.cells}칸</span></>} active={tab === 'tf'} onClick={() => setTab('tf')}
+          <Tile label={'TF 명단 (필수 제출물\u00a04)'} value={<>{s.tf.total}<span className="small"> / {s.tf.cells}칸</span></>} active={tab === 'tf'} onClick={() => setTab('tf')}
             flag={<Flag ok={s.tf.complete} warn={!s.tf.complete}>{s.tf.complete ? '완료' : '미입력'}</Flag>}
             foot={`성명 ${s.tf.name} · 연차 ${s.tf.years} · 투입률 ${s.tf.allocation}${s.tf.invalid ? ` · 오입력 ${s.tf.invalid}` : ''}`} />
           <Tile label="1:1 백업" value={<>{s.graph.mutualPairs.length}<span className="small">쌍 상호</span></>} active={tab === 'tf'} onClick={() => setTab('tf')}

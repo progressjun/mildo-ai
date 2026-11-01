@@ -34,7 +34,7 @@ export default function View() {
   const q = summary.queue;
 
   return (
-    <div className="page flow">
+    <div className="page flow flow-page">
       <PageHeader eyebrow="04 REVENUE GROWTH · MILDO FLOW" title="MILDO Flow"
         sub="요청 · 승인 · 반영 이력을 한 화면에서 처리하고, 프로모션은 오픈 전 자동 점검과 종료 후 자동 리포트로 묶어 브랜드 ↔ 대행사 확인 왕복을 줄입니다."
         sources={<><Src kind="PROPOSAL" page="p.31" /><Src kind="PROPOSAL" page="p.53" /><Src kind="PROPOSAL" page="p.15" /><Src kind="DEMO" /></>}

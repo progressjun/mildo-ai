@@ -1,5 +1,5 @@
 /* Reports 하위 컴포넌트 — 리포트 문서 렌더러 · 섹션 코멘트 · 메신저/메일 미리보기 */
-import { useState, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import { useStore, type Comment } from '@/core/store';
 import { fmt, nowIso, uid } from '@/core/util';
 import { Button, Pill, Src, Stat, type Tone as UiTone } from '@/ui/primitives';
@@ -31,7 +31,12 @@ export function fmtAt(iso: string): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-function CellView({ c }: { c: Cell }) {
+/** 열이 많은 표에서 행 아래 한 줄로 내리는 서술 열 */
+const NOTE_COLUMNS = new Set(['근거', '다음 조치']);
+const cellText = (c: Cell | undefined) => (c === undefined ? '' : typeof c === 'string' ? c : c.text);
+
+function CellView({ c }: { c: Cell | undefined }) {
+  if (c === undefined) return null;
   if (typeof c === 'string') return <>{c}</>;
   if (c.badge) return <Pill tone={(c.tone ?? 'neutral') as UiTone}>{c.text}</Pill>;
   return <span className={c.tone && c.tone !== 'neutral' ? `reports-tone-${c.tone}` : undefined}>{c.text}</span>;
@@ -73,26 +78,43 @@ export function BlockView({ b }: { b: Block }) {
       );
     case 'items':
       return <div className="reports-items">{b.items.map((it, i) => <ItemView key={i} it={it} />)}</div>;
-    case 'table':
+    case 'table': {
+      // 열이 많은 표의 긴 서술 열(근거 · 다음 조치)은 문서 폭(약 700px)에서 1~2자 폭으로 눌린다 —
+      // 같은 행 아래 전체 폭 한 줄로 내려 보여준다 (값 · 순서는 그대로)
+      const noteIdx = b.columns.length >= 8 ? b.columns.flatMap((c, i) => (NOTE_COLUMNS.has(c.label) ? [i] : [])) : [];
+      const main = b.columns.map((_, i) => i).filter((i) => !noteIdx.includes(i));
       return (
         <div className="stack-sm" style={{ gap: 4 }}>
           <div className="table-wrap">
-            <table className="tbl">
+            <table className={`tbl${noteIdx.length ? ' reports-tbl-notes' : ''}`}>
               <thead>
-                <tr>{b.columns.map((c, i) => <th key={i} className={c.align === 'right' ? 'r' : undefined}>{c.label}</th>)}</tr>
+                <tr>{main.map((i) => <th key={i} className={b.columns[i].align === 'right' ? 'r' : undefined}>{b.columns[i].label}</th>)}</tr>
               </thead>
               <tbody>
-                {b.rows.map((r, ri) => (
-                  <tr key={ri}>
-                    {r.map((c, ci) => <td key={ci} className={b.columns[ci]?.align === 'right' ? 'r' : undefined}><CellView c={c} /></td>)}
-                  </tr>
-                ))}
+                {b.rows.map((r, ri) => {
+                  const notes = noteIdx.filter((i) => cellText(r[i]) && cellText(r[i]) !== '—');
+                  return (
+                    <Fragment key={ri}>
+                      <tr className={notes.length ? 'reports-has-note' : undefined}>
+                        {main.map((ci) => <td key={ci} className={b.columns[ci]?.align === 'right' ? 'r' : undefined}><CellView c={r[ci]} /></td>)}
+                      </tr>
+                      {notes.length ? (
+                        <tr className="reports-note-row">
+                          <td colSpan={main.length}>
+                            {notes.map((i) => <span key={i} className="reports-note"><span className="reports-note-k">{b.columns[i].label}</span><CellView c={r[i]} /></span>)}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
           {b.caption ? <div className="reports-caption">{b.caption}</div> : null}
         </div>
       );
+    }
   }
 }
 
@@ -237,7 +259,7 @@ export function MessengerPreview({ report, sendLabel }: { report: Report; sendLa
   const lines = report.messenger.split('\n');
   return (
     <div className="reports-phone" aria-label="메신저 미리보기">
-      <div className="reports-phone-head"><span>MILDO OS 알림봇 · 수면밀도 마케팅방</span><span className="num">{sendLabel}</span></div>
+      <div className="reports-phone-head"><span>MILDO OS 알림봇 · 수면밀도 마케팅방</span><span className="num nowrap">{sendLabel}</span></div>
       <div className="reports-bot">
         <span className="reports-bot-avatar">M</span>
         <div className="reports-bubble">

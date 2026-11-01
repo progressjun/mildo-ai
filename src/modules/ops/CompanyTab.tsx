@@ -27,7 +27,7 @@ export function CompanyTab({ rows, check, patch }: { rows: RefView[]; check: Ref
         <div className="ops-facts">
           {COMPANY_FACTS.map((f) => (
             <div key={f.id} className="ops-fact">
-              <span className="ops-fact-v">{f.value}</span>
+              <span className={`ops-fact-v${f.value.length > 12 ? ' long' : ''}`}>{f.value}</span>
               <span className="ops-fact-l">{f.label}</span>
               <span className="xs muted">{f.basis} · {f.page}</span>
             </div>

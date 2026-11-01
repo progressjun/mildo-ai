@@ -31,7 +31,7 @@ export function TrackingTab({ w, onOpen }: { w: WatchCtx; onOpen: (id: string) =
     { key: 'target', label: '트래킹 대상', render: (r) => <span className="small">{r.target}</span> },
     { key: 'method', label: '감지 방식', render: (r) => <span className="small ink2">{r.method}</span> },
     { key: 'plan', label: '수면밀도 실행안', render: (r) => <span className="small">{r.plan}</span> },
-    { key: 'open', label: '진행 이벤트', align: 'right', sort: (r) => r.open, render: (r) => <div className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><strong className="num">{r.open}<span className="muted xs"> / {r.total}</span></strong><span className="xs muted">공지 {r.notices} · 데이터 {r.signals}</span></div> },
+    { key: 'open', label: '진행 이벤트', align: 'right', sort: (r) => r.open, render: (r) => <div className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><strong className="num">{r.open}<span className="muted xs"> / {r.total}</span></strong><span className="xs muted nowrap">공지 {r.notices} · 데이터 {r.signals}</span></div> },
     {
       key: 'kpi', label: '판단 지표 · 최근 7일', align: 'right', sort: (r) => r.roas,
       // p.37 판단 지표가 CPA 계열인 매체(GFA · Meta · 카카오)는 CPA를 먼저, 나머지는 ROAS를 먼저 보여준다

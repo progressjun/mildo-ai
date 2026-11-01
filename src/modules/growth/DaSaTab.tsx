@@ -55,8 +55,8 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
     { key: 'n', label: '표본', align: 'right', render: (r) => fmt.int(r.n) },
   ];
   const m3Cols: Column<Method3Row>[] = [
-    { key: 'kw', label: '대표 키워드', render: (r) => <strong>{r.keyword}</strong> },
-    { key: 'intent', label: '캠페인', render: (r) => SA_CAMPAIGNS[r.intent].name },
+    // 반쪽 카드 폭에서 마지막 열(DA 경유 매출)이 가로 스크롤 뒤로 숨지 않도록 캠페인은 키워드 아래 줄로
+    { key: 'kw', label: '대표 키워드 · 캠페인', render: (r) => <span className="stack-sm" style={{ gap: 0 }}><strong className="nowrap">{r.keyword}</strong><span className="xs muted nowrap">{SA_CAMPAIGNS[r.intent].name}</span></span> },
     { key: 'rev', label: 'SA 매출 · 14일', align: 'right', sort: (r) => r.revenue14, render: (r) => fmt.krw(r.revenue14) },
     { key: 'share', label: 'DA 경유 비중', align: 'right', sort: (r) => r.share, render: (r) => fmt.ratio(r.share) },
     { key: 'basis', label: '근거', render: (r) => <Pill tone={r.shareBasis === 'METHOD 1 추정' ? 'accent' : 'warning'}>{r.shareBasis}</Pill> },
@@ -108,7 +108,7 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
           <Stat label="광고비 100만원당 브랜드 검색" value={`${fmt.int(ds.dl.cumulativePerMillion)}회`} foot={<span className="xs muted">분산 시차 회귀 · 시차 {ds.dl.lagsUsed.join(' · ') || '—'}일 계수 합 (t ≥ 2)</span>} />
           <Stat label="브랜드 검색 중 DA 경유 (추정)" value={fmt.ratio(ds.daShareBrand, 0)} foot={<span className="xs muted">누적 계수 × GFA 일 평균 {fmt.krw(ds.avgGfaDaily)} ÷ 검색 일 평균 {fmt.int(ds.avgBrandSearch)}</span>} />
         </div>
-        <div className="grid g-2">
+        <div className="grid g-2 growth-chart-pair">
           <div className="stack-sm">
             <strong className="small">최근 {Math.min(idxDays, ds.dates.length)}일 지수 (기간 평균 = 100)</strong>
             <LineChart series={idx} height={210} yFormat={(v) => `${Math.round(v)}`} xFormat={(x) => fmtDate(x, false)} zeroBased={false} ariaLabel="GFA 광고비와 브랜드 검색량 지수" />
@@ -173,7 +173,7 @@ export function DaSaTab({ d, ds, onApplyCredit }: { d: Dataset; ds: DaSaResult; 
         </Card>
 
         <Card title={<>METHOD 3 · 대표 키워드 기여 <Src kind="DEMO" /></>} sub="대표 키워드별 SA 매출 중 DA 경유 비중 → 키워드 단위 기여 리포트 · 브랜드 키워드는 METHOD 1 추정, 비브랜드는 데모 가정">
-          <DataTable rows={ds.method3.rows} columns={m3Cols} rowKey={(r) => r.keyword} initialSort={{ key: 'da', dir: 'desc' }} maxHeight={320} />
+          <div className="growth-half-table"><DataTable rows={ds.method3.rows} columns={m3Cols} rowKey={(r) => r.keyword} initialSort={{ key: 'da', dir: 'desc' }} maxHeight={320} /></div>
           <div className="grid g-2">
             <Stat label="SA 키워드 매출 중 DA 경유" value={fmt.ratio(ds.method3.daShareOfSa)} foot={<span className="xs muted">{fmt.krw(ds.method3.daRevenue)} / {fmt.krw(ds.method3.totalRevenue)} · 14일</span>} />
             <Stat label="GFA 광고비 대비 SA 경유 매출" value={fmt.roas(ds.halo.haloRoas)} foot={<span className="xs muted">GFA 일 {fmt.krw(ds.halo.gfaDaily)} · SA 경유 일 {fmt.krw(ds.halo.haloDaily)}</span>} />

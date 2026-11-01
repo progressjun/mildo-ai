@@ -56,7 +56,7 @@ export default function View({ initialTab = 'overview' }: { initialTab?: TabId }
   ];
 
   return (
-    <div className="page">
+    <div className="page growth-page">
       <PageHeader
         eyebrow="04 REVENUE GROWTH"
         title="매출 성장 고도화"
@@ -64,7 +64,7 @@ export default function View({ initialTab = 'overview' }: { initialTab?: TabId }
         sources={<><Src kind="PROPOSAL" page="p.30–42" /><Src kind="RFP" /><Src kind="DEMO" /><span className="xs muted">기준일 {d.today} {d.currentHour}시 · 재배분 · 개선 효과는 예측이 아닌 시나리오</span></>}
       />
 
-      <Card>
+      <Card className="growth-kpis">
         <div className="grid g-5">
           <Stat label="광고비 · 최근 30일" src={<Src kind="DEMO" />} value={fmt.krw(t30.cost)} foot={<span className="xs muted">광고 매출 ROAS {fmt.roas(t30.roas)} · CPA {fmt.won(t30.cpa)}</span>} />
           <Stat label="한계 ROAS 격차 · 가안" src={<Src kind="DEMO" />} value={Number.isFinite(sp.gapPct) ? `${fmt.int(sp.gapPct)}%` : '—'}

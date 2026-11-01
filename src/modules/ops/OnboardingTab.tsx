@@ -91,7 +91,7 @@ export function OnboardingTab({ local, patch }: { local: OpsLocal; patch: (p: Pa
               {plan.weeks.map((w) => (
                 <tr key={w.week} className={plan.currentWeek === w.week ? 'selected' : undefined}>
                   <td className="small"><strong>W{w.week}</strong>{mileAt(w.week).map((m) => <span key={m.label} className="xs accent"> · {m.label.split(' ')[0]} {shortDate(m.date)}</span>)}</td>
-                  <td className="small num">{shortDate(w.start)} ~ {shortDate(w.end)}</td>
+                  <td className="small num nowrap">{shortDate(w.start)} ~ {shortDate(w.end)}</td>
                   <td className="xs">{plan.tasks.filter((t) => t.start <= w.week && t.end >= w.week).map((t) => t.task).join(' · ')}</td>
                   <td className="r">{w.offDays}일</td>
                   <td className="xs">{w.holidays.map((h) => `${shortDate(h.date)} ${h.label}`).join(' · ') || '—'}</td>

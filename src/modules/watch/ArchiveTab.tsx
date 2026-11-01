@@ -33,7 +33,7 @@ export function ArchiveTab({ w }: { w: WatchCtx }) {
         경쟁사 소재 · 가격 · 매장 기록은 화면 동작과 영향도 판정 로직을 보여주기 위한 TEST DATA이며 실제 경쟁사 활동 · 실제 판매가가 아닙니다. 자사 비교값(판매가 · 프로모션 · 키워드 순위)은 데이터셋에서 읽습니다.
       </Callout>
 
-      <div className="grid g-4">
+      <div className="grid g-4 watch-kpis">
         <Card><Stat label={<>최근 7일 변경</>} src={<Src kind="DEMO" />} value={`${week.length}건`} foot={<span>영향도 높음 {week.filter((r) => r.impact.level === 'high').length}건</span>} /></Card>
         <Card><Stat label={<>최근 {m.days}일 변경</>} src={<Src kind="DEMO" />} value={`${w.archive.filter((r) => r.date >= m.from).length}건`} foot={<span>경쟁 {RFP.competitors.length}개사 · 항목 {ARCHIVE_ITEMS.length}개</span>} /></Card>
         <Card><Stat label="Alert P3 미등록 변경" src={<Src kind="PROPOSAL" page="p.44" />} value={`${alertable.filter((r) => !w.alertExists(r)).length}건`} foot={<span>가격 · 혜택 / 소재 · 프로모션 변경 {alertable.length}건 중 · 영향도 높음 {alertable.filter((r) => r.impact.level === 'high').length}건</span>} /></Card>

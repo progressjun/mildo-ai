@@ -19,7 +19,7 @@ export function PacingTab({ d }: { d: Dataset }) {
 
   const monthCols: Column<MonthPaceRow>[] = [
     { key: 'name', label: '매체', sort: (r) => r.name, render: (r) => <Swatch colorVar={r.colorVar} label={<strong className="small">{r.name}</strong>} /> },
-    { key: 'budget', label: '월 예산', align: 'right', sort: (r) => r.budget, render: (r) => <NumCell value={fmt.krw(r.budget)} sub={`연 ${fmt.krw(MEDIA[r.media].annualBudget)} ÷ 12`} /> },
+    { key: 'budget', label: '월 예산', align: 'right', sort: (r) => r.budget, render: (r) => <NumCell value={fmt.krw(r.budget)} sub={<span className="nowrap">연 {fmt.krw(MEDIA[r.media].annualBudget)} ÷ 12</span>} /> },
     { key: 'spent', label: '소진', align: 'right', sort: (r) => r.spent, render: (r) => <NumCell value={fmt.krw(r.spent)} /> },
     {
       key: 'pace', label: '소진율 · 기대 마커', sort: (r) => r.pacePct, width: 200,
@@ -70,7 +70,7 @@ export function PacingTab({ d }: { d: Dataset }) {
         </div>
       ),
     },
-    { key: 'ratio', label: '예상 수요', align: 'right', sort: (r) => r.projectedRatio, render: (r) => <NumCell value={fmt.ratio(r.projectedRatio, 0)} sub="일 예산 대비" /> },
+    { key: 'ratio', label: '예상 수요', align: 'right', sort: (r) => r.projectedRatio, render: (r) => <NumCell value={fmt.ratio(r.projectedRatio, 0)} sub={<span className="nowrap">일 예산 대비</span>} /> },
     {
       key: 'exhaust', label: '예상 마감', align: 'right', sort: (r) => -(r.exhaustHour ?? 99),
       render: (r) => (

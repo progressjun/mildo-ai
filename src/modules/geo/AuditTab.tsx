@@ -17,9 +17,9 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
     { key: 'axis', label: '축', sort: (c) => c.axis, render: (c) => <Pill tone="outline">{c.axis}</Pill> },
     { key: 'label', label: '항목', render: (c) => <strong className="small">{c.label}</strong> },
     { key: 'status', label: '판정', sort: (c) => ({ fail: 0, warn: 1, pass: 2, na: 3 }[c.status]), render: (c) => <StatusPill status={c.status} /> },
-    { key: 'measured', label: '측정값', render: (c) => <span className="small">{c.measured}</span> },
-    { key: 'basis', label: '기준', render: (c) => <span className="geo-basis">{c.basis}</span> },
-    { key: 'fix', label: '개선안', render: (c) => <span className="small ink2">{c.fix}</span> },
+    { key: 'measured', label: '측정값', render: (c) => <span className="small geo-break">{c.measured}</span> },
+    { key: 'basis', label: '기준', width: 170, render: (c) => <span className="geo-basis">{c.basis}</span> },
+    { key: 'fix', label: '개선안', width: 230, render: (c) => <span className="small ink2">{c.fix}</span> },
     { key: 'w', label: '가중치', align: 'right', sort: (c) => c.weight, render: (c) => <span className="num small">{c.weight}</span> },
   ];
   const label = sampleKind === 'defect' ? '샘플 · 결함 포함' : sampleKind === 'fixed' ? '샘플 · 개선안' : sampleKind === 'custom' ? '붙여넣은 HTML' : '입력 없음';
@@ -27,7 +27,7 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
   return (
     <div className="stack-lg">
       <div className="grid g-2">
-        <Card title="제품페이지 HTML" sub={`${label} · ${fmt.int(f.bytes)}자 · 파서 ${f.parser === 'dom' ? 'DOMParser (스크립트 미실행)' : '정규식 추출'}`}
+        <Card className="geo-html-card" title="제품페이지 HTML" sub={`${label} · ${fmt.int(f.bytes)}자 · 파서 ${f.parser === 'dom' ? 'DOMParser (스크립트 미실행)' : '정규식 추출'}`}
           actions={
             <>
               <Button size="sm" variant={sampleKind === 'defect' ? 'primary' : 'default'} icon="refresh" onClick={() => onSample('defect')}>샘플 HTML (결함 포함)</Button>

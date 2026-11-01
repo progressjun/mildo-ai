@@ -1,5 +1,22 @@
 /* SearchTuneOS · GEO 전용 스타일 — 접두사 geo-. 색은 토큰 변수만 사용 */
 
+/* 한글은 어절 단위로 줄바꿈 (표 · 좁은 칸에서 '브리\n핑', '개\n요' 처럼 끊기지 않게) */
+.geo-page { word-break: keep-all; overflow-wrap: break-word; }
+
+/* 표가 넓어 옆 패널과 나란히 두면 열이 가려지는 화면 — 표는 전체 폭, 옆 패널은 아래로 */
+.geo-split { grid-template-columns: minmax(0, 1fr); }
+.geo-split > .span-2 { grid-column: auto; }
+.geo-split > .stack-lg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+/* 페이드 지면 판정 상세 — 전체 폭에서는 두 열로 (판정 · 설명 / 신호 · 원인 후보 / 버튼 · 안내) */
+.geo-paid-detail > .stack { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 28px; align-items: start; }
+.geo-paid-detail > .stack > :last-child { grid-column: 1 / -1; }
+/* 세로 스택 안의 배지는 칸 폭으로 늘어나지 않게 */
+.geo-page .stack-sm > .pill { align-self: flex-start; }
+
+/* 제품페이지 HTML 입력 — 옆 카드 높이만큼 입력창을 늘려 빈 공간을 남기지 않는다 */
+.geo-html-card > .field { flex: 1; }
+.geo-html-card .geo-html { flex: 1; }
+
 /* ---------- 네 축 스트립 (p.29) ---------- */
 .geo-axes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .geo-axis {
@@ -23,16 +40,24 @@
 .geo-badge { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; min-width: 0; }
 .geo-badge.row { flex-direction: row; align-items: center; gap: 6px; flex-wrap: wrap; }
 .geo-basis { font-size: var(--fs-xs); color: var(--muted); line-height: 1.4; }
+/* URL처럼 띄어쓰기 없는 긴 값이 표 폭을 밀어내지 않게 */
+.geo-break { overflow-wrap: anywhere; display: inline-block; min-width: 120px; }
 .card.dark .geo-basis { color: var(--panel-muted); }
 .card.dark .pill.outline { border-color: color-mix(in srgb, var(--panel-ink) 30%, transparent); color: var(--panel-ink); }
 
 /* ---------- KPI ---------- */
 .geo-kpis { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 14px; }
 .geo-kpi { border-left: 2px solid var(--line); padding-left: 12px; min-width: 0; }
+/* 라벨이 두 줄로 접혀도 값 · 설명 줄이 같은 높이에 오도록 행을 공유(subgrid) */
+.geo-kpi { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 4px; align-content: start; }
+.geo-kpi > .stat { display: contents; }
+.geo-kpi .stat-label, .geo-kpi .stat-value, .geo-kpi .stat-foot { align-self: start; }
+.geo-kpi .stat-label, .geo-kpi .stat-foot { align-items: flex-start; }
 .geo-kpi.hl { border-left-color: var(--accent); }
 
 /* ---------- 매트릭스 ---------- */
-.geo-matrix td, .geo-matrix th { padding: 6px 8px; }
+.geo-matrix .tbl td, .geo-matrix .tbl th { padding: 7px 8px; }
+.geo-matrix .tbl td .pill { white-space: normal; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; border-radius: 10px; }
 .geo-matrix th.eng { text-align: center; white-space: nowrap; }
 .geo-cell {
   display: inline-flex; align-items: center; justify-content: center; gap: 3px;
@@ -90,7 +115,10 @@
   .geo-topics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 900px) {
+  /* 좁은 화면 — 표는 칸이 한두 글자로 접히지 않도록 최소 폭을 두고 가로 스크롤 */
+  .geo-page .table-wrap > .tbl { min-width: 640px; }
   .geo-axes, .geo-kpis, .geo-topics { grid-template-columns: 1fr; }
+  .geo-split > .stack-lg, .geo-paid-detail > .stack { grid-template-columns: minmax(0, 1fr); }
   .geo-axis-bars { grid-template-columns: 90px 1fr 48px; }
 }
 

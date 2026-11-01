@@ -1,0 +1,25 @@
+/* 커맨드 센터 전용 스타일 — 접두사 home-. 색은 토큰 변수만 사용 */
+
+/* KPI 5칸: 카드 높이를 채우고 스파크라인을 바닥선에 맞춘다 (보조 문구 줄 수가 달라도 정렬) */
+.home-kpis .card > .stat { flex: 1; }
+.home-kpis .stat > svg { margin-top: auto; padding-top: 4px; }
+
+/* 라이브 데모 15분 구간표: 시간 | 구간 | 설명 */
+.home-demo-seg { display: grid; grid-template-columns: 92px 150px minmax(0, 1fr); gap: 4px 10px; align-items: baseline; text-decoration: none; color: inherit; }
+.home-demo-seg .t { color: var(--panel-muted); }
+.home-demo-seg .d { color: var(--panel-muted); }
+
+/* RFP 대응 현황 비중 막대 */
+.home-rfp-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 36px; gap: 10px; align-items: center; }
+
+/* 작동 시나리오 단계 카드 */
+.home-scn-step { min-height: 210px; }
+
+@media (max-width: 900px) {
+  /* 좁은 화면: 설명을 구간명 아래로 내려 한두 글자씩 줄바꿈되지 않게 */
+  .home-demo-seg { grid-template-columns: 92px minmax(0, 1fr); }
+  .home-demo-seg .d { grid-column: 2; }
+  .home-rfp-row { grid-template-columns: 130px minmax(0, 1fr) 36px; }
+  /* 한 줄에 한 단계씩 쌓이므로 빈 높이를 두지 않는다 */
+  .home-scn-step { min-height: 0; }
+}

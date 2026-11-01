@@ -8,10 +8,13 @@
 }
 .reports-cad:hover { border-color: var(--ink-2); }
 .reports-cad[aria-pressed='true'] { border-color: var(--ink); box-shadow: inset 0 3px 0 var(--accent); }
-.reports-cad-name { font-size: var(--fs-xl); font-weight: 900; letter-spacing: -0.02em; display: flex; align-items: baseline; gap: 8px; }
+.reports-cad-name { font-size: var(--fs-xl); font-weight: 900; letter-spacing: -0.02em; display: flex; align-items: baseline; gap: 2px 8px; flex-wrap: wrap; white-space: nowrap; }
+.reports-cad-when { white-space: normal; }
 .reports-cad-when { font-size: var(--fs-sm); color: var(--ink-2); font-weight: 500; }
 .reports-cad-content { font-size: var(--fs-xs); color: var(--muted); }
-.reports-cad-foot { font-size: var(--fs-xs); color: var(--ink-2); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; border-top: 1px dashed var(--line); padding-top: 6px; margin-top: auto; }
+.reports-cad-foot { font-size: var(--fs-xs); color: var(--ink-2); display: flex; gap: 6px; flex-wrap: nowrap; align-items: flex-start; border-top: 1px dashed var(--line); padding-top: 6px; margin-top: auto; }
+.reports-cad-foot > svg { flex: none; margin-top: 2px; }
+.reports-cad-foot > span { min-width: 0; }
 
 /* ---------- 리포트 레이아웃 ---------- */
 .reports-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
@@ -49,7 +52,7 @@
 .reports-item-basis { font-size: var(--fs-xs); color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 2px; }
 .reports-item-basis a { color: var(--accent-ink); }
 
-.reports-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; padding: 10px 12px; background: var(--surface-2); border-radius: var(--r-md); }
+.reports-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 16px; padding: 10px 12px; background: var(--surface-2); border-radius: var(--r-md); }
 .reports-stats .stat-value { font-size: var(--fs-xl); }
 
 .reports-tone-good { color: var(--good-ink); }
@@ -70,7 +73,8 @@
 
 /* 메신저 미리보기 */
 .reports-phone { background: var(--panel); color: var(--panel-ink); border-radius: 22px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
-.reports-phone-head { display: flex; justify-content: space-between; font-size: var(--fs-xs); color: var(--panel-muted); padding: 0 4px; }
+.reports-phone-head { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); color: var(--panel-muted); padding: 0 4px; }
+.reports-phone-head > span:first-child { min-width: 0; }
 .reports-bot { display: flex; gap: 8px; align-items: flex-start; }
 .reports-bot-avatar { flex: none; width: 30px; height: 30px; border-radius: 9px; background: var(--accent); color: var(--panel-ink); display: inline-flex; align-items: center; justify-content: center; font-weight: 900; font-size: 12px; }
 .reports-bubble { background: color-mix(in srgb, var(--panel-ink) 9%, transparent); border-radius: 4px 14px 14px 14px; padding: 10px 12px; font-size: var(--fs-sm); line-height: 1.55; white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; min-width: 0; }
@@ -86,8 +90,6 @@
 .reports-tt-axis { position: absolute; left: 0; right: 0; top: 96px; height: 4px; background: var(--surface-3); border-radius: 999px; }
 .reports-tt-band { position: absolute; top: 84px; height: 28px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 6px; }
 .reports-tt-band.off { background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, var(--surface-3) 6px 12px); border-color: var(--line-strong); }
-.reports-tt-band-label { position: absolute; top: -18px; left: 0; font-size: var(--fs-xs); color: var(--accent-ink); white-space: nowrap; font-weight: 700; }
-.reports-tt-band.off .reports-tt-band-label { color: var(--muted); }
 .reports-tt-now { position: absolute; top: 58px; height: 80px; width: 2px; background: var(--accent); }
 .reports-tt-now span { position: absolute; top: -18px; left: 50%; transform: translateX(-50%); font-size: var(--fs-xs); font-weight: 900; color: var(--accent-ink); white-space: nowrap; }
 .reports-tt-dot { position: absolute; top: 90px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; border: 3px solid var(--surface); background: var(--ink-2); box-shadow: 0 0 0 1px var(--line-strong); }
@@ -138,7 +140,6 @@
 @media (max-width: 1180px) {
   .reports-layout { grid-template-columns: minmax(0, 1fr); }
   .reports-side { position: static; }
-  .reports-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 900px) {
   .reports-cadence, .reports-lead { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -178,4 +179,39 @@
 .reports-phase a { color: var(--accent-ink); }
 @media (max-width: 900px) {
   .reports-sv-head { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- 가독성 (시연 1440px 기준) ---------- */
+/* 한글은 어절 단위로 줄바꿈 — '미확/인', '생/성', '병/합' 같은 음절 단위 끊김 방지 */
+.reports-page { word-break: keep-all; overflow-wrap: break-word; }
+
+/* 문서형 리포트 표 — 숫자는 값과 단위를 한 줄로, 긴 머리글은 줄바꿈 허용, 셀 여백을 줄여 문서 폭 안에 */
+.reports-doc .tbl th, .reports-doc .tbl td { padding-left: 9px; padding-right: 9px; }
+@media (min-width: 901px) { .reports-doc .tbl th { white-space: normal; vertical-align: bottom; } }
+.reports-doc .tbl td.r { white-space: nowrap; }
+.reports-doc .tbl td:first-child, .reports-doc .tbl th:first-child { padding-left: 12px; }
+.reports-tbl-notes tr.reports-has-note td { border-bottom: 0; padding-bottom: 3px; }
+.reports-tbl-notes tr.reports-note-row td { padding-top: 0; font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.5; }
+.reports-tbl-notes tbody tr.reports-note-row:hover td { background: transparent; }
+.reports-note { display: block; }
+.reports-note + .reports-note { margin-top: 2px; }
+.reports-note-k { color: var(--muted); font-weight: 700; margin-right: 6px; }
+
+/* 시간표 띠 범례 (띠 위 라벨 대신) */
+.reports-tt-band-key { display: inline-block; width: 22px; height: 10px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); }
+.reports-tt-band-key.off { background: repeating-linear-gradient(135deg, var(--surface-2) 0 4px, var(--surface-3) 4px 8px); border-color: var(--line-strong); }
+
+/* 모바일 — 문서 표의 첫 열(지표 · 매체명)이 1~2자 폭으로 눌리지 않게 */
+@media (max-width: 900px) {
+  .reports-doc .tbl td:first-child { min-width: 96px; }
+}
+@media (max-width: 900px) {
+  /* 시간표 띠 — 390px 폭에서는 항목명이 서로 · '현재' 표시와 겹치므로 시각만 표시 (항목명은 아래 표에 그대로) */
+  .reports-tt-label .t { display: none; }
+  .reports-tt-label { width: 56px; margin-left: -28px; }
+  .reports-tt-label.edge-l { margin-left: -6px; }
+  .reports-tt-label.edge-r { margin-left: -50px; }
+  /* 리드타임 표 — 가로 스크롤로 보고, 항목 · 범위 · 리드타임 열은 읽을 수 있는 폭 유지 */
+  .reports-tt-table td:nth-child(2) { min-width: 170px; }
+  .reports-tt-table td:nth-child(4), .reports-tt-table td:nth-child(5) { min-width: 120px; }
 }

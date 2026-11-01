@@ -1,5 +1,14 @@
 /* MILDO Watch 전용 스타일 — 접두사 watch-, 색은 tokens.css 변수만 사용 */
 
+/* 한글은 어절 단위로 줄바꿈 (음절 중간에서 끊겨 '데이 / 터 3' 처럼 보이지 않게) */
+.watch-page { word-break: keep-all; overflow-wrap: break-word; }
+
+/* KPI 행 — 라벨이 두 줄로 접혀도 값 · 설명 줄이 같은 높이에 오도록 행을 공유(subgrid) */
+.watch-kpis > .card { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 4px; align-content: start; }
+.watch-kpis > .card > .stat { display: contents; }
+.watch-kpis .stat-label, .watch-kpis .stat-value, .watch-kpis .stat-foot { align-self: start; }
+.watch-kpis .stat-label, .watch-kpis .stat-foot { align-items: flex-start; }
+
 /* 상단 블랙 패널 */
 .watch-strip-eyebrow { color: var(--panel-muted); letter-spacing: 0.12em; margin-right: 4px; }
 .watch-role { display: inline-flex; flex-direction: column; gap: 0; padding: 3px 10px; border-radius: var(--r-sm); text-decoration: none; color: var(--panel-muted); border: 1px solid color-mix(in srgb, var(--panel-ink) 14%, transparent); line-height: 1.3; }
@@ -45,6 +54,9 @@
 .watch-step.done .watch-step-label { color: var(--ink-2); }
 .watch-step-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .watch-steps.lg .watch-step { font-size: var(--fs-sm); }
+/* 상세(드로어)의 큰 단계 표시는 '24시간 내 …'처럼 잘리지 않게 두 줄까지 허용 */
+.watch-steps.lg .watch-step { align-items: flex-start; }
+.watch-steps.lg .watch-step-label { white-space: normal; line-height: 1.3; }
 
 .watch-due { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); border-radius: 999px; padding: 1px 9px; line-height: 20px; background: var(--surface-2); color: var(--ink-2); white-space: nowrap; }
 .watch-due.warning { background: var(--warning-soft); color: var(--warning-ink); font-weight: 700; }
@@ -109,7 +121,7 @@ button.watch-link-row:hover .small { text-decoration: underline; }
 .watch-tl-side { display: flex; justify-content: flex-end; align-items: flex-start; }
 
 /* 브랜드 지면 */
-.watch-q { font-family: var(--font-mono); font-size: 0.95em; }
+.watch-q { font-family: inherit; font-size: inherit; } /* 제목과 같은 글꼴 (고정폭 글꼴은 한글 자간이 벌어지고 기준선이 어긋남) */
 .watch-serp { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
 .watch-serp-head { background: var(--surface-2); padding: 4px 10px; letter-spacing: 0.04em; }
 .watch-serp-slot { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-top: 1px solid var(--line); }
@@ -120,15 +132,22 @@ button.watch-link-row:hover .small { text-decoration: underline; }
 .watch-serp-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-top: 1px solid var(--line); justify-content: space-between; }
 .watch-mini-share { display: flex; flex: 1; max-width: 160px; height: 10px; border-radius: 4px; overflow: hidden; gap: 1px; }
 
-/* 시즌 띠 */
+/* 시즌 띠 — 월 열 폭을 같게 (시간 축이 왜곡되지 않게) */
+.watch-cal { table-layout: fixed; min-width: 760px; }
+.watch-cal-head { width: 108px; }
 .watch-cal td, .watch-cal th { padding: 6px 6px; }
-.watch-cal-cell { min-width: 56px; }
+.watch-cal-cell { min-width: 0; }
+.watch-cal-label { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.35; }
+.watch-cal-cell + .watch-cal-cell { border-left: 1px solid var(--surface); }
 .watch-cal-cell.on { background: var(--surface-2); }
 .watch-cal-cell.on.k-move { box-shadow: inset 0 3px 0 var(--series-3); }
 .watch-cal-cell.on.k-wedding { box-shadow: inset 0 3px 0 var(--series-7); }
 .watch-cal-cell.on.k-shopping { box-shadow: inset 0 3px 0 var(--series-2); }
 .watch-cal-cell.on.k-holiday { box-shadow: inset 0 3px 0 var(--ink); }
 .watch-cal-cell.on.k-promo { box-shadow: inset 0 3px 0 var(--series-4); }
+
+/* 선 끝 시리즈 라벨이 카드 밖으로 나가지 않게 */
+.watch-chart-endpad { padding-right: 64px; }
 
 /* 브리프 */
 .watch-brief { max-height: 720px; overflow-y: auto; padding-right: 4px; }
@@ -140,6 +159,10 @@ button.watch-link-row:hover .small { text-decoration: underline; }
   .watch-ev-side { grid-column: 2; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start; }
 }
 @media (max-width: 900px) {
+  /* 좁은 화면 — 표는 칸이 한두 글자로 접히지 않도록 최소 폭을 두고 가로 스크롤 */
+  .watch-page .table-wrap > .tbl { min-width: 640px; }
+  /* 좁은 화면에서 긴 기한 배지가 카드 밖으로 나가지 않게 줄바꿈 허용 */
+  .watch-due { white-space: normal; border-radius: var(--r-md); max-width: 100%; }
   .watch-strip { grid-template-columns: 1fr 1fr; gap: 10px; }
   .watch-strip-cell { border-left: 0; padding-left: 0; }
   .watch-steps { grid-template-columns: repeat(5, minmax(0, 1fr)); }

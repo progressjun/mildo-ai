@@ -85,7 +85,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
           {q.approve.length && approveGuard.level !== 'ok' ? <div className="xs muted">일괄 처리 점검: {approveGuard.reasons.join(' · ')}</div> : null}
           {q.blocked.length && q.total ? <div className="xs muted">권한 밖 승인 대기 {q.blocked.length}건: {q.blocked.map((c) => `${c.target} → ${APPROVER_LABEL[c.approver]}`).join(' · ')}</div> : null}
         </Card>
-        <Card title="처리 현황" sub="요청 → 승인 → 반영 · 롤백 (이번 세션 + 시연 이력)" actions={<Src kind="DEMO" />}>
+        <Card className="flow-status-card" title="처리 현황" sub="요청 → 승인 → 반영 · 롤백 (이번 세션 + 시연 이력)" actions={<Src kind="DEMO" />}>
           <div className="flow-mini-stats">
             {STATUS_ORDER.map((s) => (
               <div key={s} className={`flow-mini-stat st-${s}`}>

@@ -91,3 +91,42 @@
   .alert-tiers { grid-template-columns: 1fr; }
   .alert-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* ---------- 가독성 (시연 1440px 기준) ---------- */
+/* 한글은 어절 단위로 줄바꿈 — '오늘의/집', '당/번)', '이/내' 같은 음절 끊김 방지 */
+.alert-page { word-break: keep-all; overflow-wrap: break-word; }
+/* 숫자 열은 값 · 단위 · 보조 수치를 한 줄로 ('235만/원', '27% 3/건' 방지) */
+.alert-page .tbl td.r { white-space: nowrap; }
+
+/* KPI 카드 줄 — 라벨이 2줄인 칸(출처 태그 포함)이 있어도 큰 숫자가 같은 높이에 오도록 라벨 영역 2줄 고정, 태그는 첫 줄 */
+.alert-kpis .stat-label { min-height: calc(2 * 1.55em); align-items: flex-start; }
+.alert-kpis .stat-label > .src { flex: none; margin-top: 1px; }
+
+/* 이슈 큐 — 9열이 카드 폭 안에 들어오도록: SLA 타이머는 단계 · 남은 시간 2줄, 매체 · 담당 이름은 한 줄 */
+.alert-sla.compact { display: inline-grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 5px; align-items: start; white-space: normal; border-radius: 10px; line-height: 1.45; padding: 3px 9px; min-width: 148px; max-width: 176px; }
+.alert-sla.compact > svg { grid-row: 1 / span 2; margin-top: 3px; }
+.alert-sla.compact > strong { grid-column: 2; }
+.alert-queue .tbl th, .alert-queue .tbl td { padding-left: 9px; padding-right: 9px; }
+.alert-queue .alert-ev { min-width: 140px; max-width: 220px; }
+.alert-media-cell .swatch, .alert-media-cell > :first-child, .alert-who > div { white-space: nowrap; }
+
+/* 메일 미리보기 — 옆 메신저 목업이 길어도 빈 카드로 늘어나지 않게 */
+.alert-mail-card { align-self: start; position: sticky; top: 16px; }
+
+/* 지금 처리할 순서 — 제목과 SLA 배지: 넓으면 한 줄, 좁으면 배지를 아래 줄로 (제목이 1~2어절 폭으로 눌리지 않게) */
+.alert-next-head { flex-wrap: wrap; row-gap: 4px; align-items: flex-start; }
+.alert-next-head > strong { flex: 1 1 220px; min-width: 0; }
+.alert-next-head > .alert-sla { flex: none; max-width: 100%; white-space: normal; }
+/* 옆 AI 카드는 내용 높이만 (빈 카드로 늘어나지 않게) */
+.alert-next-grid { align-items: start; }
+
+/* 연휴 사전 점검 — 항목 수가 다른 그룹(5 · 2 · 7 · 2)을 2단으로 흘려 짧은 그룹 옆 빈칸 제거 */
+.alert-precheck { columns: 2 340px; column-gap: 16px; }
+.alert-precheck > * { break-inside: avoid; margin-bottom: 16px; }
+
+/* 모바일 — 1열 그리드에서 넓은 표가 칸을 밀어내지 않게 */
+@media (max-width: 900px) {
+  .alert-page .grid > * { min-width: 0; }
+  .alert-kpis .stat-label { min-height: 0; }
+  .alert-mail-card { position: static; }
+}

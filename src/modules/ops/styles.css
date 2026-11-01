@@ -8,7 +8,12 @@
 }
 .ops-tile:hover { border-color: color-mix(in srgb, var(--panel-ink) 40%, transparent); }
 .ops-tile[aria-pressed='true'] { border-color: var(--accent); }
-.ops-tile-label { font-size: var(--fs-xs); color: var(--panel-muted); display: flex; gap: 6px; align-items: center; justify-content: space-between; }
+.ops-tile-label {
+  font-size: var(--fs-xs); color: var(--panel-muted); display: flex; gap: 6px; align-items: flex-start; justify-content: space-between;
+  /* 라벨 2줄 높이를 확보해 6칸의 값(D-16 · 21/21칸 …) 기준선을 맞춘다 · 단어 중간 줄바꿈 금지 */
+  line-height: 1.4; min-height: calc(var(--fs-xs) * 1.4 * 2); word-break: keep-all;
+}
+.ops-tile-label .ops-flag { flex: none; }
 .ops-tile-value { font-size: var(--fs-2xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .ops-tile-value.accent { color: var(--accent); }
 .ops-tile-foot { font-size: var(--fs-xs); color: var(--panel-muted); line-height: 1.4; }
@@ -29,11 +34,13 @@
 
 /* ---------- 백업 그래프 ---------- */
 .ops-graph { width: 100%; }
+.ops-graph-scroll { overflow-x: auto; }
 .ops-graph svg { display: block; width: 100%; height: auto; overflow: visible; }
 .ops-graph text { font-family: var(--font-body); }
-.ops-node-title { font-size: 12.5px; font-weight: 700; fill: var(--ink); }
-.ops-node-sub { font-size: 11px; fill: var(--muted); }
-.ops-node-tag { font-size: 10.5px; font-weight: 700; }
+/* viewBox 660 → 카드 폭(약 520px)으로 축소되므로 SVG 단위를 키워 실제 표시 11px 안팎을 확보 */
+.ops-node-title { font-size: 14px; font-weight: 700; fill: var(--ink); }
+.ops-node-sub { font-size: 12px; fill: var(--muted); }
+.ops-node-tag { font-size: 12px; font-weight: 700; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
 .ops-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--fs-xs); color: var(--ink-2); }
 .ops-legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--ink-2); vertical-align: middle; margin-right: 4px; }
 .ops-legend i.dash { border-top-style: dashed; }
@@ -42,6 +49,11 @@
 /* ---------- 이슈 목록 ---------- */
 .ops-issues { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .ops-issues li { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fs-sm); line-height: 1.5; }
+/* 제출 서류 체크리스트: 항목명 열 고정 → 설명 열 정렬, 항목명 단어 중간 줄바꿈 금지 */
+.ops-docs li { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 4px 10px; align-items: start; }
+.ops-docs .ops-check { align-items: flex-start; word-break: keep-all; }
+.ops-docs .ops-check input { margin-top: 3px; flex: none; }
+.ops-docs .pill { justify-self: start; }
 
 /* ---------- 프리셋 · 체크 ---------- */
 .ops-chips { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -70,8 +82,8 @@
 .ops-sched-step.done { border-top-color: var(--ink-2); opacity: 0.7; }
 .ops-sched-step.now { border-top-color: var(--ink); }
 .ops-sched-step.next { border-top-color: var(--accent); }
-.ops-sched-step .t { font-size: var(--fs-sm); font-weight: 700; line-height: 1.35; }
-.ops-sched-step .d { font-size: var(--fs-xs); color: var(--muted); }
+.ops-sched-step .t { font-size: var(--fs-sm); font-weight: 700; line-height: 1.35; word-break: keep-all; }
+.ops-sched-step .d { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
 .ops-sched-step .s { font-size: var(--fs-xs); font-weight: 700; }
 .ops-sched-step.next .s { color: var(--accent-ink); }
 
@@ -94,7 +106,8 @@
 /* ---------- 회사 · 레퍼런스 ---------- */
 .ops-facts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
 .ops-fact { display: flex; flex-direction: column; gap: 3px; border-left: 3px solid var(--accent); padding: 2px 0 2px 10px; min-width: 0; }
-.ops-fact-v { font-size: var(--fs-xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.15; }
+.ops-fact-v { font-size: var(--fs-xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.15; word-break: keep-all; }
+.ops-fact-v.long { font-size: var(--fs-lg); line-height: 1.25; }
 .ops-fact-l { font-size: var(--fs-sm); color: var(--ink-2); }
 .ops-history { display: grid; grid-template-columns: 64px 1fr; gap: 6px 12px; font-size: var(--fs-sm); }
 .ops-history strong { font-variant-numeric: tabular-nums; }
@@ -108,12 +121,39 @@
 
 .ops-total-row td { font-weight: 700; background: var(--surface-2); }
 
+/* ---------- 표 · 레이아웃 공통 ---------- */
+/* 한글 단어 중간 줄바꿈(글로벌 매 / 체 AE, 자동충전 실 / 패) 방지 — 좁으면 표 래퍼가 가로 스크롤 */
+.ops-page .tbl th, .ops-page .tbl td { word-break: keep-all; overflow-wrap: break-word; }
+.ops-page .tbl .seg { flex-wrap: nowrap; }
+.ops-page .tbl .seg button { white-space: nowrap; }
+.ops-pay { min-width: 120px; }
+.ops-findings { min-width: 220px; }
+.ops-acc-name { min-width: 120px; }
+/* 휴가 시뮬레이터 옆 백업 그래프: 높이 차 만큼 빈 카드가 늘어나지 않게 상단 고정 + 스크롤 시 따라옴 */
+.ops-sticky { align-self: start; position: sticky; top: 12px; }
+/* 커뮤니케이션 체계: 전폭 카드 안에서 조직도 | 결정 표 */
+.ops-comm { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 20px; align-items: center; }
+/* 계약 조건(표) 넓게 · 평가 기준(텍스트) 좁게 */
+.ops-split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
+/* RFP 일정(7단계) 넓게 · 제출 마감 카드 고정 폭 */
+.ops-cov-top { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; }
+.ops-input-badge { margin-bottom: 10px; }
+
 @media (max-width: 1180px) {
   .ops-strip, .ops-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .ops-sched { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .ops-cov-top { grid-template-columns: 1fr; }
 }
 @media (max-width: 900px) {
   .ops-strip, .ops-facts, .ops-mile, .ops-tiers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ops-sched { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ops-weight-row { grid-template-columns: 110px 1fr 70px; }
+  .ops-comm, .ops-split { grid-template-columns: 1fr; }
+  .ops-sticky { position: static; }
+  .ops-docs li { grid-template-columns: 1fr; }
+  /* 모바일: 그래프를 읽을 수 있는 크기로 두고 가로 스크롤 */
+  .ops-graph-scroll svg { min-width: 560px; }
+  /* 열 5개 이상 표는 390px에 욱여넣지 않고 최소 폭을 두어 가로 스크롤 (행 높이 폭증 방지) */
+  .ops-page .table-wrap > .tbl:has(thead th:nth-child(5)) { min-width: 640px; }
+  .ops-page .table-wrap > .tbl:has(thead th:nth-child(6)) { min-width: 780px; }
 }

@@ -12,7 +12,7 @@ export function SerpTab({ w }: { w: WatchCtx }) {
   const sig = w.events.find((e) => e.signal?.rule === 'brand_serp');
   return (
     <div className="stack-lg">
-      <div className="grid g-4">
+      <div className="grid g-4 watch-kpis">
         <Card><Stat label="경쟁사 광고가 자사보다 위" src={<Src kind="DEMO" />} value={`${above.length} / ${w.serp.length}`} foot={<span>침투(상위 · 하위 포함) {intr.length}개 · 기준 경쟁사 광고 1개 이상 (p.45)</span>} /></Card>
         <Card><Stat label="브랜드 키워드 평균 순위" src={<Src kind="DEMO" />} value={`${fmt.dec1(avgRank)}위`} foot={<span>방어 기준 1위 · 신호 기준 {w.cfg.brandRankMax.toFixed(1)}위 이상</span>} /></Card>
         <Card><Stat label="노출 기회 손실 평균" src={<Src kind="DEMO" />} value={fmt.ratio(avgLost, 0)} foot={<span>신호 기준 {Math.round(w.cfg.brandLostMin * 100)}% 이상</span>} /></Card>

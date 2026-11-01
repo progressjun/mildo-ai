@@ -51,7 +51,7 @@ export function MediaTab({ d, win }: { d: Dataset; win: PeriodWindow }) {
     { key: 'roas', label: 'ROAS', align: 'right', sort: (r) => r.roas, render: (r) => <NumCell value={<strong>{fmt.roas(r.roas)}</strong>} delta={r.deltas.roas} /> },
     { key: 'cpa', label: 'CPA', align: 'right', sort: (r) => r.cpa, render: (r) => <NumCell value={fmt.won(r.cpa)} delta={r.deltas.cpa} invert /> },
     { key: 'cvr', label: 'CVR', align: 'right', sort: (r) => r.cvr, render: (r) => <NumCell value={fmt.pct(r.cvr, 2)} /> },
-    { key: 'newShare', label: '신규 비중', align: 'right', sort: (r) => r.newShare, render: (r) => <NumCell value={fmt.ratio(r.newShare, 0)} sub={`CAC ${fmt.krw(r.cac)}`} /> },
+    { key: 'newShare', label: '신규 비중', align: 'right', sort: (r) => r.newShare, render: (r) => <NumCell value={fmt.ratio(r.newShare, 0)} sub={<span className="nowrap">CAC {fmt.krw(r.cac)}</span>} /> },
     {
       key: 'judge', label: '판단 지표(p.37)',
       render: (r) => (
@@ -104,7 +104,7 @@ export function MediaTab({ d, win }: { d: Dataset; win: PeriodWindow }) {
         <Card title="매체별 판단 지표 해석 기준" sub={`제안서 p.37 매체별 역할 · 판단 지표 · 값은 ${win.label}`} actions={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.37" /></>}>
           <div className="board-list">
             {rows.map((r) => (
-              <div key={r.media} className="board-list-item">
+              <div key={r.media} className="board-list-item board-judge">
                 <Swatch colorVar={r.colorVar} label={<strong className="small">{r.short}</strong>} />
                 <div className="stack-sm" style={{ gap: 1 }}>
                   <span className="small">{r.role} · {MEDIA[r.media].setting}</span>

@@ -63,7 +63,7 @@ function ItemCard({ i, m }: { i: PipelineItem; m: LabModel }) {
       {related.length ? (
         <div className="stack-sm" style={{ gap: 4 }}>
           <span className="lab-sub">연관 키워드 추가 발굴 · 같은 토픽 미등록 후보</span>
-          <div className="row" style={{ gap: 4 }}>
+          <div className="row lab-related" style={{ gap: 4 }}>
             {related.map((c) => (
               <Button key={c.id} size="sm" icon="plus" title={`${SOURCE_LABEL[c.source]} · ${c.score}점 · 테스트 그룹 등록 요청`}
                 onClick={() => { actions.addChange(registrationPayload(c, state.role)); actions.toast({ tone: 'good', title: `연관 후보 등록 요청 · ${c.phrase}`, body: '담당 AE 승인 대기', route: 'flow' }); }}>

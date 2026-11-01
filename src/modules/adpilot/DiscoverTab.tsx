@@ -37,17 +37,19 @@ export function DiscoverTab({ ap }: { ap: AdPilotCtx }) {
         return <input type="checkbox" className="adpilot-check" aria-label={`${t.term} 선택`} disabled={!ok} checked={selected.has(t.term)} onChange={() => setSelected((s) => { const n = new Set(s); n.has(t.term) ? n.delete(t.term) : n.add(t.term); return n; })} />;
       },
     },
-    { key: 'term', label: '검색어 (미등록)', sort: (t) => t.term, render: (t) => <strong className="small">{t.term}</strong> },
+    { key: 'term', label: '검색어 (미등록)', sort: (t) => t.term, render: (t) => <strong className="small adpilot-term">{t.term}</strong> },
     { key: 'intent', label: '의도 분류', sort: (t) => t.intent, render: (t) => <Pill tone="outline">{SA_CAMPAIGNS[t.intent].name}</Pill> },
     { key: 'clicks', label: '클릭', align: 'right', sort: (t) => t.clicks, render: (t) => fmt.int(t.clicks) },
     { key: 'conv', label: '전환', align: 'right', sort: (t) => t.conversions, render: (t) => fmt.dec1(t.conversions) },
     { key: 'roas', label: 'ROAS', align: 'right', sort: (t) => t.roas, render: (t) => <span title={`목표 ${fmt.roas(ap.cfg.targetRoas)} 대비 ${pct0((t.roas / ap.cfg.targetRoas) * 100)}`}>{fmt.roas(t.roas)}</span> },
-    { key: 'cpc', label: 'CPC', align: 'right', sort: (t) => t.cpc, render: (t) => fmt.won(t.cpc) },
+    { key: 'cpc', label: 'CPC', align: 'right', sort: (t) => t.cpc, render: (t) => <span className="nowrap">{fmt.won(t.cpc)}</span> },
     { key: 'bid', label: '테스트 입찰 (상한)', align: 'right', sort: (t) => t.suggestedBid, render: (t) => <span className="num small nowrap"><strong>{fmt.won(t.suggestedBid)}</strong><span className="muted"> / {fmt.won(t.bidCap)}</span></span> },
     { key: 'group', label: '테스트 그룹 · 랜딩', render: (t) => <div className="stack-sm" style={{ gap: 0 }}><span className="small">{t.adgroup}</span><span className="xs muted">{t.landing}</span></div> },
-    { key: 'caution', label: '주의', render: (t) => t.cautions.length ? <div className="adpilot-basis">{t.cautions.join(' · ')}</div> : <span className="xs muted">—</span> },
-    { key: 'approver', label: '승인', render: (t) => { const p = byTerm.get(t.term); return p ? <ApproverPill level={p.approver} title={p.approverReason} /> : null; } },
-    { key: 'status', label: '상태', render: (t) => { const p = byTerm.get(t.term); return p ? <StatusPill status={ap.statusOf(p)} /> : null; } },
+    { key: 'caution', label: '주의', render: (t) => t.cautions.length ? <div className="adpilot-basis adpilot-caution">{t.cautions.join(' · ')}</div> : <span className="xs muted">—</span> },
+    { key: 'status', label: '승인 · 상태', render: (t) => {
+      const p = byTerm.get(t.term);
+      return p ? <div className="stack-sm" style={{ gap: 4, alignItems: 'flex-start' }}><ApproverPill level={p.approver} title={p.approverReason} /><StatusPill status={ap.statusOf(p)} /></div> : null;
+    } },
     { key: 'act', label: '', align: 'right', render: (t) => { const p = byTerm.get(t.term); return p ? <ProposalActions ap={ap} p={p} /> : null; } },
   ];
 

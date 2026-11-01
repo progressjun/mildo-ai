@@ -58,6 +58,7 @@ export function BackupGraphSvg({ rows, graph, sim }: { rows: TfRow[]; graph: Bac
   const known = rows.filter((r) => POS[r.id]);
   return (
     <div className="ops-graph">
+      <div className="ops-graph-scroll">
       <svg viewBox="0 0 660 310" role="img" aria-label={`1:1 백업 그래프: ${rows.map((r) => `${r.role} → ${r.backupRole}`).join(', ')}`}>
         <defs>
           <marker id="ops-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -89,17 +90,20 @@ export function BackupGraphSvg({ rows, graph, sim }: { rows: TfRow[]; graph: Bac
           const stroke = over || gap ? 'var(--critical)' : incoming > 0 ? 'var(--ink)' : 'var(--line-strong)';
           const tag = absent ? (gap ? '부재 · 공백' : '부재') : over ? `과부하 ${Math.round(m!.load)}%` : incoming > 0 ? `인수 +${Math.round(incoming)}%` : gap ? '백업 공백' : '';
           const tagColor = over || gap ? 'var(--critical-ink)' : 'var(--ink-2)';
+          // 왼쪽 열은 총괄 PM에서 오는 화살표가 오른쪽 위로 들어오므로 태그를 왼쪽 위에 둔다 (화살촉과 겹침 방지)
+          const tagLeft = p.x < 200;
           return (
             <g key={r.id} opacity={absent ? 0.55 : 1}>
               <rect x={p.x - NW / 2} y={p.y - NH / 2} width={NW} height={NH} rx={10} fill={r.id === 'pm' ? 'var(--surface-2)' : 'var(--surface)'}
                 stroke={stroke} strokeWidth={over || gap || incoming > 0 ? 2.2 : 1.2} strokeDasharray={absent ? '4 3' : undefined} />
               <text x={p.x} y={p.y - 4} textAnchor="middle" className="ops-node-title">{r.role}</text>
               <text x={p.x} y={p.y + 13} textAnchor="middle" className="ops-node-sub">{r.name || '[성명]'}{r.allocation !== null && !r.invalid.allocation ? ` · ${r.allocation}%` : ''}</text>
-              {tag ? <text x={p.x + NW / 2} y={p.y - NH / 2 - 5} textAnchor="end" className="ops-node-tag" style={{ fill: tagColor }}>{tag}</text> : null}
+              {tag ? <text x={tagLeft ? p.x - NW / 2 : p.x + NW / 2} y={p.y - NH / 2 - 6} textAnchor={tagLeft ? 'start' : 'end'} className="ops-node-tag" style={{ fill: tagColor }}>{tag}</text> : null}
             </g>
           );
         })}
       </svg>
+      </div>
       <div className="ops-legend">
         <span><i />상호 백업 (실선)</span>
         <span><i className="dash" />단방향 백업 (점선)</span>

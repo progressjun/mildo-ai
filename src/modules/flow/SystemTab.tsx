@@ -51,8 +51,9 @@ export function SystemTab({ ctx, onTab }: { ctx: FlowCtx; onTab: (t: string) => 
         </div>
       </Card>
 
+      {/* 조직도(짧은 카드)를 위임 범위 · 권한 표 두 장과 나란히 두고, 7열 결정 유형 표는 전체 폭으로 — 반쪽 폭에서 1~2자씩 줄바꿈되던 문제 해소 */}
       <div className="grid g-2">
-        <Card tone="dark" title="커뮤니케이션 · 의사결정 체계" sub="창구는 메인 PM 한 명으로 모으고, 결정 유형마다 결정자와 소요 시간을 미리 정합니다" actions={<Src kind="PROPOSAL" page="p.53" />}>
+        <Card tone="dark" className="flow-org-card" title="커뮤니케이션 · 의사결정 체계" sub="창구는 메인 PM 한 명으로 모으고, 결정 유형마다 결정자와 소요 시간을 미리 정합니다" actions={<Src kind="PROPOSAL" page="p.53" />}>
           <div className="flow-org">
             <div className="flow-org-node">수면밀도 담당자</div>
             <Icon name="chevronDown" size={14} />
@@ -71,60 +72,60 @@ export function SystemTab({ ctx, onTab }: { ctx: FlowCtx; onTab: (t: string) => 
             ))}
           </div>
         </Card>
-        <Card title="결정 유형 · 결정자 · 소요" sub="판정 시한은 소요 기준을 시각으로 환산 · 이번 세션 처리 실적" actions={<><Src kind="PROPOSAL" page="p.53" /><Src kind="DEMO" /></>}>
-          <div className="table-wrap">
-            <table className="tbl">
-              <thead><tr><th>결정 유형</th><th>결정자</th><th>소요</th><th>판정 시한</th><th className="r">건수</th><th className="r">평균 결정</th><th className="r">기준 충족</th></tr></thead>
-              <tbody>
-                {byDecision.map((r) => (
-                  <tr key={r.d.type}>
-                    <td className="small"><strong>{r.d.type}</strong></td>
-                    <td className="small">{r.d.decider}</td>
-                    <td className="small">{r.d.lead}</td>
-                    <td className="xs muted">{r.rule?.label ?? '—'}<div>{r.rule?.note}</div></td>
-                    <td className="r">{r.count}</td>
-                    <td className="r">{fmtDuration(r.avg)}</td>
-                    <td className="r">{r.decided ? `${r.met}/${r.decided}` : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+        <div className="stack-lg">
+          <Card title="승인 위임 범위 (GFA Control v1 · AD Pilot 공통)" sub="담당 AE → PM → 광고주, 위임 범위별 차등 · 위임 범위는 예시이며 계약 시 확정" actions={<Src kind="PROPOSAL" page="p.15" />}>
+            <div className="table-wrap">
+              <table className="tbl">
+                <thead><tr><th>변경 범위</th><th>승인 주체</th><th className="r">이번 세션 요청</th></tr></thead>
+                <tbody>
+                  {GFA_DELEGATION.map((g) => (
+                    <tr key={g.range}><td className="small">{g.range}</td><td className="small"><strong>{g.label}</strong></td><td className="r">{changes.filter((c) => c.approver === g.approver).length}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="xs muted">입찰 변경은 위임 범위와 별도로 일 조정 폭 상한 {apCfg.dailyChangeCapPct}% · 브랜드 키워드 별도 기준(목표 ROAS {apCfg.brandTargetRoas}%)을 적용합니다 (p.14 · AD Pilot 공식 기준).</div>
+          </Card>
+          <Card title="역할별 처리 권한" sub="승인 · 반려 · 반영 · 롤백 모두 같은 권한 규칙" actions={<><Pill tone="accent">현재 {state.role}</Pill></>}>
+            <div className="table-wrap">
+              <table className="tbl">
+                <thead><tr><th>역할</th><th>처리 가능한 요청</th><th className="r">현재 승인 대기</th></tr></thead>
+                <tbody>
+                  {Object.entries(ROLE_SCOPE).map(([role, scope]) => (
+                    <tr key={role} className={role === state.role ? 'selected' : undefined}>
+                      <td className="small"><strong>{role}</strong></td>
+                      <td className="small">{scope.map((a) => APPROVER_LABEL[a]).join(' · ')} 건</td>
+                      <td className="r">{changes.filter((c) => c.status === 'pending' && scope.includes(c.approver)).length}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="xs muted">전담 TF {TF_ROLES.length}인 · 단일 창구는 {TF_ROLES[0].role}, 백업 {TF_ROLES.find((r) => r.id === TF_ROLES[0].backup)?.role} (p.52).</div>
+          </Card>
+        </div>
       </div>
 
-      <div className="grid g-2">
-        <Card title="승인 위임 범위 (GFA Control v1 · AD Pilot 공통)" sub="담당 AE → PM → 광고주, 위임 범위별 차등 · 위임 범위는 예시이며 계약 시 확정" actions={<Src kind="PROPOSAL" page="p.15" />}>
-          <div className="table-wrap">
-            <table className="tbl">
-              <thead><tr><th>변경 범위</th><th>승인 주체</th><th className="r">이번 세션 요청</th></tr></thead>
-              <tbody>
-                {GFA_DELEGATION.map((g) => (
-                  <tr key={g.range}><td className="small">{g.range}</td><td className="small"><strong>{g.label}</strong></td><td className="r">{changes.filter((c) => c.approver === g.approver).length}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="xs muted">입찰 변경은 위임 범위와 별도로 일 조정 폭 상한 {apCfg.dailyChangeCapPct}% · 브랜드 키워드 별도 기준(목표 ROAS {apCfg.brandTargetRoas}%)을 적용합니다 (p.14 · AD Pilot 공식 기준).</div>
-        </Card>
-        <Card title="역할별 처리 권한" sub="승인 · 반려 · 반영 · 롤백 모두 같은 권한 규칙" actions={<><Pill tone="accent">현재 {state.role}</Pill></>}>
-          <div className="table-wrap">
-            <table className="tbl">
-              <thead><tr><th>역할</th><th>처리 가능한 요청</th><th className="r">현재 승인 대기</th></tr></thead>
-              <tbody>
-                {Object.entries(ROLE_SCOPE).map(([role, scope]) => (
-                  <tr key={role} className={role === state.role ? 'selected' : undefined}>
-                    <td className="small"><strong>{role}</strong></td>
-                    <td className="small">{scope.map((a) => APPROVER_LABEL[a]).join(' · ')} 건</td>
-                    <td className="r">{changes.filter((c) => c.status === 'pending' && scope.includes(c.approver)).length}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="xs muted">전담 TF {TF_ROLES.length}인 · 단일 창구는 {TF_ROLES[0].role}, 백업 {TF_ROLES.find((r) => r.id === TF_ROLES[0].backup)?.role} (p.52).</div>
-        </Card>
-      </div>
+      <Card title="결정 유형 · 결정자 · 소요" sub="판정 시한은 소요 기준을 시각으로 환산 · 이번 세션 처리 실적" actions={<><Src kind="PROPOSAL" page="p.53" /><Src kind="DEMO" /></>}>
+        <div className="table-wrap flow-decision-table">
+          <table className="tbl">
+            <thead><tr><th>결정 유형</th><th>결정자</th><th>소요</th><th>판정 시한</th><th className="r">건수</th><th className="r">평균 결정</th><th className="r">기준 충족</th></tr></thead>
+            <tbody>
+              {byDecision.map((r) => (
+                <tr key={r.d.type}>
+                  <td className="small"><strong>{r.d.type}</strong></td>
+                  <td className="small">{r.d.decider}</td>
+                  <td className="small">{r.d.lead}</td>
+                  <td className="xs muted">{r.rule?.label ?? '—'}<div>{r.rule?.note}</div></td>
+                  <td className="r">{r.count}</td>
+                  <td className="r">{fmtDuration(r.avg)}</td>
+                  <td className="r">{r.decided ? `${r.met}/${r.decided}` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }

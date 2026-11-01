@@ -44,7 +44,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
     {
       key: 'title', label: '이슈',
       render: ({ i }) => (
-        <div style={{ minWidth: 220 }}>
+        <div style={{ minWidth: 200 }}>
           <div className="alert-title">{i.title}</div>
           <div className="alert-sub">
             <span>{TYPE_LABEL[typeOf(i)] ?? i.ruleId}</span>
@@ -56,12 +56,12 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
         </div>
       ),
     },
-    { key: 'media', label: '매체 · 대상', render: ({ i }) => <div className="stack-sm" style={{ gap: 2 }}><MediaTag media={i.media} /><span className="xs muted">{i.target}</span></div> },
+    { key: 'media', label: '매체 · 대상', render: ({ i }) => <div className="stack-sm alert-media-cell" style={{ gap: 2 }}><MediaTag media={i.media} /><span className="xs muted">{i.target}</span></div> },
     { key: 'ev', label: '감지 근거 · 판정 기준', render: ({ i }) => <div className="alert-ev">{primaryEvidence(i)}</div> },
     { key: 'cause', label: '원인 후보 1순위', render: ({ i }) => (i.causes?.[0] ? <div className="xs"><strong>{i.causes[0].label}</strong><div className="muted num">근거 강도 {i.causes[0].score}</div></div> : <span className="xs muted">{i.causeCandidates?.[0] ?? '—'}</span>) },
     { key: 'impact', label: '추정 매출 영향', align: 'right', render: ({ i }) => <span className="num">{krwOrDash(i.impact?.revenueLossEst)}</span>, sort: ({ i }) => i.impact?.revenueLossEst ?? 0 },
     { key: 'sla', label: 'SLA (p.49)', render: ({ i }) => <SlaTimer inc={i} compact /> },
-    { key: 'who', label: '담당 · 백업', render: ({ i }) => <div className="xs"><div>{nameOf(i.assignee)}{i.onDuty ? <span className="muted"> (당번)</span> : null}</div><div className="muted">백업 {nameOf(i.backup)}</div></div> },
+    { key: 'who', label: '담당 · 백업', render: ({ i }) => <div className="xs alert-who"><div>{nameOf(i.assignee)}{i.onDuty ? <span className="muted"> (당번)</span> : null}</div><div className="muted">백업 {nameOf(i.backup)}</div></div> },
     { key: 'status', label: '상태', render: ({ i }) => <StatusPill inc={i} /> },
   ];
 
@@ -69,7 +69,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
 
   return (
     <div className="stack-lg">
-      <div className="grid g-6">
+      <div className="grid g-6 alert-kpis">
         <Card><Stat label="열린 이슈" src={<Src kind="DEMO" />} value={counts.open} foot={<span>P1 {counts.P1} · P2 {counts.P2} · P3 {counts.P3}</span>} /></Card>
         <Card><Stat label="SLA 임박 · 초과" src={<Src kind="DEMO" />} value={<span>{urgent.length}<span className="small muted"> / 초과 {overdue.length}</span></span>} foot={<span>임박 = 단계 목표 10분 이내 (p.49)</span>} /></Card>
         <Card><Stat label="자동 조정 보류" src={<Src kind="DEMO" />} value={held.length} foot={<span>{held.length ? held.map((m) => MEDIA[m].short).join(' · ') : '없음'}</span>} /></Card>
@@ -94,11 +94,13 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
           </>
         }
       >
-        <DataTable rows={rows} columns={columns} rowKey={({ i }) => i.id} onRowClick={({ i }) => onOpen(i.id)} maxHeight={560}
-          empty={status === 'open' ? '열린 이슈가 없습니다. 알림 · 테스트 주입 탭에서 테스트 이슈를 만들 수 있습니다.' : '조건에 맞는 이슈가 없습니다'} />
+        <div className="alert-queue">
+          <DataTable rows={rows} columns={columns} rowKey={({ i }) => i.id} onRowClick={({ i }) => onOpen(i.id)} maxHeight={560}
+            empty={status === 'open' ? '열린 이슈가 없습니다. 알림 · 테스트 주입 탭에서 테스트 이슈를 만들 수 있습니다.' : '조건에 맞는 이슈가 없습니다'} />
+        </div>
       </Card>
 
-      <div className="grid g-2">
+      <div className="grid g-2 alert-next-grid">
         <Card title="지금 처리할 순서" sub="등급 → SLA 남은 시간 순 · 단계별 다음 조치 (규칙 엔진 권고)">
           {next.length ? (
             <div className="stack">
@@ -106,7 +108,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
                 <button key={i.id} type="button" className="row" onClick={() => onOpen(i.id)} style={{ flexWrap: 'nowrap', alignItems: 'stretch', gap: 10, background: 'none', border: 0, padding: 0, textAlign: 'left', cursor: 'pointer', color: 'inherit', font: 'inherit' }}>
                   <span className={`alert-stripe ${i.severity}`} />
                   <span className="stack-sm" style={{ gap: 3, flex: 1, minWidth: 0 }}>
-                    <span className="row-between" style={{ flexWrap: 'nowrap' }}>
+                    <span className="row-between alert-next-head">
                       <strong className="small">{i.title}</strong>
                       <span className={`alert-sla ${st.overdue ? 'critical' : 'neutral'}`}>{st.stageLabel} · {fmtRemain(st.remainingMin)}</span>
                     </span>

@@ -100,7 +100,7 @@ export function GfaTab({ ap }: { ap: AdPilotCtx }) {
         <div className="grid g-5">
           <Stat label="광고비" value={fmt.krw(perf.t.cost)} delta={perf.dCost} invert foot={<span className="xs muted">직전 7일 {fmt.krw(perf.p.cost)}</span>} />
           <Stat label="ROAS" value={fmt.roas(perf.t.roas)} delta={perf.dRoas} foot={<span className="xs muted">목표 {fmt.roas(ap.cfg.targetRoas)}는 SA 기준 · GFA는 참고</span>} />
-          <Stat label="신규 고객" value={fmt.int(perf.t.newCustomers)} delta={perf.dNew} foot={<span className="xs muted">명</span>} />
+          <Stat label="신규 고객" value={`${fmt.int(perf.t.newCustomers)}명`} delta={perf.dNew} foot={<span className="xs muted">직전 7일 {fmt.int(perf.p.newCustomers)}명</span>} />
           <Stat label="신규 CPA (판단 지표)" value={fmt.won(perf.t.cac)} delta={perf.dCac} invert foot={<span className="xs muted">직전 7일 {fmt.won(perf.p.cac)}</span>} />
           <div className="stat">
             <div className="stat-label">오늘 시간대 점검</div>

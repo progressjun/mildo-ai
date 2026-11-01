@@ -51,7 +51,7 @@ export function NotifyTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string)
     { key: 'at', label: '시각', render: (n) => <span className="num nowrap">{fmtStamp(n.atMs)}</span>, sort: (n) => n.atMs, width: 90 },
     { key: 'sev', label: '등급', render: (n) => <Sev level={n.severity} />, width: 60 },
     { key: 'kind', label: '구분', render: (n) => <Pill tone={n.kind === '에스컬레이션' || n.kind === 'SLA 초과' ? 'critical' : n.kind === '조치 공유' ? 'good' : 'neutral'}>{n.kind}</Pill> },
-    { key: 'ch', label: '채널 · 수신', render: (n) => <div className="xs"><div><Icon name={n.channel === '메일' ? 'inbox' : 'send'} size={12} /> {n.channel}</div><div className="muted">{n.to}</div></div> },
+    { key: 'ch', label: '채널 · 수신', render: (n) => <div className="xs"><div className="nowrap"><Icon name={n.channel === '메일' ? 'inbox' : 'send'} size={12} /> {n.channel}</div><div className="muted">{n.to}</div></div> },
     { key: 'title', label: '내용', render: (n) => <div className="xs" style={{ maxWidth: 420 }}><strong>{n.title}</strong><div className="muted">{n.body}</div></div> },
     { key: 'test', label: '', render: (n) => (n.isTest ? <Pill tone="dark">테스트</Pill> : null) },
   ];
@@ -93,7 +93,7 @@ export function NotifyTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string)
           </div>
         </Card>
 
-        <Card title="메일 미리보기 · P3" sub="매체 · 외부 환경은 메일 · 주간 리포트 (p.44) — 24시간 내 영향 분석 · 대응안" actions={<><Src kind="PROPOSAL" page="p.44" /><Src kind="DEMO" /></>}>
+        <Card className="alert-mail-card" title="메일 미리보기 · P3" sub="매체 · 외부 환경은 메일 · 주간 리포트 (p.44) — 24시간 내 영향 분석 · 대응안" actions={<><Src kind="PROPOSAL" page="p.44" /><Src kind="DEMO" /></>}>
           <div className="alert-mail">
             <div className="alert-mail-head">
               <span>보낸 사람</span><span>MILDO Alert (자동 발송)</span>

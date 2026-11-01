@@ -48,7 +48,7 @@ export function AccountsTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: strin
 
   return (
     <div className="stack-lg">
-      <div className="grid g-5">
+      <div className="grid g-5 alert-kpis">
         <Card><Stat label="광고 계정" src={<Src kind="DEMO" />} value={checks.length} foot={<span>매체 계정 {checks.filter((c) => (MEDIA_IDS as string[]).includes(c.account.media)).length} · 판매 채널 광고 {checks.filter((c) => !(MEDIA_IDS as string[]).includes(c.account.media)).length}</span>} /></Card>
         <Card><Stat label="점검 실패 · 주의" src={<Src kind="DEMO" />} value={<span>{checks.filter((c) => c.worst === 'fail').length}<span className="small muted"> / 주의 {checks.filter((c) => c.worst === 'warn').length}</span></span>} foot={<span>잔액 1일치 · 자동충전 · 권한 · 상태 (p.44)</span>} /></Card>
         <Card><Stat label="선결제 잔액 합계" src={<Src kind="DEMO" />} value={`${fmt.krw(sum(prepaid, (c) => c.account.balance))}원`} foot={<span>선결제 {prepaid.length}개 계정</span>} /></Card>

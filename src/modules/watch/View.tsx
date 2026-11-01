@@ -25,7 +25,7 @@ export default function View() {
   const d = w.state.data;
   const weekArc = w.archive.filter((r) => r.date >= w.brief.period.from);
   return (
-    <div className="page">
+    <div className="page watch-page">
       <PageHeader
         eyebrow="03 MONITORING & TEST · MILDO WATCH"
         title="MILDO Watch"

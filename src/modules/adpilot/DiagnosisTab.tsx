@@ -31,7 +31,7 @@ export function DiagnosisTab({ ap, onVerify }: { ap: AdPilotCtx; onVerify: (keyw
   const columns: Column<KeywordDiagnosis>[] = [
     { key: 'text', label: '키워드', sort: (d) => d.text, render: (d) => <div className="stack-sm" style={{ gap: 0 }}><strong className="small">{d.text}</strong><span className="xs muted">{d.adgroup}{d.isBrand ? ' · 브랜드' : ''}</span></div> },
     { key: 'verdict', label: '판정 · 근거 (기준값)', sort: (d) => d.verdict, render: (d) => (
-      <div className="stack-sm" style={{ gap: 2, maxWidth: 360 }}>
+      <div className="stack-sm adpilot-verdict-cell" style={{ gap: 2 }}>
         <span className="row" style={{ gap: 6 }}><VerdictPill d={d} />{d.proposedBid !== null ? <span className="small num">{fmt.won(d.bid)} → <strong>{fmt.won(d.proposedBid)}</strong> <Delta pct={d.proposedPct ?? NaN} /></span> : null}</span>
         <span className="adpilot-basis">{d.basis}</span>
         {d.note ? <span className="xs muted">{d.note}</span> : null}

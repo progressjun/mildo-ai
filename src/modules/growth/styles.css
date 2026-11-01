@@ -84,3 +84,53 @@
   .growth-parties { grid-template-columns: 1fr; }
   .growth-parties .growth-path-arrow { display: none; }
 }
+
+/* ---------- 가독성 (시연 1440px 기준) ---------- */
+/* 한글은 어절 단위로 줄바꿈 — '방/어', '피/드백', '기/준)' 같은 음절 단위 끊김 방지 */
+.growth-page { word-break: keep-all; overflow-wrap: break-word; }
+
+/* 상단 KPI 5칸 — 라벨이 2줄인 칸(출처 태그 포함)이 있어도 큰 숫자가 같은 높이에 오도록 라벨 영역을 2줄로 고정, 태그는 첫 줄 */
+.growth-kpis .stat-label { min-height: calc(2 * 1.55em); align-items: flex-start; }
+.growth-kpis .stat-label > .src { flex: none; margin-top: 1px; }
+
+/* 타겟 · SA 캠페인 표 — 열마다 읽을 수 있는 최소 폭, 숫자는 단위와 한 줄 */
+.growth-camp { min-width: 116px; }
+.growth-msg { min-width: 168px; max-width: 230px; }
+.growth-msg-line { display: flex; gap: 6px; align-items: baseline; }
+.growth-msg-line > :first-child { flex: none; }
+.growth-msg .pill { white-space: normal; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; align-self: flex-start; }
+.growth-basis-cell { display: block; min-width: 168px; max-width: 220px; }
+.growth-star { min-width: 150px; }
+.growth-camp-table .tbl td.r { white-space: nowrap; }
+.growth-camp-table .tbl th, .growth-camp-table .tbl td { padding-left: 9px; padding-right: 9px; }
+
+/* 매체 이름(색 견본 + 이름)은 한 줄 — '네이버 / GFA', '버티컬 · / 신규' 방지 */
+.growth-page .tbl td:first-child > .stack-sm > :first-child { white-space: nowrap; }
+
+/* 반쪽 카드 안의 표 — 머리글은 2줄 허용(값보다 넓은 머리글이 열 폭을 차지하지 않게), 숫자 열은 한 줄 */
+.growth-half-table .tbl th { white-space: normal; vertical-align: bottom; }
+.growth-half-table .tbl td.r { white-space: nowrap; }
+.growth-half-table .tbl th, .growth-half-table .tbl td { padding-left: 10px; padding-right: 10px; }
+
+/* 꺾은선 끝 라벨(시리즈 이름)이 카드 · 옆 차트 밖으로 넘치지 않도록 오른쪽 여유 */
+.growth-chart-pair .chart, .growth-endlabel-room .chart { width: auto; margin-right: 48px; }
+.growth-chart-pair { column-gap: 28px; }
+
+/* 배분 비교 — 비중 숫자 표 */
+.growth-share-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; margin-top: 4px; }
+.growth-share-tbl th, .growth-share-tbl td { padding: 5px 6px; text-align: right; border-bottom: 1px solid var(--line); }
+.growth-share-tbl thead th { color: var(--muted); font-weight: 500; }
+.growth-share-tbl tbody th { text-align: left; font-weight: 700; color: var(--ink-2); white-space: nowrap; }
+.growth-share-tbl tr:last-child th, .growth-share-tbl tr:last-child td { border-bottom: 0; }
+
+/* 파일럿 계산기 — 금액 단위(4,000만 / 0) 길이가 달라도 입력칸 폭을 같게 */
+.growth-pilot-budget .nowrap { min-width: 48px; text-align: left; }
+
+/* 모바일 — 표는 가로 스크롤로 보고, 서술 열은 1~2자 폭으로 눌리지 않게 최소 폭 유지 */
+@media (max-width: 900px) {
+  /* 1열 그리드(1fr)에서 넓은 표가 칸을 카드 밖으로 밀어내지 않게 — 표는 자기 스크롤 안에서만 넓어진다 */
+  .growth-page .grid > * { min-width: 0; }
+  .growth-page .tbl td.small, .growth-page .tbl td > .small:only-child { min-width: 132px; }
+  .growth-page .tbl td:first-child > strong { white-space: nowrap; }
+  .growth-kpis .stat-label { min-height: 0; }
+}

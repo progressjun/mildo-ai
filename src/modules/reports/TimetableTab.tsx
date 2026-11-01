@@ -60,9 +60,8 @@ export function TimetableTab() {
 
       <Card title="데이터 제공 시간표" sub="출근 전에 데이터가 준비되고 퇴근 전에 다음 날 계획이 공유됩니다." actions={<><Src kind="PROPOSAL" page="p.18" />{t.off ? <Pill tone="warning" icon="calendar">{t.offLabel} · 이슈 브리핑 {fmtDate(t.nextBusinessDay)} 09:30</Pill> : null}</>}>
         <div className="reports-tt" role="img" aria-label={`데이터 제공 시간표 ${t.items.map((i) => `${i.time} ${i.title} ${i.statusLabel}`).join(', ')}`}>
-          <div className={`reports-tt-band${t.off ? ' off' : ''}`} style={{ left: pos(t.band.from), width: `calc(${pos(t.band.to)} - ${pos(t.band.from)})` }}>
-            <span className="reports-tt-band-label">{t.off ? `업무시간 외 · ${t.offLabel} (자동 수집 · 발송 · Alert 감지는 계속)` : '수면밀도 업무시간 08–17'}</span>
-          </div>
+          {/* 띠 라벨은 위쪽 항목 라벨(이동된 09:30 등)과 겹치므로 띠 위에 쓰지 않고 아래 범례로 옮긴다 */}
+          <div className={`reports-tt-band${t.off ? ' off' : ''}`} style={{ left: pos(t.band.from), width: `calc(${pos(t.band.to)} - ${pos(t.band.from)})` }} />
           <div className="reports-tt-axis" />
           <div className="reports-tt-ticks">{ticks.map((m) => <span key={m} className="reports-tt-tick" style={{ left: pos(m) }}>{m / 60}시</span>)}</div>
           {t.nowMinutes !== null ? <div className="reports-tt-now" style={{ left: pos(t.nowMinutes) }}><span>현재 {hhmm(t.nowMinutes)}</span></div> : null}
@@ -79,6 +78,7 @@ export function TimetableTab() {
           ))}
         </div>
         <div className="legend">
+          <span className="legend-item"><span className={`reports-tt-band-key${t.off ? ' off' : ''}`} />{t.off ? `업무시간 외 · ${t.offLabel} (자동 수집 · 발송 · Alert 감지는 계속)` : '수면밀도 업무시간 08–17'}</span>
           <span className="legend-item"><span className="legend-swatch" style={{ background: 'var(--good)' }} />완료</span>
           <span className="legend-item"><span className="legend-swatch" style={{ background: 'var(--accent)' }} />진행 중 · 현재 시각</span>
           <span className="legend-item"><span className="legend-swatch" style={{ background: 'var(--surface)', boxShadow: '0 0 0 2px var(--ink-2)' }} />예정</span>
@@ -88,7 +88,7 @@ export function TimetableTab() {
 
       <Card title="항목별 리드타임 · 채널 · 산출물" sub={t.isToday ? `산출물은 ${fmtDate(d.today)} 데이터로 계산한 결과입니다.` : '기준일이 데이터 기준일과 달라 산출물은 일정만 표시합니다.'} actions={<Src kind="DEMO" />}>
         <div className="table-wrap">
-          <table className="tbl">
+          <table className="tbl reports-tt-table">
             <thead>
               <tr><th>시각</th><th>항목</th><th>채널</th><th>데이터 범위</th><th>리드타임</th><th>상태</th><th>산출물 (데이터 계산)</th></tr>
             </thead>

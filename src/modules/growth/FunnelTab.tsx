@@ -56,9 +56,9 @@ export function FunnelTab({ d, f }: { d: Dataset; f: FunnelDiagnosis }) {
   }
 
   const misCols: Column<LandingFinding['mismatches'][number]>[] = [
-    { key: 'kw', label: '키워드', render: (r) => <strong>{r.keyword}</strong> },
-    { key: 'camp', label: '캠페인', render: (r) => SA_CAMPAIGNS[r.intent].name },
-    { key: 'exp', label: 'p.35 랜딩', render: (r) => r.expected },
+    // 반쪽 카드 폭 — 캠페인은 키워드 아래 줄로 두어 '비교 · / 검토', '리뷰 · 비 / 교' 같은 끊김 없이 한 줄씩
+    { key: 'kw', label: '키워드 · 캠페인', render: (r) => <span className="stack-sm" style={{ gap: 0 }}><strong className="nowrap">{r.keyword}</strong><span className="xs muted nowrap">{SA_CAMPAIGNS[r.intent].name}</span></span> },
+    { key: 'exp', label: 'p.35 랜딩', render: (r) => <span className="nowrap">{r.expected}</span> },
     { key: 'act', label: '현재 랜딩', render: (r) => <Pill tone="warning">{r.actual}</Pill> },
     { key: 'cost', label: '광고비 · 14일', align: 'right', sort: (r) => r.cost14, render: (r) => fmt.krw(r.cost14) },
     { key: 'rev', label: '매출 · 14일', align: 'right', sort: (r) => r.revenue14, render: (r) => fmt.krw(r.revenue14) },
@@ -118,7 +118,7 @@ export function FunnelTab({ d, f }: { d: Dataset; f: FunnelDiagnosis }) {
             <Stat label="의도-랜딩 불일치" value={`${f.landing.mismatches.length}개`} foot={<span className="xs muted">SA 광고비의 {fmt.ratio(f.landing.mismatchCostShare)}</span>} />
             <Stat label="품절 옵션 랜딩" value={`${f.landing.soldout.length}건`} foot={<span className="xs muted">{f.landing.soldout.map((s) => `${s.keyword} · ${s.option}`).join(', ') || '없음'}</span>} />
           </div>
-          <DataTable rows={f.landing.mismatches} columns={misCols} rowKey={(r) => r.keyword} empty="의도-랜딩 불일치 없음" maxHeight={260} />
+          <div className="growth-half-table"><DataTable rows={f.landing.mismatches} columns={misCols} rowKey={(r) => r.keyword} empty="의도-랜딩 불일치 없음" maxHeight={260} /></div>
           {f.landing.soldout.length ? (
             <Callout tone="critical" title="품절 옵션 랜딩">
               {f.landing.soldout.map((s) => `'${s.keyword}' → ${s.product} ${s.option} 옵션 품절 (광고비 14일 ${fmt.krw(s.cost14)})`).join(' · ')}. 구매할 수 없는 옵션 페이지로 광고비가 나갑니다 — MILDO Alert 품절 랜딩 이슈 · 그룹 일시 중지 제안 대상.
@@ -133,7 +133,7 @@ export function FunnelTab({ d, f }: { d: Dataset; f: FunnelDiagnosis }) {
             <Stat label="일 매출 변화 상관" value={Number.isFinite(c.dailyCorr) ? c.dailyCorr.toFixed(2) : '—'} foot={<span className="xs muted">+ 동반 · − 상쇄</span>} />
           </div>
           <Verdict tone={c.flag === 'suspect' ? 'serious' : c.flag === 'none' ? 'good' : 'neutral'} label={c.flag === 'suspect' ? '잠식 의심' : c.flag === 'none' ? '잠식 신호 없음' : '판단 불가'} basis={c.basis} />
-          <LineChart series={trend} height={200} yFormat={(v) => fmt.krw(v)} xFormat={(x) => fmtDate(x, false)} ariaLabel="브랜드스토어 · 자사몰 일 매출과 합산" />
+          <div className="growth-endlabel-room"><LineChart series={trend} height={200} yFormat={(v) => fmt.krw(v)} xFormat={(x) => fmtDate(x, false)} ariaLabel="브랜드스토어 · 자사몰 일 매출과 합산" /></div>
           <Kv k="브랜드스토어" v={<>{fmt.krw(c.bs.cur)} <Delta pct={c.bs.deltaPct} /></>} />
           <Kv k="자사몰" v={<>{fmt.krw(c.om.cur)} <Delta pct={c.om.deltaPct} /></>} />
           {c.benefitGap ? <Callout tone="info" title="채널 간 혜택 차이">{c.benefitGap} — 자사몰 전용 혜택 랜딩을 열 때는 브랜드스토어 구매 이동(잠식)을 합산 매출로 함께 봅니다.</Callout> : null}

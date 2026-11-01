@@ -19,7 +19,7 @@ export function StructureTab({ model }: { model: OpsModel }) {
   const offNow = blocks[0] && blocks[0].start <= d.today && blocks[0].end >= d.today;
 
   const blockCols: Column<DutyBlock>[] = [
-    { key: 'p', label: '휴무 구간', render: (b) => <div><strong className="small num">{shortDate(b.start)}{b.days > 1 ? ` ~ ${shortDate(b.end)}` : ''}</strong><div className="xs muted">{[...new Set(b.labels)].join(' · ')} · {b.days}일</div></div> },
+    { key: 'p', label: '휴무 구간', render: (b) => <div><strong className="small num nowrap">{shortDate(b.start)}{b.days > 1 ? ` ~ ${shortDate(b.end)}` : ''}</strong><div className="xs muted">{[...new Set(b.labels)].join(' · ')} · {b.days}일</div></div> },
     { key: 'o', label: '2차 · 당번 AE (30분 내 확인)', render: (b) => {
       const ids = [...new Set(b.duties.map((x) => x.roleId))];
       return <div className="small">{ids.map((id) => <div key={id}><strong>{b.duties.find((x) => x.roleId === id)!.role}</strong> <span className="muted">{nameOf(id)}</span></div>)}</div>;
@@ -36,8 +36,8 @@ export function StructureTab({ model }: { model: OpsModel }) {
         </div>
       );
     } },
-    { key: 'e', label: '3차', render: () => <span className="xs">PM 에스컬레이션 · P1 한정</span> },
-    { key: 'n', label: '다음 영업일 브리핑', render: (b) => <span className="small num">{shortDate(b.briefing)} 09:30</span> },
+    { key: 'e', label: '3차', render: () => <span className="xs nowrap">PM 에스컬레이션 · P1 한정</span> },
+    { key: 'n', label: '다음 영업일 브리핑', render: (b) => <span className="small num nowrap">{shortDate(b.briefing)} 09:30</span> },
     { key: 'h', label: '구분', render: (b) => (b.hasHoliday ? <Pill tone="accent" icon="calendar">공휴일 포함 · 전날 사전 점검</Pill> : <Pill tone="neutral">주말</Pill>) },
   ];
 
@@ -50,14 +50,14 @@ export function StructureTab({ model }: { model: OpsModel }) {
   ];
 
   const accCols: Column<AccountCheck>[] = [
-    { key: 'name', label: '계정', render: (a) => <div><strong className="small">{a.name}</strong><div className="xs muted">{a.channel}</div></div> },
+    { key: 'name', label: '계정', render: (a) => <div className="ops-acc-name"><strong className="small">{a.name}</strong><div className="xs muted">{a.channel}</div></div> },
     { key: 'owner', label: '소유', render: (a) => (a.ownerOk ? <Pill tone="good" icon="check">수면밀도</Pill> : <Pill tone="critical" icon="x">{a.owner}</Pill>) },
-    { key: 'pay', label: '결제', render: (a) => <div className="xs">{a.payment}<div className="muted">자동충전 {({ ok: '정상', failed: '실패', off: '없음', postpaid: '후불' } as const)[a.autoCharge]}</div></div> },
+    { key: 'pay', label: '결제', render: (a) => <div className="xs ops-pay">{a.payment}<div className="muted">자동충전 {({ ok: '정상', failed: '실패', off: '없음', postpaid: '후불' } as const)[a.autoCharge]}</div></div> },
     { key: 'run', label: '잔액 일수', align: 'right', sort: (a) => a.runwayDays ?? 999, render: (a) => (a.runwayDays === null ? <span className="xs muted">후불</span> : <span className={`num ${a.runwayDays < 1 ? 'bold' : ''}`}>{fmt.dec1(a.runwayDays)}일</span>) },
     { key: 'perm', label: '권한 (실명)', render: (a) => <div className="xs">{a.agencyUsers.join(' · ') || '—'}{a.nonRealName.map((p) => <div key={p.user}><Pill tone="critical" icon="x">비실명 {p.user} · {p.role}</Pill></div>)}</div> },
     { key: 'st', label: '상태', render: (a) => (a.status === 'active' ? <span className="xs">정상</span> : <Pill tone="warning" icon="alert">{a.status === 'review' ? '검수 · 확인 필요' : '제재'}</Pill>) },
     { key: 'f', label: '점검 결과 · 조치', render: (a) => (
-      <div className="stack-sm" style={{ gap: 3 }}>
+      <div className="stack-sm ops-findings" style={{ gap: 3 }}>
         {a.findings.filter((f) => f.level !== 'info' || a.findings.length === 1).map((f) => <div key={`${f.item}-${f.text}`} className="xs"><LevelPill level={f.level}>{f.item}</LevelPill> {f.text}{f.action !== '—' ? <span className="muted"> → {f.action}</span> : null}</div>)}
       </div>
     ) },
@@ -65,7 +65,7 @@ export function StructureTab({ model }: { model: OpsModel }) {
 
   return (
     <div className="stack-lg">
-      <div className="grid g-2">
+      <>
         <Card title="주말 · 공휴일 당번 순번 요약" sub="MILDO Alert와 같은 규칙 · 매체 AE 4인 순환 · 주말은 토 · 일 같은 당번 · 평일 공휴일은 일자 순번 (순번 방식은 운영 가정)"
           actions={<><Src kind="PROPOSAL" page="p.48" /><a className="btn sm" href="#alert">Alert 당번표 · 사전 점검</a></>}>
           <div className="ops-tiers">
@@ -83,6 +83,7 @@ export function StructureTab({ model }: { model: OpsModel }) {
         </Card>
 
         <Card title="커뮤니케이션 · 의사결정 체계" sub="창구는 메인 PM 한 명으로 모으고, 결정 유형마다 결정자와 소요 시간을 미리 정합니다" actions={<Src kind="PROPOSAL" page="p.53" />}>
+          <div className="ops-comm">
           <div className="ops-org" aria-label="커뮤니케이션 구조">
             <div className="ops-org-node"><strong>{COMM_STRUCTURE.client}</strong></div>
             <div className="ops-org-arrow">↕</div>
@@ -105,12 +106,13 @@ export function StructureTab({ model }: { model: OpsModel }) {
               </tbody>
             </table>
           </div>
+          </div>
           <div className="row" style={{ gap: 6 }}>
             {COMM_STRUCTURE.channels.map((c) => <Pill key={c} tone="neutral">{c}</Pill>)}
             <span className="xs muted">승인 대기는 MILDO Flow의 요청 · 승인 이력 기준 · 승인 범위 내 = 담당 AE · PM 승인 건, 예산 · 구조 = 수면밀도 승인 건, 알림 · 시스템 = 탐지 기준 변경 건</span>
           </div>
         </Card>
-      </div>
+      </>
 
       <Card title="계정 · 결제 · 권한 구조" sub="계정과 데이터의 소유권은 수면밀도에 두고, 프로그레스미디어는 위임받은 범위 안에서 운영합니다 — 표 기준으로 현재 계정을 점검"
         actions={<><Src kind="PROPOSAL" page="p.50" /><Src kind="DEMO" /><a className="btn sm" href="#alert">Alert 계정 점검</a></>}>

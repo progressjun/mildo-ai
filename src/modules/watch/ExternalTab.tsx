@@ -11,6 +11,17 @@ import { LevelPill } from './parts';
 const KIND_TONE: Record<CalendarItem['kind'], 'neutral' | 'dark' | 'outline'> = { move: 'neutral', wedding: 'neutral', shopping: 'outline', holiday: 'dark', promo: 'outline' };
 const KIND_ICON: Record<CalendarItem['kind'], string | undefined> = { move: undefined, wedding: undefined, shopping: 'trend', holiday: 'clock', promo: 'zap' };
 
+/** 시즌 띠 — 연속된 달에 같은 일정 묶음이 이어지면 하나의 칸(colSpan)으로 합친다. 빈 달은 합치지 않는다 */
+function calRuns(cells: string[][]) {
+  const runs: { start: number; span: number; cell: string[] }[] = [];
+  cells.forEach((cell, i) => {
+    const prev = runs[runs.length - 1];
+    if (prev && cell.length && prev.cell.join('|') === cell.join('|')) prev.span += 1;
+    else runs.push({ start: i, span: 1, cell });
+  });
+  return runs;
+}
+
 export function ExternalTab({ w }: { w: WatchCtx }) {
   const d = w.state.data;
   const grid = useMemo(() => monthGrid(d, 12), [d]);
@@ -35,7 +46,7 @@ export function ExternalTab({ w }: { w: WatchCtx }) {
 
   return (
     <div className="stack-lg">
-      <div className="grid g-4">
+      <div className="grid g-4 watch-kpis">
         <Card>
           <Stat label="브랜드 검색량 · 전일" src={<Src kind="DEMO" />} value={y ? fmt.int(y.volume) : '—'} delta={y?.deltaPct}
             foot={y ? <span className="row" style={{ gap: 6 }}><span>최근 4주 동요일 {fmt.int(y.base)} 대비 · 기준 ±{w.cfg.searchShiftPct / 2}% 주의 · ±{w.cfg.searchShiftPct}% 급변</span><LevelPill level={y.level} /></span> : <span>데이터 없음</span>} />
@@ -56,6 +67,7 @@ export function ExternalTab({ w }: { w: WatchCtx }) {
       <Card title="12개월 시즌 띠" sub="행 = 외부 변수 종류, 열 = 월. 겹치는 구간이 많을수록 경쟁사 프로모션 · CPC 변동을 같이 본다." actions={<Pill tone="outline">가설 포함</Pill>}>
         <div className="table-wrap">
           <table className="tbl watch-cal">
+            <colgroup><col className="watch-cal-head" />{grid.cols.map((c) => <col key={c.ym} />)}</colgroup>
             <thead>
               <tr><th>구분</th>{grid.cols.map((c) => <th key={c.ym} className="c">{c.label}</th>)}</tr>
             </thead>
@@ -63,9 +75,10 @@ export function ExternalTab({ w }: { w: WatchCtx }) {
               {grid.rows.map((r) => (
                 <tr key={r.kind}>
                   <td className="small nowrap"><strong>{r.label}</strong></td>
-                  {r.cells.map((cell, i) => (
-                    <td key={grid.cols[i].ym} className={`c watch-cal-cell k-${r.kind} ${cell.length ? 'on' : ''}`} title={cell.join(' · ')}>
-                      {cell.length ? <span className="xs">{cell.length > 1 ? `${cell[0].split(' ')[0]} 외 ${cell.length - 1}` : cell[0].length > 8 ? `${cell[0].slice(0, 8)}…` : cell[0]}</span> : null}
+                  {/* 같은 일정이 이어지는 달은 한 칸으로 합쳐 띠처럼 보여준다 (월 열 폭은 동일) */}
+                  {calRuns(r.cells).map((run) => (
+                    <td key={grid.cols[run.start].ym} colSpan={run.span} className={`c watch-cal-cell k-${r.kind} ${run.cell.length ? 'on' : ''}`} title={run.cell.join(' · ')}>
+                      {run.cell.length ? <span className="xs watch-cal-label">{run.cell.length > 1 ? `${run.cell[0].split(' ')[0]} 외 ${run.cell.length - 1}` : run.cell[0]}</span> : null}
                     </td>
                   ))}
                 </tr>
@@ -81,7 +94,10 @@ export function ExternalTab({ w }: { w: WatchCtx }) {
           {y ? <div className="xs muted">전일 {fmtDate(y.date)} {fmt.int(y.volume)} · 최근 4주 동요일 평균 {fmt.int(y.base)} · <Delta pct={y.deltaPct} /> · 주의 ±{w.cfg.searchShiftPct / 2}%(운영 가정) · 급변 ±{w.cfg.searchShiftPct}% (MILDO Alert 외부 환경과 동일)</div> : null}
         </Card>
         <Card title="월별 수요 가설 지수" sub="100 = 연평균. 검색 트렌드 연동 전 가설값이며 실측이 아닙니다. 연동 후 전년 동기 실측으로 교체합니다." actions={<><Pill tone="outline">가설</Pill><Src kind="DEMO" /></>}>
-          <LineChart series={demandSeries} height={220} yFormat={(v) => String(Math.round(v))} zeroBased={false} refLine={{ y: 100, label: '연평균 100' }} ariaLabel="월별 수요 가설 지수" />
+          {/* 선 끝 라벨(시리즈명)이 길어 카드 밖으로 나가지 않도록 오른쪽 여백을 둔다 */}
+          <div className="watch-chart-endpad">
+            <LineChart series={demandSeries} height={220} yFormat={(v) => String(Math.round(v))} zeroBased={false} refLine={{ y: 100, label: '연평균 100' }} ariaLabel="월별 수요 가설 지수" />
+          </div>
         </Card>
       </div>
 

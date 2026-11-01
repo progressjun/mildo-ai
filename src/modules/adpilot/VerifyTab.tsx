@@ -115,15 +115,27 @@ export function VerifyTab({ ap, keywordId, setKeywordId }: { ap: AdPilotCtx; key
       </div>
 
       <Card title={`입찰 수준별 예상 일 비용 · 매출 — ${k.text}`} sub={`현재 ${fmt.won(current)} 기준 −30% ~ +30%. 일 조정 폭 상한 ±${ap.cfg.dailyChangeCapPct}% 밖은 실행 불가 구간입니다.`} actions={<Src kind="DEMO" title="탄력성 가정 시뮬레이션" />}>
-        <LineChart
-          height={220}
-          series={[
-            { id: 'rev', label: '예상 일 매출', colorVar: '--series-1', points: curve.map((c) => ({ x: `${c.pct > 0 ? '+' : ''}${c.pct}%`, y: c.revenue })) },
-            { id: 'cost', label: '예상 일 비용', colorVar: '--series-2', points: curve.map((c) => ({ x: `${c.pct > 0 ? '+' : ''}${c.pct}%`, y: c.cost })) },
-          ]}
-          yFormat={(y) => fmt.krw(y)}
-          ariaLabel="입찰 수준별 예상 일 매출과 비용"
-        />
+        {/* 매출(만 단위)과 비용(천 원 단위)은 규모 차이가 커서 한 축에 그리면 비용 선이 0에 붙는다 — 축을 나눠 각각 그린다 */}
+        <div className="grid g-2">
+          <div className="stack-sm">
+            <span className="legend-item small"><span className="legend-swatch" style={{ background: 'var(--series-1)' }} />예상 일 매출</span>
+            <LineChart
+              height={190}
+              series={[{ id: 'rev', label: '예상 일 매출', colorVar: '--series-1', points: curve.map((c) => ({ x: `${c.pct > 0 ? '+' : ''}${c.pct}%`, y: c.revenue })) }]}
+              yFormat={(y) => fmt.krw(y)}
+              ariaLabel="입찰 수준별 예상 일 매출"
+            />
+          </div>
+          <div className="stack-sm">
+            <span className="legend-item small"><span className="legend-swatch" style={{ background: 'var(--series-2)' }} />예상 일 비용</span>
+            <LineChart
+              height={190}
+              series={[{ id: 'cost', label: '예상 일 비용', colorVar: '--series-2', points: curve.map((c) => ({ x: `${c.pct > 0 ? '+' : ''}${c.pct}%`, y: c.cost })) }]}
+              yFormat={(y) => fmt.won(y)}
+              ariaLabel="입찰 수준별 예상 일 비용"
+            />
+          </div>
+        </div>
         <div className="table-wrap">
           <table className="tbl">
             <thead><tr><th>입찰 변경</th>{curve.map((c) => <th key={c.pct} className="r">{c.pct > 0 ? '+' : ''}{c.pct}%</th>)}</tr></thead>

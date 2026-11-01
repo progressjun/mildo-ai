@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { ChangeRequest } from '@/core/types';
-import { hhmm } from '@/core/util';
+import { fmt, hhmm } from '@/core/util';
 import { toCsv } from '@/core/download';
 import { Card, type Column, CopyButton, DataTable, DownloadButton, Segmented, Src } from '@/ui/primitives';
 import type { AdPilotCtx } from './useAdPilot';
@@ -8,6 +8,14 @@ import { ApproverPill, StatusPill } from './parts';
 import { ChangeButtons } from './ProposalsTab';
 
 interface Row { key: string; at: string; by: string; action: string; note?: string; change: ChangeRequest }
+
+/** 화면 표기용 값 — 예산은 만 단위, 입찰은 원 단위, 그 외 숫자는 천 단위 구분 (CSV · 마크다운은 원값 유지) */
+function showValue(kind: ChangeRequest['kind'], v: ChangeRequest['before']): string {
+  if (typeof v !== 'number') return String(v);
+  if (kind === 'budget') return fmt.krw(v);
+  if (kind === 'bid') return fmt.won(v);
+  return fmt.int(v);
+}
 
 const KIND_LABEL: Record<string, string> = { bid: '입찰', budget: '예산', status: '상태', keyword_add: '키워드 등록', setting: '기준', gfa: '신규 캠페인', keyword_exclude: '제외', alert_rule: '알림 기준', test: '테스트' };
 
@@ -20,8 +28,8 @@ export function HistoryTab({ ap }: { ap: AdPilotCtx }) {
 
   const cols: Column<Row>[] = [
     { key: 'at', label: '언제', sort: (r) => r.at, render: (r) => <span className="num small">{hhmm(r.at)}</span> },
-    { key: 'by', label: '누가', sort: (r) => r.by, render: (r) => <strong className="small">{r.by}</strong> },
-    { key: 'action', label: '무엇', render: (r) => <div className="stack-sm" style={{ gap: 0 }}><span className="small">{r.action} · {r.change.target}</span><span className="xs muted">{r.change.module === 'gfa' ? 'GFA Control' : 'AD Pilot'} · {KIND_LABEL[r.change.kind] ?? r.change.kind} · {String(r.change.before)} → {String(r.change.after)}</span></div> },
+    { key: 'by', label: '누가', sort: (r) => r.by, render: (r) => <strong className="small nowrap">{r.by}</strong> },
+    { key: 'action', label: '무엇', render: (r) => <div className="stack-sm" style={{ gap: 0 }}><span className="small">{r.action} · {r.change.target}</span><span className="xs muted">{r.change.module === 'gfa' ? 'GFA Control' : 'AD Pilot'} · {KIND_LABEL[r.change.kind] ?? r.change.kind} · <span className="nowrap">{showValue(r.change.kind, r.change.before)} → {showValue(r.change.kind, r.change.after)}</span></span></div> },
     { key: 'why', label: '왜', render: (r) => <div className="adpilot-basis">{r.note ?? r.change.reason}</div> },
     { key: 'approver', label: '승인 주체', render: (r) => <ApproverPill level={r.change.approver} /> },
     { key: 'status', label: '현재 상태', render: (r) => <StatusPill status={r.change.status} /> },

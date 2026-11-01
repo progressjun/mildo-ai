@@ -63,10 +63,14 @@ export function HourlyTab({ d }: { d: Dataset }) {
       <div className="grid g-3">
         <Card title="시간대별 전환 효율 지수" sub="전환 비중 ÷ 광고비 비중 · 1 초과 = 광고비 대비 전환이 많음 · 최근 4주" className="span-2" actions={<Src kind="DEMO" />}>
           {h.hasData && eff.some((x) => Number.isFinite(x.index)) ? (
-            <BarChart
-              data={eff.map((x) => ({ label: String(x.hour), value: Number.isFinite(x.index) ? x.index : 0, colorVar: '--series-1', note: `${x.hour}시 · 광고비 ${fmt.ratio(x.costShare, 1)} · 전환 ${fmt.ratio(x.convShare, 1)}` }))}
-              height={200} format={(v) => v.toFixed(2)} refValue={1} refLabel="1.0 = 광고비 비중과 같은 전환 비중"
-            />
+            <>
+              <BarChart
+                data={eff.map((x) => ({ label: String(x.hour), value: Number.isFinite(x.index) ? x.index : 0, colorVar: '--series-1', note: `${x.hour}시 · 광고비 ${fmt.ratio(x.costShare, 1)} · 전환 ${fmt.ratio(x.convShare, 1)}` }))}
+                height={200} format={(v) => v.toFixed(2)} refValue={1}
+              />
+              {/* 기준선 라벨을 막대 위에 겹쳐 그리지 않고 범례로 분리 */}
+              <span className="board-ref-key xs muted"><i aria-hidden />1.0 = 광고비 비중과 같은 전환 비중</span>
+            </>
           ) : <Empty title="전환 효율을 계산할 데이터가 없습니다">최근 4주 시간대별 광고비 · 전환이 필요합니다.</Empty>}
         </Card>
         <Card title="시간대 블록 비교" sub={media === 'all' ? '전체 매체' : MEDIA[media].name} actions={<Src kind="DEMO" />}>

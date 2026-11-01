@@ -1,0 +1,12 @@
+/* MILDO Agent 전용 스타일 — 접두사 agent-. 색은 토큰 변수만 사용 */
+
+/* 본문 | 우측 패널(판단 원칙 · 도구). 좁은 화면에서는 한 열로 쌓는다 */
+.agent-layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) 300px; align-items: start; }
+
+/* 도구 58개 목록: 우측 패널이 본문보다 1,000px 이상 길어지지 않도록 카드 안에서 스크롤 */
+.agent-tools { max-height: 340px; overflow-y: auto; padding-right: 4px; border-top: 1px solid var(--line); padding-top: 10px; }
+
+@media (max-width: 900px) {
+  .agent-layout { grid-template-columns: 1fr; }
+  .agent-tools { max-height: 260px; }
+}

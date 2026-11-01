@@ -30,7 +30,7 @@ export default function View() {
   // 대량 변경 실수 (p.45) 감지는 앱 셸(Shell)에서 상시 실행 — 이 화면이 닫혀 있어도 이슈로 적재된다.
 
   return (
-    <div className="page">
+    <div className="page alert-page">
       <PageHeader
         eyebrow="05 OPERATIONAL STABILITY · MILDO ALERT"
         title="MILDO Alert"

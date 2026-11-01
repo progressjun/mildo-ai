@@ -146,3 +146,52 @@
   .flow-check { grid-template-columns: 58px minmax(0, 1fr); }
   .flow-kv { grid-template-columns: 1fr; gap: 0; }
 }
+
+/* ---------- 가독성 (시연 1440px 기준) ---------- */
+/* 한글은 어절 단위로 줄바꿈 — '라우/팅', '오늘/의집', '담/당자)' 같은 음절 끊김 방지 */
+.flow-page { word-break: keep-all; overflow-wrap: break-word; }
+.flow-page .tbl td.r { white-space: nowrap; }
+
+/* 상태별 보드 — 1440px 화면(카드 폭 약 1,100px)에서 6열이 모두 보이게, 카드 안 배지는 칸 폭 안에서 줄바꿈 */
+@media (min-width: 1181px) {
+  .flow-board { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+  .flow-col { padding: 6px; }
+  .flow-card { padding: 8px; }
+}
+.flow-card { min-width: 0; }
+.flow-card > * { max-width: 100%; }
+.flow-card .pill { border-radius: 10px; white-space: normal; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; align-items: flex-start; text-align: left; }
+.flow-card .pill svg { flex: none; margin-top: 2px; }
+/* 승인 주체 · 변경 값은 문장처럼 흐르게 (inline-flex 조각이 2열처럼 갈라지던 문제) */
+.flow-card .flow-approver, .flow-card .flow-change { display: block; }
+.flow-card .flow-approver svg, .flow-card .flow-change svg { display: inline-block; vertical-align: -1px; margin: 0 2px; }
+.flow-card .flow-approver svg { margin-left: 0; }
+
+/* 처리 현황 — 옆 '내가 처리할 것'이 길어도 빈 카드로 늘어나지 않게 */
+.flow-status-card { align-self: start; }
+
+/* 프로모션 체크리스트 — 항목 수가 다른 그룹을 2단으로 흘려 짧은 그룹 옆 빈칸 제거 */
+.flow-checklist { display: block; columns: 2 360px; column-gap: 12px; }
+.flow-checklist > .flow-check-group { break-inside: avoid; margin-bottom: 12px; }
+
+/* 프로모션 리포트 — 긴 리포트 옆 다크 카드는 내용 높이만, 스크롤해도 따라오게 */
+.flow-next-card { align-self: start; position: sticky; top: 16px; }
+
+/* 의사결정 체계 — 조직도는 남는 높이의 가운데, 채널 3칸은 카드 아래 */
+.flow-org-card .flow-org { margin-top: auto; margin-bottom: auto; }
+/* 앱 레이아웃 클래스 .main(height: 100%)과 이름이 겹쳐 노드가 늘어나지 않게 */
+.flow-org-node.main { height: auto; min-width: 0; }
+.flow-org-card .flow-org-node { font-size: var(--fs-md); padding: 8px 18px; }
+.flow-org-card .flow-org-node.sm { font-size: var(--fs-sm); padding: 5px 12px; }
+.flow-decision-table td.small strong { white-space: nowrap; }
+
+/* 모바일 — 1열 그리드에서 넓은 표가 칸을 밀어내지 않게, 서술 열은 1~2자 폭으로 눌리지 않게 */
+@media (max-width: 900px) {
+  .flow-page .grid > * { min-width: 0; }
+  .flow-page .tbl td.small { min-width: 132px; }
+  .flow-page .tbl td.xs { min-width: 170px; }
+  .flow-page .tbl td .row > .small { min-width: 180px; }
+  .flow-page .tbl td:first-child strong { white-space: nowrap; }
+  .flow-checklist { columns: 1; }
+  .flow-next-card { position: static; }
+}

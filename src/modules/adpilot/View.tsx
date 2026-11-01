@@ -72,7 +72,7 @@ export default function View() {
   const early = ap.paces.filter((p) => p.earlyExhaust);
 
   return (
-    <div className="page">
+    <div className="page adpilot-page">
       <PageHeader
         eyebrow="02 RESOURCE SAVING & DATA AUTOMATION · AD PILOT"
         title="AD Pilot · GFA Control v1"
@@ -83,10 +83,10 @@ export default function View() {
         </>}
       />
 
-      <div className="grid g-5">
+      <div className="grid g-5 adpilot-kpis">
         <Card>
           <Stat label="조정 후보" src={<Src kind="DEMO" />} value={`${counts.total}건`}
-            foot={<span className="xs">상향 {counts.up} · 하향 {counts.down} · 예산 {counts.budget} · 테스트 {counts.test}</span>} />
+            foot={<span className="xs"><span className="nowrap">상향 {counts.up}</span> · <span className="nowrap">하향 {counts.down}</span> · <span className="nowrap">예산 {counts.budget}</span> · <span className="nowrap">테스트 {counts.test}</span></span>} />
         </Card>
         <Card>
           <Stat label="자동 조정 보류" src={<Src kind="DEMO" />} value={`${counts.hold}건`}
@@ -118,7 +118,7 @@ export default function View() {
               <button key={r.id} type="button" className="adpilot-rule" aria-pressed={tab === 'proposals' && filter === f} onClick={() => { setFilter(filter === f && tab === 'proposals' ? 'all' : f); setTab('proposals'); }}>
                 <span className="adpilot-cond">{r.cond}</span>
                 <span className="adpilot-auto">→ {r.auto}</span>
-                <span className="row" style={{ gap: 6, alignItems: 'baseline' }}><span className="adpilot-cnt">{s.n}</span><span className="xs muted">{s.unit}</span></span>
+                <span className="adpilot-cnt-row"><span className="adpilot-cnt">{s.n}</span><span className="xs muted">{s.unit}</span></span>
                 <span className="adpilot-th">기준: {s.th}</span>
               </button>
             );

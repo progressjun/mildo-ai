@@ -9,7 +9,9 @@ import { Button, Card, Pill, PageHeader, ProgressBar, Sev, Src, Stat } from '@/u
 import { Sparkline } from '@/ui/charts';
 import { Icon } from '@/ui/Icon';
 import { AiInsight } from '@/ui/AiInsight';
+import { ddayLabel, rfpSchedule } from '@/modules/ops/engine';
 import { hhmmOf, morningBrief, operatingSummary, timetableProgress } from './engine';
+import './styles.css';
 
 const OS_MODULES = [
   { id: 'board', label: 'Board', kind: '대시보드 · 리포팅', group: '02 자동화', items: ['매체 통합 성과 · 실매출', '자동 리포트 · 데이터 시간표'], route: 'board' },
@@ -31,7 +33,8 @@ export default function View() {
   const y = s.h.yesterday;
   const merY = s.h.salesYesterday / (y.cost || 1);
   const merP = s.h.salesDayBefore / (s.h.dayBefore.cost || 1);
-  const dday = Math.ceil((new Date('2026-11-16T17:00:00+09:00').getTime() - new Date(`${d.today}T${String(d.currentHour).padStart(2, '0')}:30:00+09:00`).getTime()) / 86400000);
+  // 제출 마감 D-day는 전담 TF · RFP 커버리지 화면과 같은 계산(달력일 기준)을 써서 화면 간 숫자를 맞춘다
+  const deadline = rfpSchedule(d.today, d.currentHour).deadline;
 
   return (
     <div className="page">
@@ -43,12 +46,12 @@ export default function View() {
         actions={<Button variant="accent" icon="play" onClick={() => { navigate('board'); }}>MILDO Board 열기</Button>}
       />
 
-      <section className="grid g-5" aria-label="어제 핵심 지표">
+      <section className="grid g-5 home-kpis" aria-label="어제 핵심 지표">
         <Card><Stat label="어제 광고비" value={`${fmt.krw(y.cost)}`} delta={s.costDelta} invert foot={<span className="muted">전날 대비</span>} spark={<Sparkline values={spark('cost')} ariaLabel="최근 30일 광고비" />} /></Card>
         <Card><Stat label="광고 ROAS" value={fmt.roas(y.roas)} delta={s.roasDelta} foot={<span className="muted">매출 {fmt.krw(y.revenue)}</span>} spark={<Sparkline values={spark('roas')} colorVar="--series-3" ariaLabel="최근 30일 ROAS" />} /></Card>
         <Card><Stat label="판매 채널 실매출" value={fmt.krw(s.h.salesYesterday)} delta={s.salesDelta} foot={<span className="muted">광고비 대비 {merY.toFixed(1)}배 (전날 {merP.toFixed(1)}배)</span>} spark={<Sparkline values={salesSpark} colorVar="--series-7" ariaLabel="최근 30일 실매출" />} /></Card>
         <Card><Stat label="CPA (최근 7일)" value={fmt.won(s.h.last7.cpa)} delta={metrics.pctChange(s.h.last7.cpa, s.h.prev7.cpa)} invert foot={<span className="muted">직전 7일 대비</span>} spark={<Sparkline values={spark('cpa')} colorVar="--series-2" ariaLabel="최근 30일 CPA" />} /></Card>
-        <Card><Stat label="신규 고객 CAC (7일)" value={fmt.won(s.h.last7.cac)} delta={metrics.pctChange(s.h.last7.cac, s.h.prev7.cac)} invert foot={<span className="muted">신규 {fmt.int(s.h.last7.newCustomers)}명</span>} src={<Src kind="DEMO" />} /></Card>
+        <Card><Stat label="신규 고객 CAC (7일)" value={fmt.won(s.h.last7.cac)} delta={metrics.pctChange(s.h.last7.cac, s.h.prev7.cac)} invert foot={<><span className="muted">신규 {fmt.int(s.h.last7.newCustomers)}명</span><Src kind="DEMO" /></>} /></Card>
       </section>
 
       <section className="grid g-3">
@@ -110,47 +113,45 @@ export default function View() {
 
       <ScenarioPlayer />
 
+      <AiInsight
+        title="오늘의 운영 브리프"
+        sub="확정 팩트 · 반복 관측 패턴 · AI 해석을 나눠 정리"
+        cta="브리프 생성"
+        buildPrompt={() => {
+          const b = morningBrief(d, state.incidents, state.changes, proposals.length);
+          return `과제: 수면밀도 퍼포먼스 운영의 '오늘의 운영 브리프'를 작성하라. 우선순위(무엇을 먼저 처리할지)와 판단 기준을 포함하라.\n\n데이터(시연용 테스트 데이터):\n${[...b.facts, ...b.patterns].join('\n')}\n\n열린 이슈:\n${s.open.map((i) => `${i.severity} ${i.title} (${i.metric ?? ''} 관측 ${i.observed ?? ''} 기준 ${i.baseline ?? ''})`).join('\n') || '없음'}\n\nAD Pilot 후보 상위:\n${proposals.slice(0, 6).map((p) => `${p.keyword}: ${p.rule} → ${p.action} ${p.before}→${p.after} (${p.reason})`).join('\n') || '없음'}`;
+        }}
+        fallback={() => morningBrief(d, state.incidents, state.changes, proposals.length)}
+      />
       <section className="grid g-2">
-        <AiInsight
-          title="오늘의 운영 브리프"
-          sub="확정 팩트 · 반복 관측 패턴 · AI 해석을 나눠 정리"
-          cta="브리프 생성"
-          buildPrompt={() => {
-            const b = morningBrief(d, state.incidents, state.changes, proposals.length);
-            return `과제: 수면밀도 퍼포먼스 운영의 '오늘의 운영 브리프'를 작성하라. 우선순위(무엇을 먼저 처리할지)와 판단 기준을 포함하라.\n\n데이터(시연용 테스트 데이터):\n${[...b.facts, ...b.patterns].join('\n')}\n\n열린 이슈:\n${s.open.map((i) => `${i.severity} ${i.title} (${i.metric ?? ''} 관측 ${i.observed ?? ''} 기준 ${i.baseline ?? ''})`).join('\n') || '없음'}\n\nAD Pilot 후보 상위:\n${proposals.slice(0, 6).map((p) => `${p.keyword}: ${p.rule} → ${p.action} ${p.before}→${p.after} (${p.reason})`).join('\n') || '없음'}`;
-          }}
-          fallback={() => morningBrief(d, state.incidents, state.changes, proposals.length)}
-        />
-        <div className="stack-lg">
-          <Card title="라이브 데모 15분" sub="제안서 부록 p.60 시나리오 · 화면마다 TEST DATA 표기" tone="dark" actions={<Pill tone="accent">PT 11/19–20</Pill>}>
-            <div className="stack-sm">
-              {LIVE_DEMO.map((seg) => (
-                <a key={seg.title} href={`#${seg.route}`} className="row" style={{ gap: 10, textDecoration: 'none', color: 'inherit', flexWrap: 'nowrap' }}>
-                  <span className="num xs" style={{ width: 92, color: 'var(--panel-muted)' }}>{seg.from}–{seg.to}</span>
-                  <span className="small bold" style={{ width: 150 }}>{seg.title}</span>
-                  <span className="xs" style={{ color: 'var(--panel-muted)', flex: 1 }}>{seg.detail}</span>
-                </a>
-              ))}
-            </div>
-            <div className="row">
-              <StartDemoButton />
-              <span className="xs" style={{ color: 'var(--panel-muted)' }}>상단 바에서 구간 이동 · 일시정지</span>
-            </div>
-          </Card>
-          <Card title="RFP 대응 현황" sub={`제안서 제출 마감 11/16(월) 17시 · D-${dday}`} actions={<Src kind="RFP" />}>
-            <div className="stack-sm">
-              {RFP.evaluation.map((e) => (
-                <div key={e.id} className="row" style={{ flexWrap: 'nowrap', gap: 10 }}>
-                  <span className="small" style={{ width: 170 }}>{e.label}</span>
-                  <div style={{ flex: 1 }}><ProgressBar value={e.weight} max={25} tone={e.weight >= 20 ? 'accent' : 'ink'} label={`${e.label} 비중`} /></div>
-                  <span className="num small bold" style={{ width: 36, textAlign: 'right' }}>{e.weight}%</span>
-                </div>
-              ))}
-            </div>
-            <div className="xs muted">우선 협상 대상자는 리소스 절감 자동화 · 운영 안정성 점수가 우선, 동점 시 수수료 조건 종합 고려 (RFP).</div>
-            <a href="#ops" className="small">RFP 커버리지 맵 →</a>
-          </Card>
-        </div>
+        <Card title="라이브 데모 15분" sub="제안서 부록 p.60 시나리오 · 화면마다 TEST DATA 표기" tone="dark" actions={<Pill tone="accent">PT 11/19–20</Pill>}>
+          <div className="stack-sm">
+            {LIVE_DEMO.map((seg) => (
+              <a key={seg.title} href={`#${seg.route}`} className="home-demo-seg">
+                <span className="num xs t">{seg.from}–{seg.to}</span>
+                <span className="small bold">{seg.title}</span>
+                <span className="xs d">{seg.detail}</span>
+              </a>
+            ))}
+          </div>
+          <div className="row">
+            <StartDemoButton />
+            <span className="xs" style={{ color: 'var(--panel-muted)' }}>상단 바에서 구간 이동 · 일시정지</span>
+          </div>
+        </Card>
+        <Card title="RFP 대응 현황" sub={`제안서 제출 마감 11/16(월) 17시 · ${deadline.passed ? '마감' : ddayLabel(deadline.days)}`} actions={<Src kind="RFP" />}>
+          <div className="stack-sm">
+            {RFP.evaluation.map((e) => (
+              <div key={e.id} className="home-rfp-row">
+                <span className="small">{e.label}</span>
+                <div><ProgressBar value={e.weight} max={25} tone={e.weight >= 20 ? 'accent' : 'ink'} label={`${e.label} 비중`} /></div>
+                <span className="num small bold" style={{ textAlign: 'right' }}>{e.weight}%</span>
+              </div>
+            ))}
+          </div>
+          <div className="xs muted">우선 협상 대상자는 리소스 절감 자동화 · 운영 안정성 점수가 우선, 동점 시 수수료 조건 종합 고려 (RFP).</div>
+          <a href="#ops" className="small">RFP 커버리지 맵 →</a>
+        </Card>
       </section>
 
       <Card title="AI 엔진 · 보유" sub="MILDO OS는 이미 운영 중인 자체 AI 엔진 5종 위에 구축됩니다" actions={<Src kind="PROPOSAL" page="p.9" />}>
@@ -262,7 +263,7 @@ function ScenarioPlayer() {
           const active = i <= step;
           const last = i === OS_SCENARIO.length - 1;
           return (
-            <div key={sc.engine + i} className="stack-sm" style={{ background: last && active ? 'var(--accent)' : 'rgba(255,255,255,0.06)', borderRadius: 12, padding: 12, minHeight: 210, opacity: step < 0 || active ? 1 : 0.4, transition: 'opacity .3s' }}>
+            <div key={sc.engine + i} className="stack-sm home-scn-step" style={{ background: last && active ? 'var(--accent)' : 'rgba(255,255,255,0.06)', borderRadius: 12, padding: 12, opacity: step < 0 || active ? 1 : 0.4, transition: 'opacity .3s' }}>
               <span style={{ color: last && active ? '#fff' : 'var(--accent)', fontSize: 22, fontWeight: 300 }}>{String(i + 1).padStart(2, '0')}</span>
               <strong className="small">{sc.engine}</strong>
               <span className="xs" style={{ color: last && active ? '#fff' : 'var(--panel-muted)' }}>{sc.action}</span>

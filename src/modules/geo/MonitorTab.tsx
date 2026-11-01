@@ -109,7 +109,8 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
           options={[{ id: 'all', label: '전체' }, ...(['brand', 'generic', 'problem', 'compare', 'life'] as IntentId[]).map((i) => ({ id: i, label: INTENT_LABEL[i] }))]} />
       </div>
 
-      <div className="grid g-3">
+      {/* 매트릭스는 엔진 5개 + Claude 열이 모두 보이도록 전체 폭, 상세 · 라이브 진단은 아래 두 열 */}
+      <div className="grid g-3 geo-split">
         <Card className="span-2" title="질의 × 엔진 매트릭스"
           sub={`${dateLabel(vis.date)} 정기 진단 · 질의 ${vis.queries.length}개 × 엔진 ${snap.engines.length}개 · 셀: 수면밀도 언급 순서 · 경쟁사 수 · 최근 ${GEO_ROUNDS}회 중 언급 횟수`}
           actions={
@@ -127,9 +128,11 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
             <span>경N = 함께 언급된 경쟁사 수</span>
             <span className="geo-cell live">미진단</span><span>Claude 라이브 (실제 응답)</span>
           </div>
-          <DataTable rows={rows} columns={columns} rowKey={(r) => r.query.id} onRowClick={(r) => setSel(r.query.id)} selectedKey={sel} maxHeight={560}
-            empty="해당 의도의 질의가 없습니다" />
-          <div className="xs muted">데모 진단 스냅샷입니다(TEST DATA). 실제 엔진별 응답은 수집 연동 후 같은 형식으로 채웁니다. 행을 누르면 오른쪽에 상세가 열립니다.</div>
+          <div className="geo-matrix">
+            <DataTable rows={rows} columns={columns} rowKey={(r) => r.query.id} onRowClick={(r) => setSel(r.query.id)} selectedKey={sel} maxHeight={560}
+              empty="해당 의도의 질의가 없습니다" />
+          </div>
+          <div className="xs muted">데모 진단 스냅샷입니다(TEST DATA). 실제 엔진별 응답은 수집 연동 후 같은 형식으로 채웁니다. 행을 누르면 아래에 상세가 열립니다.</div>
         </Card>
 
         <div className="stack-lg">
@@ -201,7 +204,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
           <DataTable rows={vis.engines} rowKey={(e) => e.id}
             columns={[
               { key: 'n', label: '엔진', render: (e) => <Swatch colorVar={e.colorVar} label={<strong>{e.name}</strong>} /> },
-              { key: 'rate', label: '언급률', align: 'right', sort: (e) => e.rate, render: (e) => <span className="num"><strong>{fmt.pct(e.rate * 100, 0)}</strong> <span className="muted xs">{e.mentioned}/{e.total}</span></span> },
+              { key: 'rate', label: '언급률', align: 'right', sort: (e) => e.rate, render: (e) => <span className="num nowrap"><strong>{fmt.pct(e.rate * 100, 0)}</strong> <span className="muted xs">{e.mentioned}/{e.total}</span></span> },
               { key: 'd', label: '직전 대비', align: 'right', sort: (e) => e.deltaPp ?? 0, render: (e) => <span className="num small">{e.deltaPp === null ? '—' : `${e.deltaPp >= 0 ? '+' : ''}${e.deltaPp.toFixed(0)}pp`}</span> },
               { key: 'pos', label: '평균 순서', align: 'right', sort: (e) => e.avgPosition, render: (e) => <span className="num small">{Number.isFinite(e.avgPosition) ? `${fmt.dec1(e.avgPosition)}번째` : '—'}</span> },
               { key: 'cite', label: '자사 인용 / 전체', align: 'right', sort: (e) => e.ownedCitations, render: (e) => <span className="num small">{e.ownedCitations} / {e.citations}</span> },

@@ -66,10 +66,10 @@ export function PromoReportTab({ ctx, promoId, onPromo }: { ctx: FlowCtx; promoI
         </div>
       </Card>
 
-      <div className="grid g-2">
+      <div className="grid g-2 flow-report-pair">
         <Card title="일자별 채널 매출" sub={r.period ? '프로모션 기간 D+n vs 직전 동기간 같은 순서의 날' : '기준선 (직전 기간)'} actions={<Src kind="DEMO" />}>
           {r.daily.length ? (
-            <LineChart height={230} yFormat={(v) => fmt.krw(v)} xFormat={(x) => x}
+            <LineChart height={420} yFormat={(v) => fmt.krw(v)} xFormat={(x) => x}
               series={[
                 ...(r.period ? [{ id: 'cur', label: '프로모션 기간', colorVar, points: r.daily.map((d) => ({ x: `D${d.idx}`, y: d.cur })) }] : []),
                 { id: 'prev', label: '직전 동기간', colorVar: '--ink-2', dashed: true, points: r.daily.map((d) => ({ x: `D${d.idx}`, y: d.prev })) },
@@ -100,7 +100,7 @@ export function PromoReportTab({ ctx, promoId, onPromo }: { ctx: FlowCtx; promoI
         <Card className="span-2" title="자동 생성 리포트" sub="확정 팩트 / 반복 관측 패턴 / 해석 / 전제 · 반례 / 다음 액션 구분 · 복사 · .md 다운로드" actions={<Src kind="DEMO" />}>
           <Markdown text={r.markdown} />
         </Card>
-        <Card tone="dark" title="다음 기획에 즉시 반영" sub="이번 프로모션 점검 · 성과에서 나온 항목">
+        <Card tone="dark" className="flow-next-card" title="다음 기획에 즉시 반영" sub="이번 프로모션 점검 · 성과에서 나온 항목">
           <ul className="flow-next">
             {r.next.map((n, k) => <li key={k} className="small">{n}</li>)}
           </ul>

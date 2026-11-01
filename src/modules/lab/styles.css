@@ -1,6 +1,9 @@
 /* MILDO Lab 전용 스타일 — 접두사 lab-. 색은 토큰 변수만 사용 */
 
 .lab-page a.btn { text-decoration: none; color: var(--ink); }
+/* 한글은 어절 단위로 줄바꿈 — 좁은 표 · 칸반에서 '검\n토', '클\n릭' 처럼 음절이 끊기지 않게 */
+.lab-page { word-break: keep-all; overflow-wrap: break-word; }
+.lab-page .callout > svg { flex: none; margin-top: 3px; }
 .lab-sub { font-size: var(--fs-xs); color: var(--muted); line-height: 1.45; }
 .card.dark .lab-sub { color: var(--panel-muted); }
 .lab-basis { font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.45; }
@@ -69,6 +72,11 @@
 .lab-item.v-running { border-left-color: var(--ink-2); }
 .lab-item.v-stop { border-left-color: var(--critical); }
 .lab-item-title { font-weight: 700; font-size: var(--fs-sm); line-height: 1.35; }
+/* 칸반 열 안의 합산 판정 콜아웃 — 열 배경과 구분 */
+.lab-col > .callout.info { background: var(--surface); border: 1px solid var(--line); padding: 10px 11px; }
+/* 연관 키워드 추가 버튼 — 긴 구문이 카드 밖으로 나가지 않게 줄바꿈 */
+.lab-related .btn { white-space: normal; text-align: left; justify-content: flex-start; max-width: 100%; border-radius: var(--r-md); line-height: 1.35; }
+.lab-related .btn > svg { flex: none; }
 .lab-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
 .lab-metric { display: flex; flex-direction: column; gap: 0; min-width: 0; }
 .lab-metric span { font-size: 10.5px; color: var(--muted); }
@@ -97,6 +105,10 @@
 .lab-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); display: inline-block; margin-right: 4px; }
 .lab-legend-box { width: 22px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid var(--line); }
 .lab-legend-box.dashed { border-style: dashed; border-color: var(--line-strong); }
+
+/* ---------- 후보 목록 표 — 10열이 카드 폭 안에 들어오도록 칸 여백을 줄이고 긴 배지는 칸 안에서 줄바꿈 ---------- */
+.lab-cand .tbl th, .lab-cand .tbl td { padding-left: 8px; padding-right: 8px; }
+.lab-cand .tbl td .pill { white-space: normal; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; border-radius: 10px; }
 
 /* ---------- 점수 바 ---------- */
 .lab-score { display: grid; grid-template-columns: 1fr 28px; gap: 6px; align-items: center; min-width: 96px; }
@@ -161,6 +173,8 @@
   .lab-kanban, .lab-cards, .lab-rules { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 900px) {
+  /* 좁은 화면 — 표는 칸이 한두 글자로 접히지 않도록 최소 폭을 두고 가로 스크롤 */
+  .lab-page .table-wrap > .tbl { min-width: 640px; }
   .lab-summary, .lab-sources, .lab-kanban, .lab-cards, .lab-rules, .lab-steps { grid-template-columns: 1fr; }
   .lab-g48 { grid-template-columns: 80px repeat(4, minmax(120px, 1fr)); overflow-x: auto; }
   .lab-cal { grid-template-columns: repeat(7, minmax(64px, 1fr)); overflow-x: auto; }

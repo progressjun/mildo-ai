@@ -116,3 +116,28 @@
 .board-heat-top-key { width: 12px; height: 10px; border-radius: 2px; outline: 2px solid var(--ink); outline-offset: -2px; margin-left: 12px; display: inline-block; }
 .board-heat-readout { min-height: 16px; }
 .board-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- 가독성 (시연 1440px 기준) ---------- */
+/* KPI 8칸 — 부연 문구 줄 수가 달라도 스파크라인이 칸 아래쪽에 같은 높이로 정렬 */
+.board-kpi { display: flex; flex-direction: column; }
+.board-kpi > .stat { flex: 1; }
+.board-kpi > .stat > svg:last-child { margin-top: auto; }
+
+/* 표 — 한글은 어절 단위로 줄바꿈('사/이즈', '대/비' 같은 음절 끊김 방지), 숫자 열은 값과 단위를 한 줄로 */
+.board-page { word-break: keep-all; overflow-wrap: break-word; }
+.board-page .tbl td.r { white-space: nowrap; }
+.board-page .tbl td.r .board-sub, .board-page .tbl td.r .board-basis { white-space: normal; }
+
+/* 전환 효율 지수 — 기준선(점선) 범례 */
+.board-ref-key { display: inline-flex; align-items: center; gap: 6px; }
+.board-ref-key i { width: 18px; height: 0; border-top: 1px dashed var(--ink-2); display: inline-block; }
+
+/* 데이터 탭 — 표준화 키(짧은 목록) : 매핑 예시(5열 표) 폭을 내용에 맞게 나눠 '상품' 열이 가로 스크롤 뒤로 숨지 않게 */
+.board-keys-grid { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); }
+@media (max-width: 900px) { .board-keys-grid { grid-template-columns: 1fr; } }
+
+/* 모바일 — 판단 지표 해석 목록의 값(한 줄 고정)이 설명 열을 1~2자 폭으로 누르지 않게 값을 아래 줄로 */
+@media (max-width: 900px) {
+  .board-judge { grid-template-columns: auto minmax(0, 1fr); }
+  .board-judge > :last-child { grid-column: 2; white-space: normal; }
+}

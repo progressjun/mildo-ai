@@ -110,7 +110,7 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
               {plan.rows.map((r) => (
                 <tr key={r.name}>
                   <td><strong>{r.name}</strong><div className="xs muted">순위 {ranked.find((x) => x.name === r.name)?.rank ?? '—'}</div></td>
-                  <td className="r" style={{ minWidth: 170 }}>
+                  <td className="r growth-pilot-budget" style={{ minWidth: 170 }}>
                     {r.requested
                       ? <span className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><strong className="num">{fmt.krw(r.budget)}</strong><span className="xs muted">승인 흐름 · 금액 고정</span></span>
                       : <NumberInput id={`growth-pb-${candIdx(r.name)}`} value={r.budget} step={5_000_000} min={0} suffix={fmt.krw(r.budget)} onChange={(v) => setBudgets({ ...budgets, [r.name]: Math.max(0, v) })} />}

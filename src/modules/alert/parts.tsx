@@ -51,7 +51,7 @@ export function StatusPill({ inc }: { inc: AlertIncident }) {
 }
 
 /** SLA 타이머 — 1초 단위로 흐른다 (데이터 시계 기준) */
-export function SlaTimer({ inc }: { inc: AlertIncident; compact?: boolean }) {
+export function SlaTimer({ inc, compact }: { inc: AlertIncident; compact?: boolean }) {
   const { state } = useStore();
   const now = useDataClock(state.data.generatedAt, 1000);
   const st = slaState(inc, now, (iso) => toDataMs(iso, state.data.generatedAt), state.offHoursMode);
@@ -62,7 +62,7 @@ export function SlaTimer({ inc }: { inc: AlertIncident; compact?: boolean }) {
   const target = st.stage === 'ack' ? st.targets.ackMin : st.stage === 'action' ? st.targets.actionMin : st.stage === 'report' ? st.targets.reportMin : null;
   const tone = st.overdue ? 'critical' : st.remainingMin !== null && target ? (st.remainingMin / target < 0.34 ? 'warning' : 'neutral') : 'neutral';
   return (
-    <span className={`alert-sla ${tone}`} title={`SLA 목표 (p.49${st.targets.offDay ? ' · 주말 · 공휴일 당번 30분 확인 p.48' : ''})`}>
+    <span className={`alert-sla ${tone}${compact ? ' compact' : ''}`} title={`SLA 목표 (p.49${st.targets.offDay ? ' · 주말 · 공휴일 당번 30분 확인 p.48' : ''})`}>
       <Icon name={st.overdue ? 'alert' : 'clock'} size={12} />
       <span>{st.stageLabel}</span>
       {st.remainingMin !== null ? <strong className="num">{fmtRemain(st.remainingMin)}</strong> : null}

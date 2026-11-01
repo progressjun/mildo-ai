@@ -86,7 +86,7 @@ export default function View() {
                 : c.state === 'live' ? <Pill tone={c.alert ? 'critical' : 'neutral'} icon={c.alert ? 'alert' : 'bell'}>{c.stateLabel}</Pill>
                   : <Pill tone="outline" icon="clock">{c.stateLabel}</Pill>}
             </span>
-            <span className="reports-cad-foot"><Icon name="report" size={12} />{c.detail}</span>
+            <span className="reports-cad-foot"><Icon name="report" size={12} /><span>{c.detail}</span></span>
           </button>
         ))}
       </div>

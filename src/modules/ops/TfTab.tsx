@@ -97,7 +97,7 @@ export function TfTab({ model, local, patch }: { model: OpsModel; local: OpsLoca
       </Card>
 
       <div className="grid g-2">
-        <Card title="1:1 백업 그래프" sub={`상호 백업 ${g.mutualPairs.length}쌍 · 단방향 ${g.oneWay} · 백업 집중 ${g.concentration} · 공백 ${g.gaps} — 휴가 시뮬레이션 결과를 함께 표시`}
+        <Card className="ops-sticky" title="1:1 백업 그래프" sub={`상호 백업 ${g.mutualPairs.length}쌍 · 단방향 ${g.oneWay} · 백업 집중 ${g.concentration} · 공백 ${g.gaps} — 휴가 시뮬레이션 결과를 함께 표시`}
           actions={<><Src kind="PROPOSAL" page="p.52" />{g.gaps ? <Pill tone="critical" icon="x">백업 공백 {g.gaps} · 기준 0</Pill> : <Pill tone="good" icon="check">백업 공백 0 · {g.covered}/{rows.length} 지정</Pill>}</>}>
           <BackupGraphSvg rows={rows} graph={g} sim={sim} />
           <ul className="ops-issues">

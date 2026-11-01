@@ -41,3 +41,43 @@
 @media (max-width: 900px) {
   .adpilot-rules, .adpilot-steps { grid-template-columns: 1fr; }
 }
+
+/* ---------- 가독성 (시연 1440px 기준) ---------- */
+/* 한글은 어절 단위로 줄바꿈 — '카카/오', '경/도' 같은 음절 단위 끊김 방지 */
+.adpilot-page { word-break: keep-all; overflow-wrap: break-word; }
+
+/* 규칙 카드 — 숫자 옆에 단위 · 부연을 두고, 길면 부연만 줄바꿈 */
+.adpilot-cnt-row { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.adpilot-cnt-row > .xs { min-width: 0; }
+
+/* 조정 후보 표 — 조치 · 대상 / 판정 근거 · 예상 효과를 묶어 표 폭 안에 들어오게 */
+.adpilot-target { display: flex; flex-direction: column; gap: 2px; min-width: 150px; align-items: flex-start; }
+.adpilot-basis-cell { display: flex; flex-direction: column; gap: 4px; min-width: 280px; }
+.adpilot-basis-cell .adpilot-basis { max-width: 560px; }
+.adpilot-expected { font-size: var(--fs-xs); color: var(--muted); line-height: 1.45; max-width: 560px; }
+.adpilot-expected-k { color: var(--ink-2); font-weight: 700; margin-right: 6px; }
+
+/* 키워드 진단 · 신규 후보 — 근거 · 주의 열이 1~2자로 눌리지 않게 최소 폭 */
+.adpilot-verdict-cell { min-width: 220px; max-width: 360px; }
+.adpilot-caution { min-width: 160px; }
+
+/* SAFETY — 조정 후보 표 아래 전체 폭, 섹션을 다단으로 배치 */
+.adpilot-safety-cols { columns: 3 300px; column-gap: 32px; }
+.adpilot-safety-cols > .adpilot-sec { break-inside: avoid; margin-bottom: 14px; }
+
+/* 상단 KPI 5칸 — 라벨이 2줄이 되는 칸(출처 태그 포함)이 있어도 큰 숫자가 같은 높이에 오도록 라벨 영역을 2줄로 고정 */
+.adpilot-kpis .stat-label { min-height: 46px; align-items: flex-start; flex-wrap: wrap; word-break: keep-all; }
+@media (max-width: 900px) { .adpilot-kpis .stat-label { min-height: 0; } }
+
+/* 열이 많은 표(키워드 진단 12열 · 신규 후보 13열)가 카드 폭(1440px 화면 약 1,100px) 안에 들어오도록 — 머리글 줄바꿈 허용 · 셀 좌우 여백 축소 */
+@media (min-width: 901px) { .adpilot-page .tbl th { white-space: normal; vertical-align: bottom; } }
+.adpilot-page .tbl th, .adpilot-page .tbl td { padding-left: 9px; padding-right: 9px; }
+.adpilot-page .tbl th:first-child, .adpilot-page .tbl td:first-child { padding-left: 12px; }
+.adpilot-page .tbl th:last-child, .adpilot-page .tbl td:last-child { padding-right: 12px; }
+/* 신규 후보 — 검색어 열이 한 어절씩 세로로 쌓이지 않게 */
+.adpilot-term { display: inline-block; min-width: 116px; }
+
+/* 모바일 — 표는 가로 스크롤로 보고, 근거 · 예상 효과 같은 서술 열은 읽을 수 있는 폭을 유지 */
+@media (max-width: 900px) {
+  .adpilot-page .tbl .adpilot-basis, .adpilot-page .tbl .adpilot-expected { min-width: 200px; }
+}

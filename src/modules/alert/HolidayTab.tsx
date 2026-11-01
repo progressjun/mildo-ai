@@ -95,7 +95,7 @@ export function HolidayTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string
         </div>
         {chosen && chosen.block.start > data.today ? <Callout tone="info">미래 구간은 현재(데이터 기준 {fmtDateShort(data.today)}) 잔액 · 소재 상태로 시뮬레이션합니다. 실제 점검은 {fmtDateShort(chosen.block.prevBusinessDay)} 17:00 데이터로 다시 실행합니다.</Callout> : null}
         {check ? (
-          <div className="grid g-2">
+          <div className="alert-precheck">
             {PRECHECK_GROUPS.map((g) => {
               const items = check.items.filter((i) => i.group === g);
               return (

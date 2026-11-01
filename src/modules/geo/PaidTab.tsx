@@ -96,12 +96,13 @@ export function PaidTab({ rows, vis }: { rows: PaidRow[]; vis: Visibility }) {
         </div>
       </Card>
 
-      <div className="grid g-3">
+      {/* 7열 표가 옆 패널과 나란히 있으면 'SA 반영' 열이 가려진다 — 표는 전체 폭, 판정 상세는 아래 */}
+      <div className="grid g-3 geo-split">
         <Card className="span-2" title="질의별 점검 · 판정" sub={`판정 순서: 품절 랜딩 → 미등록 전환 검색어 → 성과 급변(최근 3일 CPC · 전환 ±${AD_PILOT.anomalyHoldPct}%, 표본 기준 충족 시) → AI 미언급 & ROAS ≥ 목표 → AI 언급 & ROAS < 목표 ${KEYWORD_TEST_RULES.keepFromPct}% → 오가닉 · 쇼핑 모두 미노출`}
           actions={<Src kind="DEMO" />}>
           <DataTable rows={rows} columns={columns} rowKey={(r) => r.query.id} onRowClick={(r) => setSel(r.query.id)} selectedKey={sel} maxHeight={620} />
         </Card>
-        <Card title={selected ? `'${selected.query.text}'` : '질의 선택'} sub="판정 상세 · 신호 근거" actions={<Src kind="DEMO" />}>
+        <Card className="geo-paid-detail" title={selected ? `'${selected.query.text}'` : '질의 선택'} sub="판정 상세 · 신호 근거" actions={<Src kind="DEMO" />}>
           {selected ? (
             <div className="stack">
               <VerdictBadge v={selected.action} />

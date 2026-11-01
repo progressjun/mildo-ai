@@ -23,28 +23,29 @@ export function TargetTab({ d }: { d: Dataset }) {
     {
       key: 'name', label: '캠페인', sort: (r) => r.name,
       render: (r) => (
-        <span className="stack-sm" style={{ gap: 0 }}>
-          <strong>{r.name}</strong>
+        <span className="stack-sm growth-camp" style={{ gap: 0 }}>
+          <strong className="nowrap">{r.name}</strong>
           <span className="xs muted">예시 {SA_CAMPAIGNS[r.intent].keywords.join(' · ')}</span>
           <span className="xs muted">운영 키워드 {r.keywords}개{r.testKeywords ? ` · 테스트 ${r.testKeywords}개` : ''}</span>
         </span>
       ),
     },
-    { key: 'message', label: '메시지 예시', render: (r) => <span className="small">“{r.message}”</span> },
     {
-      key: 'landing', label: '랜딩 (p.35)',
+      // 메시지 · 랜딩 · 지표(p.35 설계 단위)를 한 칸에 — 12열이 카드 폭에 눌려 1~2자씩 줄바꿈되던 문제 해소
+      key: 'message', label: '메시지 · 랜딩 · 지표 (p.35)',
       render: (r) => (
-        <span className="stack-sm" style={{ gap: 2 }}>
-          <span className="small">{r.landing}</span>
+        <span className="stack-sm growth-msg" style={{ gap: 3 }}>
+          <span className="small">“{r.message}”</span>
+          <span className="growth-msg-line"><span className="xs muted">랜딩</span><span className="small">{r.landing}</span></span>
           {r.landingMismatch ? <Pill tone="warning" icon="alert">불일치 {r.landingMismatch}개 · 실제 {r.actualLandings.join(' · ')}</Pill> : r.keywords ? <Pill tone="good" icon="check">일치</Pill> : null}
+          <span className="growth-msg-line"><span className="xs muted">지표</span><span className="xs">{r.metric}</span></span>
         </span>
       ),
     },
-    { key: 'metric', label: '지표', render: (r) => <span className="small">{r.metric}</span> },
-    { key: 'roas', label: 'ROAS', align: 'right', sort: (r) => r.roas, render: (r) => <strong>{fmt.roas(r.roas)}</strong> },
+    { key: 'roas', label: 'ROAS', align: 'right', sort: (r) => r.roas, render: (r) => <strong className="nowrap">{fmt.roas(r.roas)}</strong> },
     {
       key: 'verdict', label: '판정 · 기준', sort: (r) => r.ratioPct,
-      render: (r) => <Verdict tone={VERDICT_TONE[r.verdict]} label={CAMPAIGN_VERDICT_LABEL[r.verdict]} basis={r.basis} />,
+      render: (r) => <span className="growth-basis-cell"><Verdict tone={VERDICT_TONE[r.verdict]} label={CAMPAIGN_VERDICT_LABEL[r.verdict]} basis={r.basis} /></span>,
     },
     { key: 'cvr', label: 'CVR', align: 'right', sort: (r) => r.cvr, render: (r) => fmt.pct(r.cvr, 2) },
     { key: 'cpa', label: 'CPA', align: 'right', sort: (r) => r.cpa, render: (r) => fmt.won(r.cpa) },
@@ -53,7 +54,7 @@ export function TargetTab({ d }: { d: Dataset }) {
     {
       key: 'star', label: '확대 여지 키워드', sort: (r) => r.expandKeywords.length,
       render: (r) => r.expandKeywords.length
-        ? <span className="stack-sm" style={{ gap: 2 }}>{r.expandKeywords.slice(0, 3).map((k) => <span key={k.keyword} className="xs"><strong>{k.keyword}</strong> <span className="muted">목표 대비 {fmt.int(k.ratioPct)}% · 손실 {fmt.ratio(k.lostShare, 0)}</span></span>)}{r.expandKeywords.length > 3 ? <span className="xs muted">외 {r.expandKeywords.length - 3}개</span> : null}</span>
+        ? <span className="stack-sm growth-star" style={{ gap: 2 }}>{r.expandKeywords.slice(0, 3).map((k) => <span key={k.keyword} className="xs"><strong className="nowrap">{k.keyword}</strong> <span className="muted">목표 대비 {fmt.int(k.ratioPct)}% · 손실 {fmt.ratio(k.lostShare, 0)}</span></span>)}{r.expandKeywords.length > 3 ? <span className="xs muted">외 {r.expandKeywords.length - 3}개</span> : null}</span>
         : <span className="xs muted">없음</span>,
     },
     { key: 'search', label: '월 검색량', align: 'right', sort: (r) => r.monthlySearch, render: (r) => fmt.int(r.monthlySearch) },
@@ -107,7 +108,7 @@ export function TargetTab({ d }: { d: Dataset }) {
       <Card
         title={<>네이버 SA 캠페인 · 메시지 구조 <Src kind="PROPOSAL" page="p.35" /><Src kind="DEMO" /></>}
         sub={`구매 의도별 5개 캠페인마다 키워드 · 메시지 · 랜딩 · 지표를 따로 설계 · 성과는 최근 14일 키워드 의도 집계 · 확대 여지 키워드 기준: 목표 ROAS(브랜드 ${AD_PILOT.brandTargetRoas}%, 그 외 ${AD_PILOT.targetRoas}%) 대비 ${AD_PILOT.highEfficiencyRoasRatio * 100}% 이상 + 노출 손실 ${AD_PILOT.lostShareTrigger * 100}% 이상(p.14, AD Pilot 입찰 상향 후보와 같은 기준) · AD Pilot이 캠페인별 입찰을, MILDO Board가 캠페인별 실매출을 추적 · 의료 효능 암시 표현 제외`}>
-        <DataTable rows={camps} columns={cols} rowKey={(r) => r.intent} />
+        <div className="growth-camp-table"><DataTable rows={camps} columns={cols} rowKey={(r) => r.intent} /></div>
       </Card>
 
       <Card title={<>제한된 SKU 확장 전략 <Src kind="PROPOSAL" page="p.36" /></>} sub="제품 수가 아니라, 고객이 매트리스를 검색하는 이유의 수만큼 키워드와 랜딩을 늘립니다"

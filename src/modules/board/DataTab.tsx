@@ -98,7 +98,7 @@ export function DataTab({ d, incidents }: { d: Dataset; incidents: Incident[] })
     { key: 'method', label: '연동 방식 (가정)', render: (r) => <span className="small">{r.method}</span> },
     {
       key: 'last', label: '최근 수집', sort: (r) => r.lastDate ?? '',
-      render: (r) => (r.lastDate ? <div className="board-cell l"><span className="small num">{fmtDate(r.lastDate)}{r.lastHour !== null ? ` ${String(r.lastHour).padStart(2, '0')}시` : ''}</span><span className="board-sub">{r.days}일{r.missingDays ? ` · 결측 ${r.missingDays}일` : ''}</span></div> : <span className="small muted">{r.inDataset ? '없음' : '데이터셋 미포함'}</span>),
+      render: (r) => (r.lastDate ? <div className="board-cell l"><span className="small num nowrap">{fmtDate(r.lastDate)}{r.lastHour !== null ? ` ${String(r.lastHour).padStart(2, '0')}시` : ''}</span><span className="board-sub">{r.days}일{r.missingDays ? ` · 결측 ${r.missingDays}일` : ''}</span></div> : <span className="small muted">{r.inDataset ? '없음' : '데이터셋 미포함'}</span>),
     },
     { key: 'rows', label: '행', align: 'right', sort: (r) => r.rows, render: (r) => <span className="num small">{r.rows ? fmt.int(r.rows) : '—'}</span> },
     {
@@ -182,7 +182,7 @@ export function DataTab({ d, incidents }: { d: Dataset; incidents: Incident[] })
         <DataTable rows={src} columns={cols} rowKey={(r) => r.id} />
       </Card>
 
-      <div className="grid g-2">
+      <div className="grid g-2 board-keys-grid">
         <Card title="표준화 키" sub="날짜 · 채널 · 키워드 · 상품 (p.12)" actions={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.12" /></>}>
           <div className="board-list">
             {keys.map((k) => (
@@ -207,7 +207,7 @@ export function DataTab({ d, incidents }: { d: Dataset; incidents: Incident[] })
                     <td><div className="board-cell l"><strong className="small">{m.source}</strong><span className="board-sub">{m.raw}</span>{m.note ? <Pill tone="critical" icon="alert">{m.note}</Pill> : null}</div></td>
                     <td className="small num nowrap">{/^\d{4}-\d{2}-\d{2}$/.test(m.date) ? fmtDate(m.date) : m.date}</td>
                     <td className="nowrap"><code className="xs">{m.channel}</code></td>
-                    <td className="small" style={{ minWidth: 120 }}>{m.keyword}</td>
+                    <td className="small" style={{ minWidth: 96 }}>{m.keyword}</td>
                     <td className="nowrap"><code className="xs">{m.product}</code></td>
                   </tr>
                 ))}

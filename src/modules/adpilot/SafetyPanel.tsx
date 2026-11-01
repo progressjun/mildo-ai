@@ -52,70 +52,72 @@ export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () =
 
   return (
     <Card tone="dark" className="adpilot-safety" title={<><Icon name="shield" size={16} />SAFETY</>} sub="모든 변경은 승인 · 기록 · 롤백이 가능합니다" actions={<Src kind="PROPOSAL" page="p.14" />}>
-      <div className="adpilot-sec" style={{ borderTop: 0, paddingTop: 0 }}>
-        <div className="adpilot-sec-title"><Icon name="target" size={14} />{SAFETY_ITEMS[0].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[0].detail}</span></div>
-        <div className="adpilot-kv">
-          <label htmlFor={cfgId('dailyChangeCapPct')}>키워드별 1일 변동 한도 (시작 입찰가 기준)</label><CfgInput ap={ap} k="dailyChangeCapPct" />
-        </div>
-      </div>
-      <div className="adpilot-sec">
-        <div className="adpilot-sec-title"><Icon name="shield" size={14} />{SAFETY_ITEMS[1].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[1].detail}</span></div>
-        <div className="adpilot-kv">
-          <label htmlFor={cfgId('brandTargetRoas')}>{label('brandTargetRoas')}</label><CfgInput ap={ap} k="brandTargetRoas" />
-          <label htmlFor={cfgId('brandRankTarget')}>{label('brandRankTarget')} <span className="xs adpilot-dim">(모듈 가정)</span></label><CfgInput ap={ap} k="brandRankTarget" />
-        </div>
-        <div className="xs adpilot-dim">브랜드는 목표 미달이어도 자동 하향하지 않고 PM 검토. 브랜드 변경은 폭과 무관하게 PM 이상 승인.</div>
-      </div>
-      <div className="adpilot-sec">
-        <div className="adpilot-sec-title"><Icon name="filter" size={14} />판정 기준 <span className="xs adpilot-dim">· 초기값 · 온보딩 중 확정</span></div>
-        <div className="adpilot-kv">
-          <label htmlFor={cfgId('targetRoas')}>{label('targetRoas')}</label><CfgInput ap={ap} k="targetRoas" />
-          <label htmlFor={cfgId('highEfficiencyRoasRatio')}>{label('highEfficiencyRoasRatio')}</label><CfgInput ap={ap} k="highEfficiencyRoasRatio" />
-          <label htmlFor={cfgId('lostShareTrigger')}>{label('lostShareTrigger')}</label><CfgInput ap={ap} k="lostShareTrigger" pct />
-          <label htmlFor={cfgId('minConversionsForDown')}>{label('minConversionsForDown')}</label><CfgInput ap={ap} k="minConversionsForDown" />
-          <label htmlFor={cfgId('anomalyHoldPct')}>{label('anomalyHoldPct')}</label><CfgInput ap={ap} k="anomalyHoldPct" />
-          <label htmlFor={cfgId('bulkWarnCount')}>{label('bulkWarnCount')}</label><CfgInput ap={ap} k="bulkWarnCount" />
-          <label htmlFor={cfgId('bulkBlockCount')}>{label('bulkBlockCount')}</label><CfgInput ap={ap} k="bulkBlockCount" />
-        </div>
-        {ap.dirty.length ? (
-          <div className="stack-sm">
-            <div className="xs">미승인 기준 {ap.dirty.length}건으로 화면 판정을 시뮬레이션 중입니다. 공식 기준은 승인 · 반영 후 바뀝니다 (목표 ROAS · 상한은 수면밀도 승인).</div>
-            <div className="row" style={{ gap: 6 }}>
-              <Button size="sm" variant="accent" icon="send" onClick={ap.submitSettings}>기준 변경 승인 요청 {ap.dirty.length}건</Button>
-              <Button size="sm" icon="refresh" onClick={() => ap.setDraft(ap.official)}>공식 기준으로</Button>
-            </div>
+      <div className="adpilot-safety-cols">
+        <div className="adpilot-sec">
+          <div className="adpilot-sec-title"><Icon name="target" size={14} />{SAFETY_ITEMS[0].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[0].detail}</span></div>
+          <div className="adpilot-kv">
+            <label htmlFor={cfgId('dailyChangeCapPct')}>키워드별 1일 변동 한도 (시작 입찰가 기준)</label><CfgInput ap={ap} k="dailyChangeCapPct" />
           </div>
-        ) : <div className="xs adpilot-dim">기준을 바꾸면 조정 후보가 즉시 다시 판정됩니다.</div>}
-      </div>
-      <div className="adpilot-sec">
-        <div className="row-between">
-          <div className="adpilot-sec-title"><Icon name="report" size={14} />{SAFETY_ITEMS[2].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[2].detail}</span></div>
-          <Button size="sm" onClick={onHistory}>전체 이력</Button>
         </div>
-        {log.length ? (
-          <div className="adpilot-log">
-            {log.map((h, i) => (
-              <div key={i} className="adpilot-log-row">
-                <span className="num adpilot-dim">{hhmm(h.at)}</span>
-                <span><strong>{h.by}</strong> · {h.action} · {h.target}{h.note ? <span className="adpilot-dim"> — {h.note.length > 70 ? `${h.note.slice(0, 70)}…` : h.note}</span> : null}</span>
+        <div className="adpilot-sec">
+          <div className="adpilot-sec-title"><Icon name="shield" size={14} />{SAFETY_ITEMS[1].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[1].detail}</span></div>
+          <div className="adpilot-kv">
+            <label htmlFor={cfgId('brandTargetRoas')}>{label('brandTargetRoas')}</label><CfgInput ap={ap} k="brandTargetRoas" />
+            <label htmlFor={cfgId('brandRankTarget')}>{label('brandRankTarget')} <span className="xs adpilot-dim">(모듈 가정)</span></label><CfgInput ap={ap} k="brandRankTarget" />
+          </div>
+          <div className="xs adpilot-dim">브랜드는 목표 미달이어도 자동 하향하지 않고 PM 검토. 브랜드 변경은 폭과 무관하게 PM 이상 승인.</div>
+        </div>
+        <div className="adpilot-sec">
+          <div className="adpilot-sec-title"><Icon name="filter" size={14} />판정 기준 <span className="xs adpilot-dim">· 초기값 · 온보딩 중 확정</span></div>
+          <div className="adpilot-kv">
+            <label htmlFor={cfgId('targetRoas')}>{label('targetRoas')}</label><CfgInput ap={ap} k="targetRoas" />
+            <label htmlFor={cfgId('highEfficiencyRoasRatio')}>{label('highEfficiencyRoasRatio')}</label><CfgInput ap={ap} k="highEfficiencyRoasRatio" />
+            <label htmlFor={cfgId('lostShareTrigger')}>{label('lostShareTrigger')}</label><CfgInput ap={ap} k="lostShareTrigger" pct />
+            <label htmlFor={cfgId('minConversionsForDown')}>{label('minConversionsForDown')}</label><CfgInput ap={ap} k="minConversionsForDown" />
+            <label htmlFor={cfgId('anomalyHoldPct')}>{label('anomalyHoldPct')}</label><CfgInput ap={ap} k="anomalyHoldPct" />
+            <label htmlFor={cfgId('bulkWarnCount')}>{label('bulkWarnCount')}</label><CfgInput ap={ap} k="bulkWarnCount" />
+            <label htmlFor={cfgId('bulkBlockCount')}>{label('bulkBlockCount')}</label><CfgInput ap={ap} k="bulkBlockCount" />
+          </div>
+          {ap.dirty.length ? (
+            <div className="stack-sm">
+              <div className="xs">미승인 기준 {ap.dirty.length}건으로 화면 판정을 시뮬레이션 중입니다. 공식 기준은 승인 · 반영 후 바뀝니다 (목표 ROAS · 상한은 수면밀도 승인).</div>
+              <div className="row" style={{ gap: 6 }}>
+                <Button size="sm" variant="accent" icon="send" onClick={ap.submitSettings}>기준 변경 승인 요청 {ap.dirty.length}건</Button>
+                <Button size="sm" icon="refresh" onClick={() => ap.setDraft(ap.official)}>공식 기준으로</Button>
               </div>
-            ))}
-          </div>
-        ) : <div className="xs adpilot-dim">이번 세션 변경 이력이 없습니다. 승인 요청부터 반영 · 롤백까지 누가 · 언제 · 왜가 모두 기록됩니다.</div>}
-      </div>
-      <div className="adpilot-sec">
-        <div className="adpilot-sec-title"><Icon name="rollback" size={14} />{SAFETY_ITEMS[3].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[3].detail}</span></div>
-        <div className="adpilot-kv">
-          <span>반영 중인 변경 (입찰 · 예산 · 상태)</span><strong className="num">{applied.length}건</strong>
+            </div>
+          ) : <div className="xs adpilot-dim">기준을 바꾸면 조정 후보가 즉시 다시 판정됩니다.</div>}
         </div>
-        {confirmRb ? (
-          <div className="row" style={{ gap: 6 }}>
-            <Button size="sm" variant="danger" icon="rollback" onClick={() => { ap.rollbackAll(); setConfirmRb(false); }}>{applied.length}건 모두 복원 확정</Button>
-            <Button size="sm" onClick={() => setConfirmRb(false)}>취소</Button>
+        <div className="adpilot-sec">
+          <div className="row-between">
+            <div className="adpilot-sec-title"><Icon name="report" size={14} />{SAFETY_ITEMS[2].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[2].detail}</span></div>
+            <Button size="sm" onClick={onHistory}>전체 이력</Button>
           </div>
-        ) : (
-          <Button size="sm" icon="rollback" disabled={!applied.length} onClick={() => setConfirmRb(true)}>반영분 전체 롤백</Button>
-        )}
+          {log.length ? (
+            <div className="adpilot-log">
+              {log.map((h, i) => (
+                <div key={i} className="adpilot-log-row">
+                  <span className="num adpilot-dim">{hhmm(h.at)}</span>
+                  <span><strong>{h.by}</strong> · {h.action} · {h.target}{h.note ? <span className="adpilot-dim"> — {h.note.length > 70 ? `${h.note.slice(0, 70)}…` : h.note}</span> : null}</span>
+                </div>
+              ))}
+            </div>
+          ) : <div className="xs adpilot-dim">이번 세션 변경 이력이 없습니다. 승인 요청부터 반영 · 롤백까지 누가 · 언제 · 왜가 모두 기록됩니다.</div>}
+        </div>
+        <div className="adpilot-sec">
+          <div className="adpilot-sec-title"><Icon name="rollback" size={14} />{SAFETY_ITEMS[3].title}<span className="xs adpilot-dim">· {SAFETY_ITEMS[3].detail}</span></div>
+          <div className="adpilot-kv">
+            <span>반영 중인 변경 (입찰 · 예산 · 상태)</span><strong className="num">{applied.length}건</strong>
+          </div>
+          {confirmRb ? (
+            <div className="row" style={{ gap: 6 }}>
+              <Button size="sm" variant="danger" icon="rollback" onClick={() => { ap.rollbackAll(); setConfirmRb(false); }}>{applied.length}건 모두 복원 확정</Button>
+              <Button size="sm" onClick={() => setConfirmRb(false)}>취소</Button>
+            </div>
+          ) : (
+            <Button size="sm" icon="rollback" disabled={!applied.length} onClick={() => setConfirmRb(true)}>반영분 전체 롤백</Button>
+          )}
+        </div>
       </div>
     </Card>
   );

@@ -55,9 +55,9 @@ export function SlaTab({ ctx }: { ctx: AlertCtx }) {
 
   return (
     <div className="stack-lg">
-      <div className="grid g-5">
+      <div className="grid g-5 alert-kpis">
         <Card><Stat label="10월 이슈" src={<Src kind="DEMO" />} value={rep.total.total} foot={<span>이번 세션 처리 {session.length} · 진행 중 {inProgress}</span>} /></Card>
-        <Card><Stat label="인지 SLA 달성" src={<Src kind="DEMO" />} value={p(rep.total.ack.pct)} foot={<span>{rep.total.ack.ok}/{rep.total.ack.n} · P1 15분 · P2 1시간 · P3 1일</span>} /></Card>
+        <Card><Stat label="인지 SLA 달성" src={<Src kind="DEMO" />} value={p(rep.total.ack.pct)} foot={<span>{rep.total.ack.ok}/{rep.total.ack.n} · <span className="nowrap">P1 15분</span> · <span className="nowrap">P2 1시간</span> · <span className="nowrap">P3 1일</span></span>} /></Card>
         <Card><Stat label="1차 조치 달성" src={<Src kind="DEMO" />} value={p(rep.total.action.pct)} foot={<span>{rep.total.action.ok}/{rep.total.action.n} · 매체 지연 제외 산정</span>} /></Card>
         <Card><Stat label="오탐률" src={<Src kind="DEMO" />} value={p(rep.total.falsePositive.pct)} foot={<span>{rep.total.falsePositive.n}건 · 탐지 기준 튜닝 근거</span>} /></Card>
         <Card><Stat label="재발 · 매체 지연" src={<Src kind="DEMO" />} value={<span>{rep.total.recurrence}<span className="small muted"> / 지연 {rep.total.mediaDelay.n}</span></span>} foot={<span>매체 지연 합계 {rep.total.mediaDelay.min}분 (별도 표기)</span>} /></Card>

@@ -120,14 +120,29 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
           onClick={(e) => e.stopPropagation()} onChange={() => toggle(p.id)} />
       ),
     },
-    { key: 'action', label: '조치 · 규칙', sort: (p) => p.action, render: (p) => <div className="stack-sm" style={{ gap: 2 }}><ActionPill p={p} /><span className="xs muted nowrap">{p.rule}</span></div> },
-    { key: 'target', label: '대상', sort: (p) => p.keyword, render: (p) => <div className="stack-sm" style={{ gap: 0 }}><strong className="small">{p.keyword}</strong><span className="xs muted">{targetSub(p)}</span></div> },
-    { key: 'basis', label: '판정 근거 (기준값)', render: (p) => <div className="adpilot-basis">{p.basis}</div> },
+    {
+      key: 'action', label: '조치 · 대상', sort: (p) => p.action,
+      render: (p) => (
+        <div className="adpilot-target">
+          <span className="row" style={{ gap: 6 }}><ActionPill p={p} /><span className="xs muted nowrap">{p.rule}</span></span>
+          <strong className="small">{p.keyword}</strong>
+          <span className="xs muted">{targetSub(p)}</span>
+        </div>
+      ),
+    },
+    {
+      key: 'basis', label: '판정 근거 (기준값) · 예상 효과',
+      render: (p) => (
+        <div className="adpilot-basis-cell">
+          <div className="adpilot-basis">{p.basis}</div>
+          <div className="adpilot-expected"><span className="adpilot-expected-k">예상 효과</span>{p.expected}</div>
+        </div>
+      ),
+    },
     { key: 'ba', label: '현재 → 제안', align: 'right', sort: (p) => p.changePct, render: (p) => <BeforeAfter p={p} /> },
-    { key: 'expected', label: '예상 효과', render: (p) => <div className="adpilot-basis">{p.expected}</div> },
-    { key: 'approver', label: '승인', sort: (p) => p.approver, render: (p) => <ApproverPill level={p.approver} title={p.approverReason} /> },
-    { key: 'status', label: '상태', sort: (p) => ap.statusOf(p), render: (p) => (
-      <div className="stack-sm" style={{ gap: 2 }}>
+    { key: 'status', label: '승인 · 상태', sort: (p) => ap.statusOf(p), render: (p) => (
+      <div className="stack-sm" style={{ gap: 4, alignItems: 'flex-start' }}>
+        <ApproverPill level={p.approver} title={p.approverReason} />
         {p.action === 'hold' && ap.statusOf(p) === 'none' ? <Pill tone="warning" icon="pause">보류 중</Pill> : <StatusPill status={ap.statusOf(p)} />}
         {p.linkedIncidents?.length ? <Pill tone="outline" icon="bell" title={p.linkedIncidents.map((l) => `${l.severity} ${l.title} (${l.id})`).join(' · ')}>{p.holdSource === 'both' ? 'AD Pilot + Alert' : 'Alert 이슈 연계'}</Pill> : null}
       </div>
@@ -146,44 +161,42 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
 
   return (
     <div className="stack-lg">
-      <div className="grid g-3">
-        <Card className="span-2" title="조정 후보 → 승인 요청 → 승인 → 반영 → 롤백"
-          sub="행을 누르면 근거 · SAFETY 점검 · 원인 후보 · 예상 효과 · 변경 이력을 봅니다. 승인 주체는 변경 폭 기준으로 자동 결정됩니다."
-          actions={<><Src kind="PROPOSAL" page="p.14" /><Src kind="DEMO" /></>}>
-          <div className="row-between">
-            <Segmented label="조치 필터" options={filters} value={filter} onChange={(v) => { setFilter(v); setSelected(new Set()); }} />
-            <div className="row" style={{ gap: 6 }}>
-              <span className="small muted">선택 {sel.length}건</span>
-              <Button size="sm" icon="send" disabled={!counts.request} onClick={() => runBulk('request')}>일괄 승인 요청 {counts.request || ''}</Button>
-              <Button size="sm" icon="check" variant="accent" disabled={!counts.approve} onClick={() => runBulk('approve')}>일괄 승인 {counts.approve || ''}</Button>
-              <Button size="sm" icon="zap" variant="primary" disabled={!counts.apply} onClick={() => runBulk('apply')}>일괄 반영 {counts.apply || ''}</Button>
+      <Card title="조정 후보 → 승인 요청 → 승인 → 반영 → 롤백"
+        sub="행을 누르면 근거 · SAFETY 점검 · 원인 후보 · 예상 효과 · 변경 이력을 봅니다. 승인 주체는 변경 폭 기준으로 자동 결정됩니다."
+        actions={<><Src kind="PROPOSAL" page="p.14" /><Src kind="DEMO" /></>}>
+        <div className="row-between">
+          <Segmented label="조치 필터" options={filters} value={filter} onChange={(v) => { setFilter(v); setSelected(new Set()); }} />
+          <div className="row" style={{ gap: 6 }}>
+            <span className="small muted">선택 {sel.length}건</span>
+            <Button size="sm" icon="send" disabled={!counts.request} onClick={() => runBulk('request')}>일괄 승인 요청 {counts.request || ''}</Button>
+            <Button size="sm" icon="check" variant="accent" disabled={!counts.approve} onClick={() => runBulk('approve')}>일괄 승인 {counts.approve || ''}</Button>
+            <Button size="sm" icon="zap" variant="primary" disabled={!counts.apply} onClick={() => runBulk('apply')}>일괄 반영 {counts.apply || ''}</Button>
+          </div>
+        </div>
+        {blocked ? (
+          <Callout tone="critical" title={`일괄 ${BULK_LABEL[blocked.action]} 차단 — 대량 변경 실수 방지 (p.45)`}>
+            {blocked.check.reasons.join(' · ')}
+          </Callout>
+        ) : null}
+        {confirm ? (
+          <Callout tone="warning" title={`일괄 ${BULK_LABEL[confirm.action]} ${confirm.ids.length}건 — 한 번 더 확인`}>
+            <div className="stack-sm">
+              <span>{confirm.check.reasons.join(' · ')}. 예상 일 비용 영향 {fmt.krw(confirm.check.costDelta)} (탄력성 가정).</span>
+              <span className="row" style={{ gap: 6 }}>
+                <Button size="sm" variant="primary" icon="check" onClick={() => execute(confirm.action, confirm.ids)}>{confirm.ids.length}건 확정</Button>
+                <Button size="sm" onClick={() => setConfirm(null)}>취소</Button>
+              </span>
             </div>
-          </div>
-          {blocked ? (
-            <Callout tone="critical" title={`일괄 ${BULK_LABEL[blocked.action]} 차단 — 대량 변경 실수 방지 (p.45)`}>
-              {blocked.check.reasons.join(' · ')}
-            </Callout>
-          ) : null}
-          {confirm ? (
-            <Callout tone="warning" title={`일괄 ${BULK_LABEL[confirm.action]} ${confirm.ids.length}건 — 한 번 더 확인`}>
-              <div className="stack-sm">
-                <span>{confirm.check.reasons.join(' · ')}. 예상 일 비용 영향 {fmt.krw(confirm.check.costDelta)} (탄력성 가정).</span>
-                <span className="row" style={{ gap: 6 }}>
-                  <Button size="sm" variant="primary" icon="check" onClick={() => execute(confirm.action, confirm.ids)}>{confirm.ids.length}건 확정</Button>
-                  <Button size="sm" onClick={() => setConfirm(null)}>취소</Button>
-                </span>
-              </div>
-            </Callout>
-          ) : null}
-          <DataTable rows={rows} columns={columns} rowKey={(p) => p.id} maxHeight={620} onRowClick={setOpen} selectedKey={open?.id ?? null}
-            empty="해당 조건의 조정 후보가 없습니다" />
-          <div className="xs muted">
-            대량 변경 기준: 한 번에 {ap.cfg.bulkWarnCount}건 이상 2단계 확인, {ap.cfg.bulkBlockCount}건 이상 차단, 입찰은 일 조정 폭 상한 {ap.cfg.dailyChangeCapPct}% 초과 차단.
-            반영은 데모 환경에서 로컬 상태로 기록되며 실제 연동 시 매체 API로 실행합니다.
-          </div>
-        </Card>
-        <SafetyPanel ap={ap} onHistory={onHistory} />
-      </div>
+          </Callout>
+        ) : null}
+        <DataTable rows={rows} columns={columns} rowKey={(p) => p.id} maxHeight={620} onRowClick={setOpen} selectedKey={open?.id ?? null}
+          empty="해당 조건의 조정 후보가 없습니다" />
+        <div className="xs muted">
+          대량 변경 기준: 한 번에 {ap.cfg.bulkWarnCount}건 이상 2단계 확인, {ap.cfg.bulkBlockCount}건 이상 차단, 입찰은 일 조정 폭 상한 {ap.cfg.dailyChangeCapPct}% 초과 차단.
+          반영은 데모 환경에서 로컬 상태로 기록되며 실제 연동 시 매체 API로 실행합니다.
+        </div>
+      </Card>
+      <SafetyPanel ap={ap} onHistory={onHistory} />
       <BidDownCard ap={ap} onFilter={() => setFilter('bid_down')} />
       <AiInsight
         title="AD Pilot 조정안 해석"

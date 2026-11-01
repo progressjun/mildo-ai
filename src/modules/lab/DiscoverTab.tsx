@@ -105,15 +105,15 @@ export function DiscoverTab({ m }: { m: LabModel }) {
     { key: 'intent', label: '의도 분류', sort: (c) => c.intent, render: (c) => <span className="small">{INTENT_NAME(c.intent)}{c.secondary ? <span className="lab-sub"> · {INTENT_NAME(c.secondary)}</span> : null}</span> },
     {
       key: 'vol', label: '예상 검색량', align: 'right', sort: (c) => c.volume,
-      render: (c) => <span title={c.volumeNote}><strong className="num">{fmt.int(c.volume)}</strong><div className="lab-sub">{c.volumeKind === 'impressions' ? '보고서 노출 · 실측' : c.volumeKind === 'monthly_demo' ? '월 · 데모 스냅샷' : '월 · 데모 추정'}</div></span>,
+      render: (c) => <span title={c.volumeNote}><strong className="num">{fmt.int(c.volume)}</strong><div className="lab-sub nowrap">{c.volumeKind === 'impressions' ? '보고서 노출 · 실측' : c.volumeKind === 'monthly_demo' ? '월 · 데모 스냅샷' : '월 · 데모 추정'}</div></span>,
     },
     {
       key: 'ev', label: '근거 (보고서)', align: 'right', sort: (c) => c.evidence?.roas ?? -1,
-      render: (c) => c.evidence ? <span className="num small" title={`목표 대비 ${fmt.int(c.evidence.ratioPct)}%`}>ROAS {fmt.roas(c.evidence.roas)}<div className="lab-sub">전환 {fmt.dec1(c.evidence.conversions)} · 클릭 {fmt.int(c.evidence.clicks)}</div></span> : <span className="lab-sub">간접 (의도 그룹)</span>,
+      render: (c) => c.evidence ? <span className="num small nowrap" title={`목표 대비 ${fmt.int(c.evidence.ratioPct)}%`}>ROAS {fmt.roas(c.evidence.roas)}<div className="lab-sub">전환 {fmt.dec1(c.evidence.conversions)} · 클릭 {fmt.int(c.evidence.clicks)}</div></span> : <span className="lab-sub">간접 (의도 그룹)</span>,
     },
     { key: 'landing', label: '랜딩 매칭', sort: (c) => (c.landing.level === 'good' ? 2 : c.landing.level === 'partial' ? 1 : 0), render: (c) => <div className="stack-sm" style={{ gap: 2 }}><LandingPill l={c.landing} />{c.landing.notes[0] ? <span className="lab-sub">{c.landing.notes[0]}</span> : null}</div> },
     { key: 'score', label: '우선순위', align: 'right', sort: (c) => c.score, render: (c) => <div className="stack-sm" style={{ gap: 2, alignItems: 'flex-end' }}><ScoreBar score={c.score} /><TierPill c={c} /></div> },
-    { key: 'flags', label: '주의', render: (c) => c.flags.length ? <span className="lab-basis">{c.flags.join(' · ')}</span> : <span className="lab-sub">—</span> },
+    { key: 'flags', label: '주의', width: 180, render: (c) => c.flags.length ? <span className="lab-basis">{c.flags.join(' · ')}</span> : <span className="lab-sub">—</span> },
     {
       key: 'act', label: '상태', align: 'right',
       render: (c) => c.status === 'new' || c.status === 'rejected'
@@ -244,7 +244,9 @@ export function DiscoverTab({ m }: { m: LabModel }) {
             </div>
           </Callout>
         ) : null}
-        <DataTable rows={rows} columns={columns} rowKey={(c) => c.id} initialSort={{ key: 'score', dir: 'desc' }} maxHeight={560} selectedKey={pick} empty="조건에 맞는 후보가 없습니다" />
+        <div className="lab-cand">
+          <DataTable rows={rows} columns={columns} rowKey={(c) => c.id} initialSort={{ key: 'score', dir: 'desc' }} maxHeight={560} selectedKey={pick} empty="조건에 맞는 후보가 없습니다" />
+        </div>
       </Card>
 
       <Card title="AI로 구문형 후보 확장" sub="Claude가 문제 × 상황 × 비교 조합에서 구문을 제안하면, 같은 규칙(의도 · 검색량 추정 · 랜딩 · 점수 · 검수 플래그)으로 다시 계산해 후보 목록에 넣습니다."

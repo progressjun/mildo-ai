@@ -13,6 +13,7 @@ import { Markdown } from '@/ui/Markdown';
 import { Button, Card, CopyButton, PageHeader, Pill, Src } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
 import { collectTools, offlineAnswer, snapshot, TOOL_GUIDE } from './orchestrator';
+import './styles.css';
 
 interface Msg {
   role: 'user' | 'assistant';
@@ -117,7 +118,7 @@ export default function View() {
         sources={<><Pill tone={ai.connected ? 'good' : 'neutral'} icon={ai.connected ? 'check' : 'zap'}>{ai.backend === 'checking' ? '확인 중' : BACKEND_LABEL[ai.backend]}</Pill><Src kind="DEMO" /></>}
         actions={msgs.length ? <Button size="sm" icon="refresh" onClick={() => setMsgs([])}>새 대화</Button> : null}
       />
-      <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 1fr) 300px', alignItems: 'start' }}>
+      <div className="agent-layout">
         <div className="stack-lg">
           {msgs.length === 0 ? (
             <Card title="무엇을 판단해야 하나요?" sub="자주 쓰는 질문 · 클릭하면 바로 실행">
@@ -139,7 +140,7 @@ export default function View() {
                 <div key={i} className="msg assistant">
                   <div className="row-between">
                     <div className="row" style={{ gap: 6 }}>
-                      <Src kind={m.via === 'rule' ? 'PROPOSAL' : 'AI'} title={m.via === 'rule' ? '규칙 엔진 결과' : 'Claude 생성'} />
+                      {m.via === 'rule' ? <Pill tone="neutral" icon="zap" title="규칙 엔진 결과">규칙 엔진</Pill> : <Src kind="AI" title="Claude 생성" />}
                       {(m.tools ?? []).map((t, k) => <span key={k} className="tool-chip"><Icon name="zap" size={10} />{t}</span>)}
                     </div>
                     {m.content ? <CopyButton text={m.content} /> : null}
@@ -182,7 +183,7 @@ export default function View() {
             <div className="xs muted">기준: CAC · CPA · ROAS · CVR · 볼륨 · 확장성</div>
           </Card>
           <Card title="에이전트 도구" sub={`${tools.length}개 · 모듈 엔진 직접 호출`}>
-            <div className="stack-sm">
+            <div className="stack-sm agent-tools" tabIndex={0} aria-label="에이전트 도구 목록">
               {Object.entries(byModule).map(([mod, names]) => (
                 <div key={mod} className="stack-sm" style={{ gap: 3 }}>
                   <a href={`#${mod}`} className="xs bold" style={{ color: 'var(--ink)' }}>{MODULE_BY_ID[mod]?.title ?? mod}</a>

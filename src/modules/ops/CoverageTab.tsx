@@ -28,8 +28,8 @@ export function CoverageTab({ model, local, patch, goTab }: { model: OpsModel; l
 
   return (
     <div className="stack-lg">
-      <div className="grid g-3">
-        <Card tone="dark" className="span-2" title="RFP 선정 일정" sub={`기준일 ${shortDate(state.data.today)} ${state.data.currentHour}시 · 진행 중 단계 · 다음 단계(분홍) · D-day`}
+      <div className="ops-cov-top">
+        <Card tone="dark" title="RFP 선정 일정" sub={`기준일 ${shortDate(state.data.today)} ${state.data.currentHour}시 · 진행 중 단계 · 다음 단계(분홍) · D-day`}
           actions={<Src kind="RFP" />}>
           <div className="ops-sched">
             {s.schedule.rows.map((r) => (
@@ -81,7 +81,7 @@ export function CoverageTab({ model, local, patch, goTab }: { model: OpsModel; l
         </Card>
 
         <Card title="제출 서류 · 범위 확인" sub="RFP 필수 제출물 1) · 8) 및 기타 · 체크는 이 브라우저에만 저장" actions={<Src kind="RFP" />}>
-          <ul className="ops-issues">
+          <ul className="ops-issues ops-docs">
             <li>
               <Pill tone={PROPOSAL_PAGES <= RFP_PAGE_LIMIT ? 'good' : 'critical'} icon={PROPOSAL_PAGES <= RFP_PAGE_LIMIT ? 'check' : 'x'}>{PROPOSAL_PAGES}장 · 상한 {RFP_PAGE_LIMIT}장</Pill>
               <span className="small">제안서 v3 장표 수 (표지 ~ 부록 p.60)</span>
