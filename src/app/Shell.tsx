@@ -7,7 +7,7 @@ import { Icon } from '@/ui/Icon';
 import { Button, Pill, Src } from '@/ui/primitives';
 import { useAi } from '@/ai/useAi';
 import { BACKEND_LABEL } from '@/ai/claude';
-import { detectIncidents } from '@/modules/alert/engine';
+import { activeConfig, detectBulkChange, detectIncidents } from '@/modules/alert/engine';
 import { SettingsDialog } from './SettingsDialog';
 import { DemoBar } from './DemoBar';
 import { Toasts } from './Toasts';
@@ -38,6 +38,16 @@ export function Shell() {
     if (p1.length) actions.toast({ tone: 'critical', title: `P1 이슈 ${p1.length}건 감지`, body: p1.map((i) => i.title).slice(0, 2).join(' · '), route: 'alert' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 대량 변경 실수 감지 (p.45) — 어느 화면에서 변경을 요청 · 반영해도 MILDO Alert 이슈로 적재
+  const seenBulk = useRef(new Set<string>());
+  useEffect(() => {
+    const bulk = detectBulkChange(state.changes, { today: state.data.today, config: activeConfig(state.changes) });
+    const fresh = bulk.filter((b) => !state.incidents.some((i) => i.id === b.id) && !seenBulk.current.has(b.id));
+    fresh.forEach((b) => { seenBulk.current.add(b.id); actions.addIncident(b); });
+    if (fresh.length) actions.toast({ tone: 'critical', title: `P1 대량 변경 실수 ${fresh.length}건 감지`, body: fresh[0].title, route: 'alert' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.changes]);
 
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });

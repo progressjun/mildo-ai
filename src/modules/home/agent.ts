@@ -1,7 +1,7 @@
 import type { ModuleAgentKit } from '../types';
 import { generateBidProposals } from '@/modules/adpilot/engine';
 import { MEDIA } from '@/data/constants';
-import { morningBrief, operatingSummary, timetableProgress } from './engine';
+import { hhmmOf, morningBrief, operatingSummary, timetableProgress } from './engine';
 
 export const agentKit: ModuleAgentKit = {
   tools: (ctx) => [
@@ -20,7 +20,7 @@ export const agentKit: ModuleAgentKit = {
           prev7: { roasPct: r(s.h.prev7.roas), cpa: r(s.h.prev7.cpa), cac: r(s.h.prev7.cac) },
           openIncidents: s.open.map((i) => ({ id: i.id, severity: i.severity, title: i.title, status: i.status, deltaPct: i.deltaPct !== undefined ? r(i.deltaPct) : null })),
           pendingApprovals: s.pending.length,
-          earlyExhaustCampaigns: s.early.map((c) => ({ name: c.name, pacePct: r(c.pacePct), exhaustHour: c.exhaustHour ? Math.floor(c.exhaustHour) : null })),
+          earlyExhaustCampaigns: s.early.map((c) => ({ name: c.name, pacePct: r(c.pacePct), expectedEnd: hhmmOf(c.exhaustHour), beforePeak: c.missesPeak, basis: '최근 28일 시간대 소진 곡선 · 23시 전 마감' })),
           monthlyPaceOver: s.over.map((p) => MEDIA[p.media].name),
           monthlyPaceUnder: s.under.map((p) => MEDIA[p.media].name),
           offDay: s.off,

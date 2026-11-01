@@ -2,11 +2,11 @@
  * MILDO Alert — 운영 안정성 (제안서 p.43–50, p.10 긴급 검수 알림)
  * 감지 → 배정 → 조치 → 보고 → 재발 방지. 모든 수치는 시연용 TEST DATA.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import './styles.css';
 import { SAFETY_NET } from '@/data/constants';
 import { Button, Card, PageHeader, Pill, Src, Tabs } from '@/ui/primitives';
-import { detectBulkChange, fmtDateShort, holidayPrecheck, offBlocks, sevCounts, slaState, fmtRemain, dayDiff, type AlertIncident } from './engine';
+import { fmtDateShort, holidayPrecheck, offBlocks, sevCounts, slaState, fmtRemain, dayDiff, type AlertIncident } from './engine';
 import { RULES } from './data';
 import { useAlert, type AlertCtx } from './hooks';
 import { QueueTab } from './QueueTab';
@@ -27,15 +27,7 @@ export default function View() {
   const [openId, setOpenId] = useState<string | null>(null);
   const counts = sevCounts(incidents);
 
-  // 대량 변경 실수 (p.45): 변경 이력 감시 → 새 이슈 적재
-  const seenBulk = useRef(new Set<string>());
-  useEffect(() => {
-    const bulk = detectBulkChange(state.changes, { today: data.today, config: ctx.cfg });
-    const fresh = bulk.filter((b) => !state.incidents.some((i) => i.id === b.id) && !seenBulk.current.has(b.id));
-    fresh.forEach((b) => { seenBulk.current.add(b.id); actions.addIncident(b); });
-    if (fresh.length) actions.toast({ tone: 'critical', title: `P1 대량 변경 실수 ${fresh.length}건 감지`, body: fresh[0].title, route: 'alert' });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.changes]);
+  // 대량 변경 실수 (p.45) 감지는 앱 셸(Shell)에서 상시 실행 — 이 화면이 닫혀 있어도 이슈로 적재된다.
 
   return (
     <div className="page">

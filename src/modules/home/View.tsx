@@ -9,7 +9,7 @@ import { Button, Card, Pill, PageHeader, ProgressBar, Sev, Src, Stat } from '@/u
 import { Sparkline } from '@/ui/charts';
 import { Icon } from '@/ui/Icon';
 import { AiInsight } from '@/ui/AiInsight';
-import { morningBrief, operatingSummary, timetableProgress } from './engine';
+import { hhmmOf, morningBrief, operatingSummary, timetableProgress } from './engine';
 
 const OS_MODULES = [
   { id: 'board', label: 'Board', kind: '대시보드 · 리포팅', group: '02 자동화', items: ['매체 통합 성과 · 실매출', '자동 리포트 · 데이터 시간표'], route: 'board' },
@@ -83,7 +83,7 @@ export default function View() {
               <a href="#board" className="card flat" style={{ textDecoration: 'none', color: 'inherit', padding: 12 }}>
                 <span className="xs muted">일 예산 조기 소진 예상</span>
                 <strong style={{ fontSize: 'var(--fs-xl)' }} className="num">{s.early.length}개 캠페인</strong>
-                <span className="xs muted">{s.early.slice(0, 2).map((c) => `${c.name} ${Math.floor(c.exhaustHour ?? 0)}시`).join(' · ') || '없음'}</span>
+                <span className="xs muted">{s.early.slice(0, 2).map((c) => `${c.name} ${hhmmOf(c.exhaustHour)}`).join(' · ') || '없음'}</span>
               </a>
             </div>
           </div>

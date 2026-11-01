@@ -3,7 +3,8 @@
  */
 import type { ChangeRequest, Dataset, Incident } from '@/core/types';
 import { DATA_TIMETABLE, MEDIA } from '@/data/constants';
-import { campaignPacing, headline, monthlyPacing } from '@/core/selectors';
+import { headline, monthlyPacing } from '@/core/selectors';
+import { paceCampaigns } from '@/modules/adpilot/engine';
 import { fmt, isOffDay, metrics } from '@/core/util';
 import type { Brief } from '@/ai/prompts';
 
@@ -28,7 +29,11 @@ export function timetableProgress(currentHour: number, minute = 30) {
 export function operatingSummary(data: Dataset, incidents: Incident[], changes: ChangeRequest[]) {
   const h = headline(data);
   const open = incidents.filter((i) => i.status !== 'resolved');
-  const early = campaignPacing(data).filter((c) => c.earlyExhaust);
+  // 예산 조기 소진: Board · AD Pilot · Alert와 같은 기준(최근 28일 시간대 소진 곡선, 23시 전 마감)
+  const early = paceCampaigns(data)
+    .filter((c) => c.earlyExhaust)
+    .map((c) => ({ id: c.id, name: c.name, media: c.media, pacePct: c.pacePct, exhaustHour: c.curveExhaustHour ?? c.linearExhaustHour, missesPeak: c.missesPeak }))
+    .sort((a, b) => (a.exhaustHour ?? 24) - (b.exhaustHour ?? 24));
   const pacing = monthlyPacing(data);
   const over = pacing.filter((p) => p.status === 'over');
   const under = pacing.filter((p) => p.status === 'under');
@@ -64,7 +69,7 @@ export function morningBrief(data: Dataset, incidents: Incident[], changes: Chan
     `열린 이슈 ${s.open.length}건 (P1 ${s.p1.length} · P2 ${s.p2.length} · P3 ${s.p3.length}), 승인 대기 변경 ${s.pending.length}건, AD Pilot 조정 후보 ${proposalCount}건.`,
   ];
   const patterns: string[] = [];
-  if (s.early.length) patterns.push(`일 예산 조기 소진 예상 캠페인 ${s.early.length}개: ${s.early.slice(0, 3).map((c) => `${c.name}(예상 마감 ${Math.floor(c.exhaustHour ?? 0)}시)`).join(', ')}. 현재 소진 속도가 유지된다는 가정입니다.`);
+  if (s.early.length) patterns.push(`일 예산 조기 소진 예상 캠페인 ${s.early.length}개(23시 전 마감, 21~23시 피크 전 마감 ${s.early.filter((c) => c.missesPeak).length}개): ${s.early.slice(0, 3).map((c) => `${c.name}(예상 마감 ${hhmmOf(c.exhaustHour)})`).join(', ')}. 최근 28일 시간대별 소진 비중이 오늘도 유지된다는 가정입니다.`);
   if (s.over.length) patterns.push(`월 예산 초과 페이스 매체: ${s.over.map((p) => `${MEDIA[p.media].name}(예상 월 소진 ${fmt.krw(p.projected)} / 예산 ${fmt.krw(p.budget)})`).join(', ')}.`);
   if (s.under.length) patterns.push(`월 예산 미달 페이스 매체: ${s.under.map((p) => MEDIA[p.media].name).join(', ')} — 소진율이 기대치의 90% 미만입니다.`);
   const interpretation = [
@@ -85,4 +90,12 @@ export function morningBrief(data: Dataset, incidents: Incident[], changes: Chan
     `PM: 16:30 익일 조정안 공유 전에 조기 소진 캠페인 처리 방향 결정.`,
   ];
   return { title: '오늘의 운영 브리프', facts, patterns, interpretation, conditions, counter, actions };
+}
+
+/** 소수 시각(20.37) → '20:22' */
+export function hhmmOf(h: number | null | undefined): string {
+  if (h === null || h === undefined || !Number.isFinite(h)) return '—';
+  const hh = Math.floor(h);
+  const mm = Math.min(59, Math.round((h - hh) * 60));
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
