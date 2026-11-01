@@ -12,6 +12,8 @@ export interface WatchStore {
   progress: ProgressMap;
   /** 이 화면에서 MILDO Alert로 보낸 이슈 id */
   alerts: string[];
+  /** 주간 인사이트 브리프 담당 AE 코멘트 (키 = 브리프 기간 시작일) */
+  aeNotes: Record<string, { text: string; by: string; at: string }>;
 }
 
 let current: WatchStore | null = null;
@@ -22,12 +24,16 @@ function load(): WatchStore {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY) : null;
     if (raw) {
       const s = JSON.parse(raw) as Partial<WatchStore>;
-      return { progress: s.progress && typeof s.progress === 'object' ? s.progress : {}, alerts: Array.isArray(s.alerts) ? s.alerts : [] };
+      return {
+        progress: s.progress && typeof s.progress === 'object' ? s.progress : {},
+        alerts: Array.isArray(s.alerts) ? s.alerts : [],
+        aeNotes: s.aeNotes && typeof s.aeNotes === 'object' ? s.aeNotes : {},
+      };
     }
   } catch {
     /* 저장소 없음 — 기본값 */
   }
-  return { progress: {}, alerts: [] };
+  return { progress: {}, alerts: [], aeNotes: {} };
 }
 
 function save(s: WatchStore) {
@@ -60,5 +66,5 @@ export function subscribeWatchStore(fn: () => void): () => void {
 
 /** 시연 초기화 — 시드 단계로 되돌린다 */
 export function resetWatchStore() {
-  setWatchStore(() => ({ progress: {}, alerts: [] }));
+  setWatchStore(() => ({ progress: {}, alerts: [], aeNotes: {} }));
 }

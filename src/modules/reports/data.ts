@@ -4,17 +4,26 @@
  * 여기에는 그 표에 없는 메타(리드타임 표기 · 주말 규칙 · 재투입 가안 · 시연 피드백 이력)만 둔다.
  */
 import type { MediaId } from '@/core/types';
+import { REPORT_CADENCE } from '@/data/constants';
 
 export type ReportType = 'daily' | 'weekly' | 'monthly' | 'issue';
 export const REPORT_TYPES: ReportType[] = ['daily', 'weekly', 'monthly', 'issue'];
 
-/** p.17 리포트 4종 + p.18 하단 리포트별 리드타임 (이슈 알림 감지 즉시 · 일간 D+1 08:00 · 주간 월 10:00 · 월간 익월 3영업일) */
-export const REPORT_META: Record<ReportType, { name: string; when: string; channel: string; content: string; lead: string; format: '메신저' | '메일' | '미팅'; page: string }> = {
-  daily: { name: '일간', when: '매일 08:00', channel: '메신저', content: '전일 성과 · 예산 소진 · 주요 변동', lead: 'D+1 08:00', format: '메신저', page: 'p.17' },
-  weekly: { name: '주간', when: '월 10:00', channel: '메일', content: '키워드 테스트 결과 · 개선 제안', lead: '월 10:00', format: '메일', page: 'p.17' },
-  monthly: { name: '월간', when: '익월 3영업일', channel: '미팅', content: '채널별 매출 기여 · 다음 달 계획', lead: '익월 3영업일', format: '미팅', page: 'p.17' },
-  issue: { name: '이슈 알림', when: '감지 즉시', channel: '메신저', content: '원인 · 영향 범위 · 조치 상태', lead: '감지 즉시', format: '메신저', page: 'p.17' },
-};
+/** p.18 하단 리포트별 리드타임 (이슈 알림 감지 즉시 · 일간 D+1 08:00 · 주간 월 10:00 · 월간 익월 3영업일) */
+const REPORT_LEAD: Record<ReportType, string> = { daily: 'D+1 08:00', weekly: '월 10:00', monthly: '익월 3영업일', issue: '감지 즉시' };
+type CadenceRow = (typeof REPORT_CADENCE)[number];
+const cadenceOf = (t: ReportType): CadenceRow => REPORT_CADENCE.find((c) => c.id === t) ?? REPORT_CADENCE[0];
+
+/**
+ * p.17 리포트 4종 — 이름 · 주기 · 채널 · 내용은 constants.ts REPORT_CADENCE에서 그대로 읽는다 (값을 여기서 다시 쓰지 않음).
+ * lead는 p.18 하단 표기.
+ */
+export const REPORT_META: Record<ReportType, { name: string; when: string; channel: CadenceRow['channel']; content: string; lead: string; page: string }> = Object.fromEntries(
+  REPORT_TYPES.map((t) => {
+    const c = cadenceOf(t);
+    return [t, { name: c.name, when: c.when, channel: c.channel, content: c.content, lead: REPORT_LEAD[t], page: 'p.17' }];
+  }),
+) as Record<ReportType, { name: string; when: string; channel: CadenceRow['channel']; content: string; lead: string; page: string }>;
 
 /** 월간 리포트 발송일 = 익월 n번째 영업일 (p.17) */
 export const MONTHLY_BUSINESS_DAY = 3;
@@ -35,8 +44,8 @@ export const TIMETABLE_META: Record<string, { scope: string; lead: string; owner
   '09:30': { scope: '전일 17:00 → 당일 09:00 (야간 · 주말 포함)', lead: '야간 감지분 → 당일 09:30', owner: 'ae', offDay: 'move_next_business', offNote: '주말 · 공휴일 → 다음 영업일 09:30 브리핑 (p.44)', route: 'alert', page: 'p.18 · p.44' },
   '11:00': { scope: '당일 00–10시 · 동요일 · 동시간 대비', lead: '시간 단위 (매체 집계 지연 1시간 가정)', owner: 'ae', offDay: 'alert_duty', offNote: 'MILDO Alert 상시 감지 + 당번 AE 30분 내 확인 (p.48)', route: 'alert', page: 'p.18 · p.47' },
   '14:00': { scope: '당일 00–13시 캠페인별 일 예산 소진', lead: '시간 단위 → 예상 마감 시각', owner: 'ae', offDay: 'alert_duty', offNote: '예산 소진 예상은 Alert 자동 알림 + 당번 AE 확인 (p.48)', route: 'board', page: 'p.18 · p.14' },
-  '16:30': { scope: 'AD Pilot 조정 후보 · 승인 요청', lead: '익일 00시 반영 전 7.5시간', owner: 'ae', offDay: 'merge_next', offNote: '주말 · 공휴일 조정안은 다음 영업일 16:30 조정안에 병합 · 그 사이 자동 조정은 사전 승인 범위 안에서만 (운영 가정)', route: 'adpilot', page: 'p.18 · p.14' },
-  '17:00': { scope: '당일 00–16시 소진 · 성과 · 미결 이슈', lead: '당일 16시 데이터 → 17:00', owner: 'system', offDay: 'run', offNote: '자동 발송 · 미결 이슈는 당번 AE 인계', route: 'reports', page: 'p.18' },
+  '16:30': { scope: 'AD Pilot 조정 후보 · 승인 요청', lead: '익일 00시 반영 전 7.5시간 (운영 가정)', owner: 'ae', offDay: 'merge_next', offNote: '주말 · 공휴일 조정안은 다음 영업일 16:30 조정안에 병합 · 그 사이 자동 조정은 사전 승인 범위 안에서만 (운영 가정)', route: 'adpilot', page: 'p.18 · p.14' },
+  '17:00': { scope: '당일 00–16시 소진 · 성과 · 미결 이슈', lead: '당일 16시 데이터 → 17:00 (운영 가정)', owner: 'system', offDay: 'run', offNote: '자동 발송 · 미결 이슈는 당번 AE 인계', route: 'reports', page: 'p.18' },
 };
 
 /**
@@ -46,21 +55,20 @@ export const TIMETABLE_META: Record<string, { scope: string; lead: string; owner
  */
 export const PACE_CURVE_DAYS = 28;
 
-/**
- * 2026년 공휴일 보완 — src/core/util.ts KR_HOLIDAYS가 2026-12-25부터 시작해 데이터 기간(2026-07~) 안의 공휴일이 빠져 있다.
- * 월간 리포트 발송일(익월 3영업일) · 다음 달 영업일 수 · 주간 발송일 계산에 쓴다. 대체공휴일은 정부 고시로 최종 확인 필요.
- * (공용 KR_HOLIDAYS에 반영되면 이 표는 중복이어도 결과가 같다)
+/*
+ * 영업일 · 공휴일은 모듈 로컬 표를 두지 않고 공용 src/core/util.ts KR_HOLIDAYS · isOffDay를 그대로 쓴다
+ * (월간 발송일 '익월 3영업일' · 다음 달 영업일 수 · 주간 발송일 · 이슈 브리핑 이동일이 MILDO Alert 당번 체계와 같은 달력을 쓰도록).
  */
-export const EXTRA_HOLIDAYS: Record<string, string> = {
-  '2026-08-15': '광복절',
-  '2026-08-17': '대체공휴일(확인 필요)',
-  '2026-09-24': '추석 연휴',
-  '2026-09-25': '추석',
-  '2026-09-26': '추석 연휴',
-  '2026-10-03': '개천절',
-  '2026-10-05': '대체공휴일(확인 필요)',
-  '2026-10-09': '한글날',
-};
+
+/** 월간 미팅 시각 (운영 가정 — p.17은 '익월 3영업일'만 명시) */
+export const MONTHLY_SEND_MIN = 10 * 60;
+
+/**
+ * 키워드 테스트 판정 보조 기준 — MILDO Lab 판정(p.26)과 같은 값. 주간 리포트는 Lab 엔진(buildPipeline) 결과를 우선 쓰고,
+ * Lab 엔진을 쓸 수 없을 때만 이 값으로 같은 규칙을 재계산한다.
+ * minJudgeClicks: 기간(14일)이 지나도 클릭이 이 값 미만이면 판정 보류 · 표본 부족 (MILDO Lab 모듈 가정과 동일)
+ */
+export const TEST_JUDGE_MIN_CLICKS = 30;
 
 /** 수면밀도 업무시간 (p.18 '수면밀도 업무시간 08–17') */
 export const BUSINESS_HOURS = { from: 8 * 60, to: 17 * 60 } as const;

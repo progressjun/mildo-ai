@@ -11,16 +11,17 @@
  * 영향 진단 · 데이터 감지 신호 · 침투 판정 · 테스트 판정은 모두 state.data(Dataset)에서 계산한다.
  * 기준 시각은 data.today / data.currentHour (generatedAt)이며 new Date()로 '오늘'을 정하지 않는다.
  */
-import type { ChangeRequest, Dataset, Incident, IntentId, Keyword, KeywordStats, MediaId, Promotion } from '@/core/types';
+import type { Campaign, ChangeRequest, Dataset, Incident, IntentId, Keyword, KeywordStats, MediaId, Promotion } from '@/core/types';
 import type { Brief } from '@/ai/prompts';
 import {
   AD_PILOT, ANOMALY_THRESHOLDS, CAUSE_CANDIDATES, GFA_DELEGATION, INTENT_IDS, KEYWORD_TEST_RULES, MEDIA, MEDIA_IDS, OS_SCENARIO, REPORT_CADENCE, RFP,
   SA_CAMPAIGNS, TEST_CARD_RULES,
 } from '@/data/constants';
 import { campaignPacing, keywordMetrics, mediaRows, previousRange, rangeOf, totalsOf } from '@/core/selectors';
+// campaignPacing(선형)은 아래 campaignPace의 선형 보조 추정으로만 쓴다 — 판정은 Board · AD Pilot · Alert와 같은 시간대 곡선 기준
 import { addDays, fmt, fmtDate, isOffDay, KR_HOLIDAYS, mean, metrics, sum, twoProportionZ, weekday } from '@/core/util';
 import {
-  ARCHIVE_ITEMS, ARCHIVE_RECORDS, BRAND_SERP_SEEDS, EVENT_KIND_LABEL, EVENT_SEEDS, LIFE_TERM_PATTERN, MEDIA_TRACKING, PIPELINE, SEASON_KIND_LABEL,
+  ARCHIVE_ITEMS, ARCHIVE_RECORDS, BRAND_SERP_SEEDS, EVENT_KIND_LABEL, EVENT_SEEDS, LIFE_TERM_PATTERN, MEDIA_TRACKING, PACE_RULES, PIPELINE, SEASON_KIND_LABEL,
   SEASON_WINDOWS, STAGE_INDEX, WATCH_DEFAULTS,
   type ArchiveItemId, type ArchiveRecord, type EventKind, type EventSeed, type SeasonKind, type SerpSeed, type StageId, type TestArmResult, type TestPlanSeed,
 } from './data';
@@ -120,6 +121,7 @@ export interface WatchConfig {
   mediaSpikePct: number;
   mediaWindowHours: number;
   brandRankMax: number;
+  brandRankDanger: number;
   brandLostMin: number;
   lifeMinConv: number;
   lifeMinTerms: number;
@@ -174,6 +176,115 @@ function lvBoth(delta: number, warn: number, danger: number): Level {
   if (!fin(delta)) return 'info';
   const a = Math.abs(delta);
   return a >= danger ? 'danger' : a >= warn ? 'warn' : 'ok';
+}
+/** 판정 기준 표기 — 배지(주의 · 위험)가 어떤 값에서 바뀌는지 둘 다 적는다 */
+function thr(cfg: WatchConfig, k: AnomKey, sign: '±' | '+' | '−'): string {
+  return `${sign}${cfg.warn[k]}% 주의 · ${sign}${cfg.danger[k]}% 위험`;
+}
+
+/** 증감률 → '+12.3%' · '−10.0%' (제안서 기준값 표기와 같은 U+2212 부호 — 한 줄에 '-'와 '−'가 섞이지 않게) */
+export function fmtDelta(pct: number, digits = 1): string {
+  return fmt.delta(pct, digits).replace(/^-/, '−');
+}
+
+/** 소수 시각(20.37) → '20:22' */
+export function fmtClock(h: number | null | undefined): string {
+  if (h === null || h === undefined || !Number.isFinite(h)) return '—';
+  const hh = Math.floor(h);
+  const mm = Math.min(59, Math.round((h - hh) * 60));
+  return `${pad2(hh)}:${pad2(mm)}`;
+}
+
+/* ============================== 일 예산 소진 예상 (Board · AD Pilot · Alert 동일 기준) ============================== */
+
+/** 매체의 최근 N일(오늘 제외) 시간대별 누적 광고비 비중 (0시~h시 종료까지). 데이터가 없으면 균등 */
+export function hourlyCostShare(d: Pick<Dataset, 'mediaHourly' | 'today'>, media: MediaId, days: number = PACE_RULES.curveDays): number[] {
+  const from = addDays(d.today, -days);
+  const byH = new Array<number>(24).fill(0);
+  let tot = 0;
+  for (const r of d.mediaHourly ?? []) {
+    if (r.media !== media || r.date >= d.today || r.date < from || r.hour < 0 || r.hour > 23) continue;
+    const c = fin(r.cost) ? r.cost : 0;
+    byH[r.hour] += c;
+    tot += c;
+  }
+  let acc = 0;
+  return tot > 0 ? byH.map((v) => (acc += v) / tot) : byH.map((_, h) => (h + 1) / 24);
+}
+
+function curveExhaust(cum: readonly number[], ratio: number): number | null {
+  if (!fin(ratio) || !(ratio > 1)) return null;
+  const need = 1 / ratio;
+  for (let h = 0; h < 24; h++) {
+    if (cum[h] >= need) {
+      const prev = h > 0 ? cum[h - 1] : 0;
+      const frac = cum[h] - prev > 0 ? (need - prev) / (cum[h] - prev) : 1;
+      return h + Math.min(1, Math.max(0, frac));
+    }
+  }
+  return null;
+}
+
+export interface CampaignPace {
+  id: string;
+  name: string;
+  media: MediaId;
+  dailyBudget: number;
+  spentToday: number;
+  pacePct: number;
+  /** 시간대 곡선상 지금까지 기대 소진율 (%) */
+  expectedPct: number;
+  exhaustHour: number | null;
+  method: '시간대 가중' | '선형' | null;
+  earlyExhaust: boolean;
+  missesPeak: boolean;
+}
+
+/**
+ * 캠페인 일 예산 예상 마감 — 최근 28일 시간대 소진 곡선(시간대 가중) + 선형 추정.
+ * 시간대 가중이 23시 전이면 그 시각, 아니면 선형이 23시 전이면 선형 시각을 판정 · 표시에 같이 쓴다 (MILDO Board와 같은 규칙).
+ */
+export function campaignPace(d: Pick<Dataset, 'campaigns' | 'mediaHourly' | 'today'>, list: readonly Campaign[] = d.campaigns ?? []): CampaignPace[] {
+  if (!list.length) return [];
+  const linear = campaignPacing({ campaigns: [...list] } as Dataset);
+  const curves = new Map<MediaId, number[]>();
+  return list.map((c, i) => {
+    let cum = curves.get(c.media);
+    if (!cum) { cum = hourlyCostShare(d, c.media); curves.set(c.media, cum); }
+    const hour = Math.min(23, Math.max(0, Math.round(fin(c.hourOfData) ? c.hourOfData : 0)));
+    const cumNow = cum[hour];
+    const budget = fin(c.dailyBudget) ? c.dailyBudget : 0;
+    const spent = fin(c.spentToday) ? c.spentToday : 0;
+    const ratio = budget > 0 && cumNow > 0 ? spent / (budget * cumNow) : NaN;
+    const off = c.status === 'off';
+    const curveHour = off ? null : curveExhaust(cum, ratio);
+    const lin = linear[i];
+    const linHour = lin && budget > 0 && fin(lin.exhaustHour as number) ? (lin.exhaustHour as number) : null;
+    const linearEarly = !off && budget > 0 && !!lin?.earlyExhaust;
+    const curveEarly = curveHour !== null && curveHour < PACE_RULES.exhaustBeforeHour;
+    const exhaust = off || !(budget > 0) ? null : curveEarly ? curveHour : linearEarly ? linHour : curveHour;
+    const earlyExhaust = linearEarly || curveEarly;
+    return {
+      id: c.id, name: c.name, media: c.media, dailyBudget: budget, spentToday: spent,
+      pacePct: budget > 0 ? (spent / budget) * 100 : NaN,
+      expectedPct: cumNow * 100,
+      exhaustHour: exhaust,
+      method: exhaust === null ? null : curveEarly || !linearEarly ? '시간대 가중' : '선형',
+      earlyExhaust,
+      missesPeak: earlyExhaust && exhaust !== null && exhaust < PACE_RULES.peakStartHour,
+    };
+  });
+}
+
+/** 조기 소진 캠페인 근거 한 줄 (피크 전 소진 = 위험, 23시 전 마감 = 주의) */
+function paceEvidence(c: CampaignPace): WatchEvidence {
+  return {
+    label: `${c.name} 일 예산 소진`,
+    value: fmt.pct(c.pacePct, 0),
+    base: `예상 마감 ${fmtClock(c.exhaustHour)}${c.method === '선형' ? ' (선형 추정)' : ''} · 같은 시각 평소 소진 ${fmt.pct(c.expectedPct, 0)}`,
+    threshold: `${PACE_RULES.exhaustBeforeHour}시 전 마감 주의 · ${PACE_RULES.peakStartHour}시 전(저녁 피크 전) 위험 · 최근 ${PACE_RULES.curveDays}일 시간대 소진 곡선 (Board · AD Pilot · Alert 동일)`,
+    level: c.missesPeak ? 'danger' : 'warn',
+  };
 }
 
 /* ============================== 데이터 계산 헬퍼 ============================== */
@@ -336,8 +447,8 @@ export function detectSignals(d: Dataset, cfg: WatchConfig = resolveWatchConfig(
     const serpHits = records.filter((r) => r.item === 'serp' && r.serp?.keyword === k.text && r.date >= recentFrom && r.date <= d.today && r.competitor);
     const hold = Math.abs(s.cpcDelta) >= cfg.adPilotHoldPct || (fin(s.convDelta) && Math.abs(s.convDelta) >= cfg.adPilotHoldPct);
     const ev: WatchEvidence[] = [
-      { label: `'${k.text}' CPC (최근 ${s.days}일)`, value: fmt.won(s.cpcRecent), base: `직전 ${s.priorDays}일 ${fmt.won(s.cpcPrior)}`, delta: s.cpcDelta, threshold: `+${cfg.kwCpcUpPct}% 이상 선제 감지 · ±${cfg.adPilotHoldPct}% AD Pilot 보류 (p.14)`, level: lvUp(s.cpcDelta, cfg.kwCpcUpPct, cfg.adPilotHoldPct) },
-      { label: '일 평균 전환', value: `${fmt.dec1(s.convRecent)}건`, base: `직전 ${fmt.dec1(s.convPrior)}건`, delta: s.convDelta, threshold: `−${cfg.warn.conversions}% 주의 (p.47)`, level: lvDown(s.convDelta, cfg.warn.conversions, cfg.danger.conversions) },
+      { label: `'${k.text}' CPC (최근 ${s.days}일)`, value: fmt.won(s.cpcRecent), base: `직전 ${s.priorDays}일 ${fmt.won(s.cpcPrior)}`, delta: s.cpcDelta, threshold: `+${cfg.kwCpcUpPct}% 선제 감지(운영 가정) · ±${cfg.adPilotHoldPct}% 자동 조정 보류 (AD Pilot 초기값 · p.14 · p.44)`, level: lvUp(s.cpcDelta, cfg.kwCpcUpPct, cfg.adPilotHoldPct) },
+      { label: '일 평균 전환', value: `${fmt.dec1(s.convRecent)}건`, base: `직전 ${fmt.dec1(s.convPrior)}건`, delta: s.convDelta, threshold: `${thr(cfg, 'conversions', '−')} (p.47 기준 준용)`, level: lvDown(s.convDelta, cfg.warn.conversions, cfg.danger.conversions) },
     ];
     const causes: CauseScore[] = [
       { label: CAUSE_CANDIDATES[0], score: serpHits.length ? 80 : 55, basis: serpHits.length ? `아카이브 ${serpHits.map((h) => `${fmtDate(h.date)} ${h.competitor} ${h.serp?.position}위`).join(' · ')} — CPC 상승 구간과 겹침` : 'CPC 상승 · 클릭 유지 패턴 (경쟁 입찰 상승 시 전형적)' },
@@ -346,7 +457,7 @@ export function detectSignals(d: Dataset, cfg: WatchConfig = resolveWatchConfig(
     ];
     out.push({
       id: `sig_kw_cpc:${k.id}`, origin: 'signal', media: 'naver_sa', kind: 'competitor',
-      title: `'${k.text}' CPC ${fmt.delta(s.cpcDelta, 0)} · 전환 ${fmt.delta(s.convDelta, 0)} (최근 ${s.days}일)`,
+      title: `'${k.text}' CPC ${fmtDelta(s.cpcDelta, 0)} · 전환 ${fmtDelta(s.convDelta, 0)} (최근 ${s.days}일)`,
       summary: `${SA_CAMPAIGNS[k.intent]?.name ?? k.intent} 키워드의 클릭 단가가 직전 ${s.priorDays}일 대비 올랐다. 순위 모니터링 · 경쟁사 지면 스냅샷과 대조해 원인을 분리한다.${hold ? ' AD Pilot 성과 급변 기준(±50%) 도달 — 자동 조정 보류 대상.' : ''}`,
       source: '순위 · CPC 모니터링 (데이터 감지)', detectedAt: collectStr, initialStage: 'detect',
       keywords: [k.text], intents: [k.intent], campaigns: [saCampaignOf(d, k.intent)].filter((x): x is string => !!x),
@@ -365,18 +476,18 @@ export function detectSignals(d: Dataset, cfg: WatchConfig = resolveWatchConfig(
     const hitCost = fin(w.costDelta) && Math.abs(w.costDelta) >= cfg.mediaSpikePct;
     const hitClicks = fin(w.clicksDelta) && Math.abs(w.clicksDelta) >= cfg.mediaSpikePct;
     if (!hitCost && !hitClicks) continue;
-    const pace = campaignPacing(d).filter((c) => c.media === m);
+    const pace = campaignPace(d).filter((c) => c.media === m);
     const early = pace.filter((c) => c.earlyExhaust);
     const up = (hitCost ? w.costDelta : w.clicksDelta) > 0;
     const ev: WatchEvidence[] = [
-      { label: `광고비 ${w.h0}~${w.h1}시`, value: `${fmt.krw(w.cost)}원`, base: `동요일 · 동시간 ${fmt.krw(w.baseCost)}원`, delta: w.costDelta, threshold: `±${cfg.mediaSpikePct}% (p.44)`, level: lvBoth(w.costDelta, cfg.warn.cost, cfg.danger.cost) },
-      { label: `클릭 ${w.h0}~${w.h1}시`, value: fmt.int(w.clicks), base: `동요일 · 동시간 ${fmt.int(w.baseClicks)}`, delta: w.clicksDelta, threshold: `±${cfg.mediaSpikePct}% (p.44)`, level: lvBoth(w.clicksDelta, cfg.warn.clicks, cfg.danger.clicks) },
-      { label: `전환 ${w.h0}~${w.h1}시`, value: `${fmt.dec1(w.conv)}건`, base: `최근 7일 동시간 ${fmt.dec1(w.baseConv)}건`, delta: w.convDelta, threshold: `−${cfg.warn.conversions}% 주의 (p.47)`, level: lvDown(w.convDelta, cfg.warn.conversions, cfg.danger.conversions) },
+      { label: `광고비 ${w.h0}~${w.h1}시`, value: `${fmt.krw(w.cost)}원`, base: `동요일 · 동시간 ${fmt.krw(w.baseCost)}원`, delta: w.costDelta, threshold: `${thr(cfg, 'cost', '±')} (p.47) · 데이터 급변 ±${cfg.mediaSpikePct}% (p.44)`, level: lvBoth(w.costDelta, cfg.warn.cost, cfg.danger.cost) },
+      { label: `클릭 ${w.h0}~${w.h1}시`, value: fmt.int(w.clicks), base: `동요일 · 동시간 ${fmt.int(w.baseClicks)}`, delta: w.clicksDelta, threshold: `${thr(cfg, 'clicks', '±')} (p.47) · 데이터 급변 ±${cfg.mediaSpikePct}% (p.44)`, level: lvBoth(w.clicksDelta, cfg.warn.clicks, cfg.danger.clicks) },
+      { label: `전환 ${w.h0}~${w.h1}시`, value: `${fmt.dec1(w.conv)}건`, base: `최근 7일 동시간 ${fmt.dec1(w.baseConv)}건`, delta: w.convDelta, threshold: `${thr(cfg, 'conversions', '−')} (p.47)`, level: lvDown(w.convDelta, cfg.warn.conversions, cfg.danger.conversions) },
     ];
-    for (const c of early) ev.push({ label: `${c.name} 일 예산 소진`, value: fmt.pct(c.pacePct, 0), base: `예상 마감 ${fmt.dec1(c.exhaustHour ?? NaN)}시`, threshold: '23시 이전 마감 = 조기 소진', level: 'warn' });
+    for (const c of early) ev.push(paceEvidence(c));
     out.push({
       id: `sig_media_spike:${m}:${d.today}`, origin: 'signal', media: m, kind: 'logic',
-      title: `${nameOfMedia(m)} 오늘 ${w.h0}~${w.h1}시 광고비 ${fmt.delta(w.costDelta, 0)} · 전환 ${fmt.delta(w.convDelta, 0)} (동요일 · 동시간 대비)`,
+      title: `${nameOfMedia(m)} 오늘 ${w.h0}~${w.h1}시 광고비 ${fmtDelta(w.costDelta, 0)} · 전환 ${fmtDelta(w.convDelta, 0)} (동요일 · 동시간 대비)`,
       summary: up
         ? '지출 속도가 평소 같은 시간대보다 빠르다. 매체 측 자동 확장 · 입찰 로직 변화 여부를 업데이트 노트와 대조하고, 원인 확인 전에는 증액하지 않는다. 데이터 급변 이슈는 MILDO Alert와 같은 근거로 처리한다.'
         : '지출이 평소 같은 시간대보다 크게 줄었다. 노출 제한 · 정책 변화 여부를 확인한다.',
@@ -404,16 +515,16 @@ export function detectSignals(d: Dataset, cfg: WatchConfig = resolveWatchConfig(
     const refs = records.filter((r) => r.item === 'serp' && r.competitor && brandKw.some((k) => k.text === r.serp?.keyword) && r.date >= recentFrom && r.date <= d.today);
     out.push({
       id: `sig_brand_serp:${d.today}`, origin: 'signal', media: 'naver_sa', kind: 'competitor',
-      title: `브랜드 키워드 ${brandKw.length}개 검색 결과 다른 광고 상위 노출 의심 (평균 순위 ${fmt.dec1(Math.min(...ranks))}~${fmt.dec1(Math.max(...ranks))}위)`,
-      summary: '자사 브랜드 검색 결과에서 자사 광고 평균 순위가 1위가 아니다. 브랜드 지면 스냅샷으로 경쟁사 침투 여부를 확인하고, 방어 입찰은 AD Pilot 브랜드 기준(목표 ROAS 800% · 순위 방어 우선)으로 판단한다.',
+      title: `브랜드 키워드 ${brandKw.length}개 · 검색 결과 상단에 다른 광고 노출 의심 (자사 평균 순위 ${fmt.dec1(Math.min(...ranks))}~${fmt.dec1(Math.max(...ranks))}위)`,
+      summary: `자사 브랜드 검색 결과에서 자사 광고 평균 순위가 1위가 아니다. 브랜드 지면 스냅샷으로 경쟁사 침투 여부를 확인하고, 방어 입찰은 AD Pilot 브랜드 키워드 별도 기준(목표 ROAS ${cfg.brandTargetRoas}% 초기값 · 점유 방어와 효율을 함께 판단, p.14)으로 판단한다.`,
       source: '브랜드 지면 점검 · 순위 모니터링 (데이터 감지)', detectedAt: collectStr, initialStage: 'detect',
       keywords: brandKw.map((k) => k.text), intents: ['brand'], campaigns: [saCampaignOf(d, 'brand')].filter((x): x is string => !!x),
-      plan: '브랜드 방어 입찰 검토 → AD Pilot 조정 후보 (브랜드 목표 ROAS 800% · 순위 방어 우선)',
-      test: { hypothesis: '브랜드 키워드 입찰을 상향한 그룹이 순위 1위를 유지하면서 브랜드 ROAS 800% 이상을 지킨다', arms: '방어 입찰 상향 그룹 vs 기존 입찰', metric: '평균 순위 · 브랜드 ROAS' },
+      plan: `브랜드 방어 입찰 검토 → AD Pilot 조정 후보 (브랜드 목표 ROAS ${cfg.brandTargetRoas}% 초기값 · 점유 방어와 효율을 함께 판단)`,
+      test: { hypothesis: `브랜드 키워드 입찰을 상향한 그룹이 순위 1위를 유지하면서 브랜드 ROAS ${cfg.brandTargetRoas}% 이상을 지킨다`, arms: '방어 입찰 상향 그룹 vs 기존 입찰', metric: '평균 순위 · 브랜드 ROAS' },
       seedLog: [{ at: `${d.today}T07:00:00+09:00`, by: 'MILDO Watch', action: '감지 · 브랜드 지면 점검' }],
       signal: {
         rule: 'brand_serp', basis: `브랜드 키워드 평균 순위 ≥ ${cfg.brandRankMax.toFixed(1)} 또는 노출 기회 손실 ≥ ${Math.round(cfg.brandLostMin * 100)}%`, page: 'p.25 · p.45',
-        evidence: brandKw.map((k) => ({ label: `'${k.text}' 평균 순위`, value: `${fmt.dec1(k.avgRank)}위`, base: `노출 기회 손실 ${fmt.ratio(k.impressionShareLost, 0)}`, threshold: `순위 ≥ ${cfg.brandRankMax.toFixed(1)} · 손실 ≥ ${Math.round(cfg.brandLostMin * 100)}%`, level: (k.avgRank >= cfg.brandRankMax + 1 ? 'danger' : 'warn') as Level })),
+        evidence: brandKw.map((k) => ({ label: `'${k.text}' 평균 순위`, value: `${fmt.dec1(k.avgRank)}위`, base: `노출 기회 손실 ${fmt.ratio(k.impressionShareLost, 0)}`, threshold: `순위 ≥ ${cfg.brandRankMax.toFixed(1)} 또는 손실 ≥ ${Math.round(cfg.brandLostMin * 100)}% 주의 · 순위 ≥ ${cfg.brandRankDanger.toFixed(1)} 위험 (운영 가정)`, level: (k.avgRank >= cfg.brandRankDanger ? 'danger' : 'warn') as Level })),
         causes: [
           { label: '경쟁사 브랜드 키워드 입찰', score: refs.length ? 85 : 60, basis: refs.length ? `아카이브 ${refs.map((r) => `${r.competitor} '${r.serp?.keyword}' ${r.serp?.position}위`).join(' · ')}` : '평균 순위 하락 패턴' },
           { label: '자사 입찰가 · 품질지수 변화', score: 30, basis: '최근 입찰 변경 이력 (MILDO Flow) 확인' },
@@ -463,13 +574,13 @@ export function detectSignals(d: Dataset, cfg: WatchConfig = resolveWatchConfig(
     const y = bs.yesterday;
     out.push({
       id: `sig_brand_search:${y.date}`, origin: 'signal', media: 'naver_sa', kind: 'demand',
-      title: `브랜드 검색량 ${fmt.delta(y.deltaPct, 0)} (${fmtDate(y.date)} vs 최근 4주 동요일)`,
+      title: `브랜드 검색량 ${fmtDelta(y.deltaPct, 0)} (${fmtDate(y.date)} vs 최근 4주 동요일)`,
       summary: '브랜드 검색량이 평소 같은 요일 대비 크게 달라졌다. GFA 집행 · 경쟁사 프로모션 · 외부 이슈와 시기를 대조한다.',
       source: '브랜드 검색량 수집 (데이터 감지)', detectedAt: collectStr, initialStage: 'detect',
       keywords: d.keywords.filter((k) => k.isBrand).map((k) => k.text), intents: ['brand'], campaigns: [saCampaignOf(d, 'brand')].filter((x): x is string => !!x),
       plan: 'GFA 집행 강도 · 경쟁사 아카이브 대조 → 브랜드 방어 예산 점검',
       seedLog: [{ at: `${d.today}T07:00:00+09:00`, by: 'MILDO Watch', action: '감지 · 브랜드 검색량' }],
-      signal: { rule: 'brand_search', basis: `전일 vs 최근 4주 동요일 평균 ±${cfg.searchShiftPct}%`, page: 'p.25 · p.44', evidence: [{ label: '브랜드 검색량', value: fmt.int(y.volume), base: `동요일 평균 ${fmt.int(y.base)}`, delta: y.deltaPct, threshold: `±${cfg.searchShiftPct}%`, level: 'danger' }], causes: [{ label: '외부 변수 · 프로모션', score: 50, basis: '시즌 캘린더 · 아카이브 대조' }] },
+      signal: { rule: 'brand_search', basis: `전일 vs 최근 4주 동요일 평균 ±${cfg.searchShiftPct}%`, page: 'p.25 · p.44', evidence: [{ label: '브랜드 검색량', value: fmt.int(y.volume), base: `동요일 평균 ${fmt.int(y.base)}`, delta: y.deltaPct, threshold: `±${cfg.searchShiftPct}% 급변 (p.44 검색량 급변 · 수치는 운영 가정)`, level: 'danger' }], causes: [{ label: '외부 변수 · 프로모션', score: 50, basis: '시즌 캘린더 · 아카이브 대조' }] },
       related: [], archiveRefs: [],
     });
   }
@@ -517,7 +628,7 @@ export interface Diagnosis {
 export function evidenceLine(e: WatchEvidence): string {
   const parts = [`${e.label} ${e.value}`];
   if (e.base) parts.push(e.base);
-  if (fin(e.delta)) parts.push(fmt.delta(e.delta, 0));
+  if (fin(e.delta)) parts.push(fmtDelta(e.delta, 0));
   if (e.threshold) parts.push(`기준 ${e.threshold}`);
   return parts.join(' · ');
 }
@@ -531,25 +642,26 @@ export function diagnoseEvent(ev: WatchEvent, d: Dataset, cfg: WatchConfig = res
 
   if (!noData) {
     evidence.push(
-      { label: `${name} 광고비 7일`, value: `${fmt.krw(wk.cur.cost)}원`, base: `직전 7일 ${fmt.krw(wk.prev.cost)}원`, delta: wk.costDelta, threshold: `±${cfg.warn.cost}% 주의 (p.47)`, level: lvBoth(wk.costDelta, cfg.warn.cost, cfg.danger.cost) },
-      { label: `${name} ROAS 7일`, value: fmt.roas(wk.cur.roas), base: `직전 7일 ${fmt.roas(wk.prev.roas)}`, delta: wk.roasDelta, threshold: `−${cfg.warn.roas}% 주의 (p.47)`, level: lvDown(wk.roasDelta, cfg.warn.roas, cfg.danger.roas) },
-      { label: `${name} CPA 7일`, value: fmt.won(wk.cur.cpa), base: `직전 7일 ${fmt.won(wk.prev.cpa)}`, delta: wk.cpaDelta, threshold: `+${cfg.warn.cpa}% 주의 (p.47)`, level: lvUp(wk.cpaDelta, cfg.warn.cpa, cfg.danger.cpa) },
+      { label: `${name} 광고비 7일`, value: `${fmt.krw(wk.cur.cost)}원`, base: `직전 7일 ${fmt.krw(wk.prev.cost)}원`, delta: wk.costDelta, threshold: `${thr(cfg, 'cost', '±')} (p.47 기준 준용)`, level: lvBoth(wk.costDelta, cfg.warn.cost, cfg.danger.cost) },
+      { label: `${name} ROAS 7일`, value: fmt.roas(wk.cur.roas), base: `직전 7일 ${fmt.roas(wk.prev.roas)}`, delta: wk.roasDelta, threshold: `${thr(cfg, 'roas', '−')} (p.47)`, level: lvDown(wk.roasDelta, cfg.warn.roas, cfg.danger.roas) },
+      { label: `${name} CPA 7일`, value: fmt.won(wk.cur.cpa), base: `직전 7일 ${fmt.won(wk.prev.cpa)}`, delta: wk.cpaDelta, threshold: `${thr(cfg, 'cpa', '+')} (p.47)`, level: lvUp(wk.cpaDelta, cfg.warn.cpa, cfg.danger.cpa) },
     );
     if (!ev.signal || ev.signal.rule !== 'media_spike') {
       const w = mediaHourWindow(d, ev.media, cfg.mediaWindowHours);
       if (w.hasToday && w.baseDays >= 2) {
-        evidence.push({ label: `오늘 ${w.h0}~${w.h1}시 광고비`, value: `${fmt.krw(w.cost)}원`, base: `동요일 · 동시간 ${fmt.krw(w.baseCost)}원`, delta: w.costDelta, threshold: `±${cfg.warn.cost}% 주의 · ±${cfg.danger.cost}% 위험 (p.47)`, level: lvBoth(w.costDelta, cfg.warn.cost, cfg.danger.cost) });
+        evidence.push({ label: `오늘 ${w.h0}~${w.h1}시 광고비`, value: `${fmt.krw(w.cost)}원`, base: `동요일 · 동시간 ${fmt.krw(w.baseCost)}원`, delta: w.costDelta, threshold: `${thr(cfg, 'cost', '±')} (p.47)`, level: lvBoth(w.costDelta, cfg.warn.cost, cfg.danger.cost) });
       }
     }
   }
 
-  // 영향 키워드
+  // 영향 키워드 (네이버 SA 이벤트) · 연관 SA 키워드 (다른 매체 이벤트 — 예: GFA → 브랜드 검색 동행)
   const kwSet = d.keywords.filter((k) => ev.keywords.includes(k.text) || (ev.intents.length > 0 && ev.intents.includes(k.intent) && !ev.keywords.length));
+  const kwScope = ev.media === 'naver_sa' ? '영향' : '연관 SA';
   if (!ev.signal || ev.signal.rule !== 'kw_cpc') {
     const shifts = kwSet.map((k) => ({ k, s: keywordRecentShift(k, cfg.kwRecentDays) })).filter((x) => x.s && fin(x.s.cpcDelta) && x.s.recentClicks >= cfg.kwMinClicks);
     const worst = shifts.sort((a, b) => (b.s!.cpcDelta) - (a.s!.cpcDelta))[0];
     if (worst?.s) {
-      evidence.push({ label: `'${worst.k.text}' CPC 최근 ${worst.s.days}일`, value: fmt.won(worst.s.cpcRecent), base: `직전 ${fmt.won(worst.s.cpcPrior)}`, delta: worst.s.cpcDelta, threshold: `+${cfg.kwCpcUpPct}% (운영 가정)`, level: lvUp(worst.s.cpcDelta, cfg.kwCpcUpPct, cfg.adPilotHoldPct), note: `영향 키워드 ${kwSet.length}개 중 CPC 상승 폭 최대` });
+      evidence.push({ label: `'${worst.k.text}' CPC 최근 ${worst.s.days}일`, value: fmt.won(worst.s.cpcRecent), base: `직전 ${fmt.won(worst.s.cpcPrior)}`, delta: worst.s.cpcDelta, threshold: `+${cfg.kwCpcUpPct}% 주의(운영 가정) · ±${cfg.adPilotHoldPct}% 위험 · 자동 조정 보류 (AD Pilot 초기값)`, level: lvUp(worst.s.cpcDelta, cfg.kwCpcUpPct, cfg.adPilotHoldPct), note: `${kwScope} 키워드 ${kwSet.length}개 중 CPC 상승 폭 최대` });
     }
   }
   if (kwSet.length) {
@@ -557,15 +669,13 @@ export function diagnoseEvent(ev: WatchEvent, d: Dataset, cfg: WatchConfig = res
       const roas = keywordMetrics(k).roas;
       return fin(roas) && roas < (k.isBrand ? cfg.brandTargetRoas : cfg.targetRoas);
     });
-    evidence.push({ label: '영향 키워드 목표 ROAS 미달', value: `${below.length} / ${kwSet.length}개`, threshold: `목표 ROAS ${cfg.targetRoas}% · 브랜드 ${cfg.brandTargetRoas}% (p.14)`, level: below.length ? 'warn' : 'ok', note: below.length ? below.map((k) => k.text).slice(0, 3).join(' · ') : undefined });
+    evidence.push({ label: `${kwScope} 키워드 목표 ROAS 미달`, value: `${below.length} / ${kwSet.length}개`, threshold: `목표 ROAS ${cfg.targetRoas}% · 브랜드 ${cfg.brandTargetRoas}% (AD Pilot 초기값 · 온보딩 중 확정)`, level: below.length ? 'warn' : 'ok', note: below.length ? below.map((k) => k.text).slice(0, 3).join(' · ') : undefined });
   }
 
   // 영향 캠페인 (일 예산 소진)
-  const pace = campaignPacing(d).filter((c) => ev.campaigns.includes(c.name));
+  const pace = campaignPace(d).filter((c) => ev.campaigns.includes(c.name));
   if (!ev.signal || ev.signal.rule !== 'media_spike') {
-    for (const c of pace.filter((p) => p.earlyExhaust)) {
-      evidence.push({ label: `${c.name} 일 예산 소진`, value: fmt.pct(c.pacePct, 0), base: `예상 마감 ${fmt.dec1(c.exhaustHour ?? NaN)}시`, threshold: '23시 이전 마감 = 조기 소진', level: 'warn' });
-    }
+    for (const c of pace.filter((p) => p.earlyExhaust)) evidence.push(paceEvidence(c));
   }
 
   // 계정 상태
@@ -586,9 +696,9 @@ export function diagnoseEvent(ev: WatchEvent, d: Dataset, cfg: WatchConfig = res
     evidence.unshift({ label: `${name} 전환 0 구간`, value: `${tz.zeroHours}시간`, base: `${tz.since}시~${d.currentHour}시 · 클릭 정상`, threshold: `연속 ${cfg.trackingZeroHours}시간 = 전환 추적 단절 의심 (p.45)`, level: 'danger', note: 'MILDO Alert P1 · 자동 조정 보류' });
   }
 
-  // 영향 범위 (일 평균)
+  // 영향 범위 (일 평균) — SA 이벤트는 영향 키워드, 다른 매체는 영향 캠페인 · 매체 지표 기준
   let affected: Diagnosis['affected'];
-  if (kwSet.length) {
+  if (kwSet.length && ev.media === 'naver_sa') {
     affected = {
       keywords: kwSet.length,
       spendPerDay: sum(kwSet, (k) => k.last14.cost) / 14,
@@ -627,8 +737,8 @@ export function diagnoseEvent(ev: WatchEvent, d: Dataset, cfg: WatchConfig = res
   const basis =
     verdict === 'nodata' ? `${name} 최근 14일 집행 데이터 없음 — 수집 확인 필요`
       : verdict === 'hold' ? `${holdReason} — 기준 연속 ${cfg.trackingZeroHours}시간 (p.45)`
-        : primary ? `${primary.label} ${primary.value}${fin(primary.delta) ? ` (${fmt.delta(primary.delta, 0)})` : ''} · 기준 ${primary.threshold ?? '—'}`
-          : `p.47 주의 기준 미도달 (광고비 · 클릭 ±${cfg.warn.cost}%, CPA +${cfg.warn.cpa}%, ROAS −${cfg.warn.roas}%)`;
+        : primary ? `${primary.label} ${primary.value}${fin(primary.delta) ? ` (${fmtDelta(primary.delta, 0)})` : ''} · 기준 ${primary.threshold ?? '—'}`
+          : `p.47 주의 기준 미도달 (광고비 · 클릭 ±${cfg.warn.cost}%, CPA +${cfg.warn.cpa}%, ROAS −${cfg.warn.roas}%) · ${PACE_RULES.exhaustBeforeHour}시 전 일 예산 마감 없음 · 계정 이상 없음`;
 
   return { verdict, label: VERDICT_META[verdict].label, basis, evidence, affected, holdReason, causes: causes.sort((a, b) => b.score - a.score), week };
 }
@@ -711,17 +821,17 @@ export function judgeTest(result: { control: TestArmResult; test: TestArmResult 
   const { p } = twoProportionZ(c.conversions, c.clicks, t.conversions, t.clicks);
   const out = { ...base, cvrControl, cvrTest, lift, p };
   const pTxt = fin(p) ? `p=${p.toFixed(3)}` : 'p 계산 불가';
-  const cvrTxt = `전환율 ${fmt.pct(cvrTest, 2)} vs 기존 ${fmt.pct(cvrControl, 2)} (${fmt.delta(lift)})`;
+  const cvrTxt = `전환율 ${fmt.pct(cvrTest, 2)} vs 기존 ${fmt.pct(cvrControl, 2)} (${fmtDelta(lift)})`;
   if (!fin(lift)) return { ...out, verdict: 'insufficient', label: '판정 보류 · 기존 그룹 전환 없음', basis: `기존 그룹 클릭 ${fmt.int(c.clicks)} · 전환 ${fmt.dec1(c.conversions)} — 비교 기준 없음` };
   if (out.daysElapsed < cfg.stopDay) return { ...out, verdict: 'running', label: `진행 중 · ${out.daysElapsed}/${days}일`, basis: `${cfg.stopDay}일차 중간 점검 전 — 현재 ${cvrTxt}` };
-  if (lift <= -cfg.stopCvrDropPct) return { ...out, verdict: 'stop', label: `중단 · 전환율 ${fmt.delta(lift, 0)}`, basis: `${cvrTxt} · 기준 ${cfg.stopDay}일차 −${cfg.stopCvrDropPct}% 이하 → 중단 (p.28)` };
+  if (lift <= -cfg.stopCvrDropPct) return { ...out, verdict: 'stop', label: `중단 · 전환율 ${fmtDelta(lift, 0)}`, basis: `${cvrTxt} · 기준 ${cfg.stopDay}일차 −${cfg.stopCvrDropPct}% 이하 → 중단 (p.28)` };
   if (out.daysElapsed < days) return { ...out, verdict: 'running', label: `진행 중 · ${out.daysElapsed}/${days}일`, basis: `중단 기준 미도달 · 기간 종료 후 판정 — 현재 ${cvrTxt}` };
   if (Math.min(c.clicks, t.clicks) < cfg.testMinClicks) return { ...out, verdict: 'insufficient', label: '판정 보류 · 표본 부족', basis: `그룹별 최소 클릭 ${cfg.testMinClicks} 미달 (기존 ${fmt.int(c.clicks)} · 신규 ${fmt.int(t.clicks)}) — 기간 연장` };
   if (lift >= cfg.expandCvrLiftPct) {
-    if (fin(p) && p < 0.05) return { ...out, verdict: 'expand', label: `확대 · 전환율 ${fmt.delta(lift, 0)}`, basis: `${cvrTxt} · 기준 +${cfg.expandCvrLiftPct}% 이상 · ${pTxt} (두 비율 z-검정) → 같은 의도 그룹 전체 적용` };
+    if (fin(p) && p < 0.05) return { ...out, verdict: 'expand', label: `확대 · 전환율 ${fmtDelta(lift, 0)}`, basis: `${cvrTxt} · 기준 +${cfg.expandCvrLiftPct}% 이상 · ${pTxt} (두 비율 z-검정) → 같은 의도 그룹 전체 적용` };
     return { ...out, verdict: 'insufficient', label: '판정 보류 · 유의성 부족', basis: `${cvrTxt} · 확대 기준 +${cfg.expandCvrLiftPct}% 충족, ${pTxt} ≥ 0.05 — 기간 연장 후 재판정` };
   }
-  return { ...out, verdict: 'keep', label: `유지 · 전환율 ${fmt.delta(lift, 0)}`, basis: `${cvrTxt} · 확대 기준 +${cfg.expandCvrLiftPct}% 미달 · 중단 기준 −${cfg.stopCvrDropPct}% 미도달 → 모니터링 지속` };
+  return { ...out, verdict: 'keep', label: `유지 · 전환율 ${fmtDelta(lift, 0)}`, basis: `${cvrTxt} · 확대 기준 +${cfg.expandCvrLiftPct}% 미달 · 중단 기준 −${cfg.stopCvrDropPct}% 미도달 → 모니터링 지속` };
 }
 
 /* ============================== 파이프라인 진행 ============================== */
@@ -829,7 +939,11 @@ export function stageDue(ev: WatchEvent, stage: StageId, d: Dataset, progress: E
     const days = ev.test?.days ?? cfg.testDays;
     const end = addDays(start, days);
     const elapsed = Math.max(0, dayDiff(d.today, start));
-    return { label: `테스트 ${Math.min(elapsed, days)}/${days}일 · 랩업 ${fmtDate(end)} (액션 후 2주, p.28)`, dueMs: kstMs(end), remainingH: (kstMs(end) - nowMs) / HOUR, overdue: elapsed > days + 7, urgent: elapsed >= days };
+    const late = dayDiff(d.today, end); // 랩업 예정일 대비 경과 일수 (데이터 기준일)
+    const base = { dueMs: kstMs(end), remainingH: (kstMs(end) - nowMs) / HOUR };
+    if (!fin(late) || late < 0) return { ...base, label: `테스트 ${Math.min(elapsed, days)}/${days}일 · 랩업 예정 ${fmtDate(end)} (액션 후 2주, p.28)`, overdue: false, urgent: false };
+    if (late === 0) return { ...base, label: `테스트 ${days}/${days}일 종료 · 랩업 오늘 ${fmtDate(end)} (액션 후 2주, p.28)`, overdue: false, urgent: true };
+    return { ...base, label: `랩업 기한 ${fmtDate(end)} · ${late}일 경과 (액션 후 2주, p.28)`, overdue: true, urgent: false };
   }
   return none(progress.wrapup ? `랩업 · ${progress.wrapup.label}` : '랩업 완료');
 }
@@ -898,11 +1012,15 @@ export function trackingOverview(d: Dataset, events: readonly EvaluatedEvent[]) 
   });
 }
 
-/** Lab 테스트 등록용 ChangeRequest 페이로드 (pending — 실제 반영은 사람이 승인) */
+/**
+ * Lab 테스트 등록용 ChangeRequest 페이로드 (pending — 실제 반영은 사람이 승인).
+ * module = 요청을 만든 모듈('watch'). MILDO Lab은 kind 'test' · module ≠ 'lab' 요청을 외부 테스트 등록으로 받고,
+ * MILDO Flow는 module로 출처(MILDO Watch)와 돌아갈 화면을 표시한다.
+ */
 export function testChangePayload(ev: EvaluatedEvent | (WatchEvent & { diag: Diagnosis; design: TestDesign }), requestedBy: string) {
   const g = ev.design;
   return {
-    module: 'lab',
+    module: 'watch',
     kind: 'test' as const,
     target: `${nameOfMedia(ev.media)} · ${ev.title}`.slice(0, 80),
     targetId: ev.id,
@@ -913,6 +1031,62 @@ export function testChangePayload(ev: EvaluatedEvent | (WatchEvent & { diag: Dia
     requestedBy,
     approver: g.approver,
   };
+}
+
+/* ============================== 소액 테스트 집행 리스크 (계정 · 결제 · 권한, p.44 · p.50) ============================== */
+
+/** 매체 → 광고 계정 매칭 키 (버티컬은 쿠팡 · 오늘의집 판매 채널 계정) */
+const ACCOUNT_MEDIA: Partial<Record<MediaId, string[]>> = { vertical: ['coupang', 'ohouse'] };
+
+/**
+ * 테스트 예산이 집행되지 않거나 중간에 멈출 수 있는 계정 상태 — 영향 진단 판정과 분리해 보여준다.
+ * 잔액 1일치 미만 · 자동충전 실패 · 계정 상태 active 외 (p.44 계정 · 결제), 비실명 권한 (p.50 담당자 실명 계정).
+ */
+export function executionRisks(ev: Pick<WatchEvent, 'media' | 'accountId'>, d: Pick<Dataset, 'accounts'>): WatchEvidence[] {
+  const keys = new Set<string>(ACCOUNT_MEDIA[ev.media] ?? [ev.media]);
+  const accs = (d?.accounts ?? []).filter((a) => a.id === ev.accountId || keys.has(a.media));
+  const out: WatchEvidence[] = [];
+  for (const a of accs) {
+    const runway = a.balance >= 0 && a.avgDailySpend > 0 ? a.balance / a.avgDailySpend : NaN;
+    if (fin(runway) && runway < 1) out.push({ label: `${a.name} 잔액`, value: `${fmt.dec1(runway)}일치`, base: `잔액 ${fmt.krw(a.balance)}원 · 일 평균 소진 ${fmt.krw(a.avgDailySpend)}원`, threshold: '1일치 미만 = 계정 · 결제 P1 (p.44)', level: 'danger' });
+    if (a.autoCharge === 'failed') out.push({ label: `${a.name} 자동충전`, value: '실패', base: a.paymentMethod, threshold: '자동충전 실패 = 계정 · 결제 P1 (p.44)', level: 'danger' });
+    if (a.status !== 'active') out.push({ label: `${a.name} 계정 상태`, value: a.status === 'review' ? '검수 · 확인 필요' : '제한', threshold: 'active 외 상태 = 노출 영향 (p.44)', level: 'danger' });
+    const shared = (a.permissions ?? []).filter((p) => !p.realName);
+    if (shared.length) out.push({ label: `${a.name} 비실명 권한`, value: shared.map((p) => `${p.user}(${p.role})`).join(' · '), threshold: '접근 권한 = 담당자 실명 계정 · 최소 권한 (p.50)', level: 'warn' });
+  }
+  return out;
+}
+
+/* ============================== MILDO Alert 연결 (같은 근거 데이터의 이슈) ============================== */
+
+export const INCIDENT_STATUS_LABEL: Record<Incident['status'], string> = { open: '미인지', ack: '인지', action: '조치 중', resolved: '해결' };
+/** MILDO Flow 승인 상태 · 승인 주체 표기 (화면용) */
+export const CHANGE_STATUS_LABEL: Record<ChangeRequest['status'], string> = { pending: '승인 대기', approved: '승인 완료', applied: '반영 완료', rejected: '반려', rolled_back: '롤백', held: '보류' };
+export const APPROVER_LABEL: Record<ChangeRequest['approver'], string> = Object.fromEntries(GFA_DELEGATION.map((t) => [t.approver, t.label])) as Record<ChangeRequest['approver'], string>;
+const SEV_RANK: Record<string, number> = { P1: 0, P2: 1, P3: 2 };
+
+/**
+ * 감지 이벤트와 같은 대상을 가리키는 MILDO Alert 이슈 (해결 · Watch 경쟁사 P3 제외).
+ * 매칭: 같은 매체(또는 연결 계정의 채널)이면서 ① 매체 전체 대상 이슈 ② 대상이 영향 키워드 · 캠페인과 정확히 일치
+ * ③ 계정 · 결제 · 권한 이슈 ④ 브랜드 의도 이벤트의 브랜드 키워드 침투 이슈. 부분 문자열 매칭은 하지 않는다.
+ */
+export function linkedIncidents(
+  ev: Pick<WatchEvent, 'media' | 'keywords' | 'campaigns' | 'intents' | 'accountId'>, incidents: readonly Incident[], d?: Pick<Dataset, 'accounts'>,
+): Incident[] {
+  const acc = ev.accountId ? d?.accounts?.find((a) => a.id === ev.accountId) : undefined;
+  const medias = new Set<string>([ev.media, ...(acc ? [acc.media] : [])]);
+  const mediaNames = new Set<string>([MEDIA[ev.media]?.name, MEDIA[ev.media]?.short, nameOfMedia(ev.media)].filter((x): x is string => !!x));
+  const targets = new Set<string>([...ev.keywords, ...ev.campaigns, ...(acc ? [acc.name] : [])]);
+  return (incidents ?? [])
+    .filter((i) => i && i.status !== 'resolved' && i.ruleId !== 'watch_competitor' && !!i.media && medias.has(i.media))
+    .filter((i) => {
+      const t = i.target ?? '';
+      if (mediaNames.has(t) || targets.has(t)) return true;
+      if (/^account_/.test(i.ruleId)) return true;
+      return i.ruleId === 'brand_intrusion' && ev.intents.includes('brand');
+    })
+    .sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || String(b.detectedAt).localeCompare(String(a.detectedAt)))
+    .slice(0, 5);
 }
 
 /* ============================== 오가닉 · 페이드 아카이브 (p.25) ============================== */
@@ -952,14 +1126,14 @@ export function archiveImpact(rec: ArchiveRecord, d: Dataset, events: readonly {
       const ourEff = fin(queen) ? queen * (1 - ourDisc / 100) : NaN;
       const gap = fin(ourEff) && ourEff > 0 ? ((p.effective - ourEff) / ourEff) * 100 : NaN;
       const facts = [
-        `${p.size} 실판매가 ${fmt.won(p.effective)} (직전 ${fmt.won(p.prevEffective)} · ${fmt.delta(-drop, 0)})`,
-        fin(ourEff) ? `자사 ${p.size} ${ourDisc ? `프로모션가 ${fmt.won(ourEff)} (${ourDisc}%)` : `판매가 ${fmt.won(ourEff)}`} 대비 ${fmt.delta(gap, 0)}` : '자사 비교 가격 없음',
+        `${p.size} 실판매가 ${fmt.won(p.effective)} (직전 ${fmt.won(p.prevEffective)} · ${fmtDelta(-drop, 0)})`,
+        fin(ourEff) ? `자사 ${p.size} ${ourDisc ? `프로모션가 ${fmt.won(ourEff)} (${ourDisc}%)` : `판매가 ${fmt.won(ourEff)}`} 대비 ${fmtDelta(gap, 0)}` : '자사 비교 가격 없음',
       ];
       if (p.perk) facts.push(`사은품 ${p.perk}`);
       const intents: IntentId[] = ['generic', 'compare'];
-      if (drop >= 10) return mk('high', `실판매가 ${fmt.delta(-drop, 0)} · 기준 −10% 이상 높음 · −5% 이상 중간`, facts, intents);
-      if (drop >= 5 || (theirDisc > 0 && theirDisc >= ourDisc && ourDisc > 0) || p.perk) return mk('mid', p.perk && drop < 5 ? '판매가 유지 · 혜택 추가 → 중간' : `실판매가 ${fmt.delta(-drop, 0)} · 할인율 ${fmt.pct(theirDisc, 0)} (자사 ${ourDisc}%) · 기준 −5% 이상 또는 할인율 ≥ 자사 → 중간`, facts, intents);
-      return mk('low', `실판매가 변동 ${fmt.delta(-drop, 0)} · 기준 −5% 미만 → 낮음`, facts, intents);
+      if (drop >= 10) return mk('high', `실판매가 ${fmtDelta(-drop, 0)} · 기준 −10% 이상 높음 · −5% 이상 중간`, facts, intents);
+      if (drop >= 5 || (theirDisc > 0 && theirDisc >= ourDisc && ourDisc > 0) || p.perk) return mk('mid', p.perk && drop < 5 ? '판매가 유지 · 혜택 추가 → 중간' : `실판매가 ${fmtDelta(-drop, 0)} · 할인율 ${fmt.pct(theirDisc, 0)} (자사 ${ourDisc}%) · 기준 −5% 이상 또는 할인율 ≥ 자사 → 중간`, facts, intents);
+      return mk('low', `실판매가 변동 ${fmtDelta(-drop, 0)} · 기준 −5% 미만 → 낮음`, facts, intents);
     }
     case 'creative': {
       const pr = rec.promo;
@@ -1047,8 +1221,7 @@ export function archiveMatrix(d: Dataset, rows: readonly ArchiveRow[], days = 30
 }
 
 /** 경쟁사 가격 · 프로모션 변경 → MILDO Alert P3 이슈 (p.44 매체 · 외부 환경 · 24시간 내 영향 분석). AlertIncident 확장 필드 포함 */
-export function competitorIncident(row: ArchiveRow, d: Dataset, cfg: WatchConfig = resolveWatchConfig()): Incident & Record<string, unknown> {
-  const nowMs = dataNowMs(d);
+export function competitorIncident(row: ArchiveRow, d: Dataset, cfg: WatchConfig = resolveWatchConfig(), nowMs: number = dataNowMs(d)): Incident & Record<string, unknown> {
   const p = kstParts(nowMs);
   const detectedAt = `${p.date}T${p.hh}:${p.mi}:00+09:00`;
   const intents = row.impact.intents.length ? row.impact.intents : (['generic', 'compare'] as IntentId[]);
@@ -1071,11 +1244,19 @@ export function competitorIncident(row: ArchiveRow, d: Dataset, cfg: WatchConfig
   }
   evidence.push({ label: '영향 의도 키워드 일 매출', observed: revPerDay, unit: 'krw', level: 'info', note: `${intents.map((i) => SA_CAMPAIGNS[i]?.name ?? i).join(' · ')} · 최근 14일 평균 (TEST DATA)` });
   const target = `${row.competitor} · ${row.itemLabel}`;
+  // p.44 주말 · 공휴일: 위 기준을 그대로 적용 · 당번 AE 확인 · 다음 영업일 09:30 브리핑 (전 등급)
+  const off = isOffDay(d.today);
+  let nextBiz = addDays(d.today, 1);
+  for (let i = 0; i < 14 && isOffDay(nextBiz).off; i++) nextBiz = addDays(nextBiz, 1);
+  const autoActions = ['24시간 내 영향 분석 · 대응안 (p.44 매체 · 외부 환경)', '주간 인사이트 브리프 · 주간 리포트 반영 예약'];
+  if (off.off) autoActions.push(`주말 · 공휴일(${off.label}): 당번 AE 확인 · 다음 영업일 ${fmtDate(nextBiz)} 09:30 이슈 브리핑 포함 (p.44)`);
   return {
     id: `watch_competitor:${row.id}:${d.today}`,
     ruleId: 'watch_competitor',
     severity: 'P3',
     title: `경쟁사 ${row.itemLabel} 변경 — ${row.competitor} ${row.title}`,
+    // 영향 추정은 네이버 SA 구매 의도 키워드 매출 기준 → 담당 매체 SA
+    media: 'naver_sa',
     target,
     detectedAt,
     occurredAt: `${row.date}T07:00:00+09:00`,
@@ -1091,7 +1272,8 @@ export function competitorIncident(row: ArchiveRow, d: Dataset, cfg: WatchConfig
     status: 'open',
     timeline: [{ at: detectedAt, by: 'MILDO Watch', action: `감지 · P3 이슈 생성 (${row.impact.label})` }],
     isTest: false,
-    autoActions: ['24시간 내 영향 분석 · 대응안 (p.44 매체 · 외부 환경)', '주간 인사이트 브리프 · 주간 리포트 반영 예약'],
+    autoActions,
+    onDuty: off.off,
     // MILDO Alert 확장 필드 (AlertIncident 호환)
     typeId: 'external',
     ruleLabel: '경쟁사 프로모션 · 가격 변경',
@@ -1200,7 +1382,7 @@ export function seasonCalendar(d: Dataset, horizonDays = 120): CalendarItem[] {
   }
   for (const p of d.promotions) {
     if (p.end < from || p.start > to) continue;
-    items.push({ id: p.id, kind: 'promo', kindLabel: SEASON_KIND_LABEL.promo, label: `${p.name} (${p.discountRate}%)`, start: p.start, end: p.end, dday: dayDiff(p.start, from), active: p.start <= from && from <= p.end, intents: [], prep: '경쟁사 가격 · 프로모션 일 단위 대조 · 소재 표기가 점검 (MILDO Flow)', basis: `자사 프로모션 · ${p.status === 'live' ? '진행 중' : p.status === 'planned' ? '예정' : '종료'} (TEST DATA)` });
+    items.push({ id: p.id, kind: 'promo', kindLabel: SEASON_KIND_LABEL.promo, label: `${p.name} (${p.discountRate}%)`, start: p.start, end: p.end, dday: dayDiff(p.start, from), active: p.start <= from && from <= p.end, intents: [], prep: '경쟁사 가격 · 프로모션 일 단위 대조 · 소재 표기가 점검 (MILDO Flow)', basis: `${p.status === 'live' ? '진행 중' : p.status === 'planned' ? '예정' : '종료'} · TEST DATA` });
   }
   return items.sort((a, b) => (a.start === b.start ? a.label.localeCompare(b.label) : a.start < b.start ? -1 : 1));
 }
@@ -1299,14 +1481,17 @@ export function weeklyBrief(
   const serpAbove = serp.filter((s) => s.verdict === 'above');
   const upcoming = calendar.filter((c) => c.dday >= 0 && c.dday <= 30);
   const activeSeason = calendar.filter((c) => c.active && c.kind !== 'promo' && c.kind !== 'holiday');
-  const pendingDiag = events.filter((e) => e.stage === 'detect' && !e.closed);
+  // 진단 대기는 기한이 가까운 순 (기한 초과 → 임박 → 여유)
+  const pendingDiag = events
+    .filter((e) => e.stage === 'detect' && !e.closed)
+    .sort((a, b) => (a.due.remainingH ?? Number.POSITIVE_INFINITY) - (b.due.remainingH ?? Number.POSITIVE_INFINITY));
   const wrapReady = events.filter((e) => e.stage === 'test' && !e.closed && e.judge.verdict !== 'pending' && e.judge.verdict !== 'running');
   const report = nextWeeklyReport(d, nowMs);
   const mediaName = (m: MediaId) => nameOfMedia(m);
   const titled = (e: EvaluatedEvent) => (e.title.startsWith(mediaName(e.media)) || e.title.includes(MEDIA[e.media]?.short ?? '\u0000') ? e.title : `${mediaName(e.media)} · ${e.title}`);
 
   const facts: string[] = [];
-  facts.push(`이번 주(${label}) 매체 변동 감지 ${evs.length}건 — 매체 공지 ${evs.filter((e) => e.origin === 'notice').length}건, 데이터 감지 ${evs.filter((e) => e.origin === 'signal').length}건. 이 중 p.47 주의 기준 이상으로 영향이 확인된 건은 ${impactEvs.length}건이다 (TEST DATA).`);
+  facts.push(`이번 주(${label}) 매체 변동 감지 ${evs.length}건 — 매체 공지 ${evs.filter((e) => e.origin === 'notice').length}건, 데이터 감지 ${evs.filter((e) => e.origin === 'signal').length}건. 이 중 주의 기준 이상(p.47 성과 지표 · p.44 계정 · 일 예산 23시 전 마감)으로 영향이 확인된 건은 ${impactEvs.length}건이다 (TEST DATA).`);
   for (const e of impactEvs.slice(0, 4)) facts.push(`${titled(e)}: ${e.diag.label} — ${e.diag.basis}.`);
   if (arc.length) facts.push(`경쟁사 아카이브 변경 ${arc.length}건 (영향도 높음 ${arcHigh.length}건)${arcHigh.length ? ` — ${arcHigh.slice(0, 3).map((r) => `${r.competitor ?? '공통'} ${r.title}`).join(' / ')}` : ''}. 시연용 가상 스냅샷이다.`);
   if (serp.length) facts.push(`브랜드 키워드 ${serp.length}개 중 ${serpAbove.length}개에서 경쟁사 광고가 자사보다 위에 노출된다 (자사 평균 순위 ${serp.map((s) => `${s.keyword} ${fmt.dec1(s.avgRank)}위`).join(', ')}).`);
@@ -1344,7 +1529,7 @@ export function weeklyBrief(
   for (const e of events.filter((x) => x.stage === 'plan' && !x.closed).slice(0, 3)) actions.push(`${mediaName(e.media)}: Lab 소액 테스트 등록 (일 ${fmt.krw(e.design.perDay)}원 × ${e.design.days}일, 승인 ${e.design.approverLabel})${e.next.disabled ? ` — 보류: ${e.next.disabled}` : ''}.`);
   for (const e of wrapReady.slice(0, 2)) actions.push(`${titled(e)}: 랩업 판정 ${e.judge.label} — ${e.judge.basis}. PM 기록 후 수면밀도 공유.`);
   for (const r of arcHigh.filter((x) => x.alertable).slice(0, 2)) actions.push(`${r.competitor} ${r.itemLabel} 변경: MILDO Alert P3 등록 · 24시간 내 영향 분석 (p.44) — SA Lead AE.`);
-  if (serpAbove.length) actions.push(`브랜드 키워드 ${serpAbove.map((s) => `'${s.keyword}'`).join(' · ')}: 방어 입찰 검토를 AD Pilot 조정 후보로 전달 (브랜드 목표 ROAS ${cfg.brandTargetRoas}% · 순위 방어 우선) — SA Lead AE, PM 승인.`);
+  if (serpAbove.length) actions.push(`브랜드 키워드 ${serpAbove.map((s) => `'${s.keyword}'`).join(' · ')}: 방어 입찰 검토를 AD Pilot 조정 후보로 전달 (브랜드 목표 ROAS ${cfg.brandTargetRoas}% 초기값 · 점유 방어와 효율을 함께 판단, p.14) — SA Lead AE, PM 승인.`);
   for (const c of upcoming.slice(0, 2)) actions.push(`${c.label} D-${c.dday} (${c.kindLabel}, ${c.basis}): ${c.prep}.`);
 
   const brief: Brief = { title: `MILDO Watch 주간 인사이트 브리프 · ${label}`, facts, patterns, interpretation, conditions, counter, actions };
@@ -1368,6 +1553,30 @@ export function weeklyBrief(
     brief,
     markdown,
   };
+}
+
+/* ============================== 담당 AE 코멘트 병합 (p.17 · p.28) ============================== */
+
+/** 작성 원칙(번호 매기기 · 감정 표현 금지) 점검 — 차단하지 않고 안내만 한다 */
+export function noteStyleIssues(text: string): string[] {
+  const t = text ?? '';
+  const out: string[] = [];
+  if (/^\s*\d+\s*[.)]\s/m.test(t)) out.push('번호 매기기(1. 2. 3.) 대신 단락 문장으로 씁니다.');
+  if (/(대박|최고의|놀라운|훌륭|완벽한|아쉽|안타깝|기쁘|걱정)/.test(t)) out.push('감정 표현 대신 수치 기준 · 전제 조건으로 씁니다.');
+  if (t.trim() && !/\d/.test(t)) out.push('판단에는 수치 기준(목표 대비 % · 기간)을 함께 씁니다.');
+  return out;
+}
+
+/**
+ * 자동 초안 + 담당 AE 해석 · 다음 액션 병합 — "보고서는 시스템이 만들고, 담당 AE는 해석과 다음 액션을 덧붙입니다" (p.17).
+ * 코멘트가 비어 있으면 초안을 그대로 돌려준다.
+ */
+export function mergeAeNote(markdown: string, note: { text: string; by: string; at?: string } | null | undefined): string {
+  const text = (note?.text ?? '').trim();
+  if (!text) return markdown;
+  const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const head = `### 담당 AE 해석 · 다음 액션 (${note?.by || '담당 AE'}${note?.at ? ` · ${note.at}` : ''})`;
+  return `${markdown.replace(/\s+$/, '')}\n\n${head}\n${paras.join('\n\n')}\n`;
 }
 
 /* ============================== 재노출 (화면 · 도구에서 쓰는 상수) ============================== */

@@ -1,5 +1,5 @@
 /* 브랜드 키워드 검색 결과 지면 점검 — 경쟁사 침투 여부 (스냅샷 DEMO + 자사 순위 TEST DATA) */
-import { fmt } from '@/core/util';
+import { fmt, fmtDate } from '@/core/util';
 import { Callout, Card, Pill, Src, Stat } from '@/ui/primitives';
 import { SERP_VERDICT_META, type SerpCheck } from './engine';
 import type { WatchCtx } from './hooks';
@@ -16,7 +16,7 @@ export function SerpTab({ w }: { w: WatchCtx }) {
         <Card><Stat label="경쟁사 광고가 자사보다 위" src={<Src kind="DEMO" />} value={`${above.length} / ${w.serp.length}`} foot={<span>침투(상위 · 하위 포함) {intr.length}개 · 기준 경쟁사 광고 1개 이상 (p.45)</span>} /></Card>
         <Card><Stat label="브랜드 키워드 평균 순위" src={<Src kind="DEMO" />} value={`${fmt.dec1(avgRank)}위`} foot={<span>방어 기준 1위 · 신호 기준 {w.cfg.brandRankMax.toFixed(1)}위 이상</span>} /></Card>
         <Card><Stat label="노출 기회 손실 평균" src={<Src kind="DEMO" />} value={fmt.ratio(avgLost, 0)} foot={<span>신호 기준 {Math.round(w.cfg.brandLostMin * 100)}% 이상</span>} /></Card>
-        <Card><Stat label="방어 판단 기준" src={<Src kind="PROPOSAL" page="p.14" />} value={`ROAS ${w.cfg.brandTargetRoas}%`} foot={<span>브랜드 키워드 별도 기준 · 순위 방어 우선 (AD Pilot)</span>} /></Card>
+        <Card><Stat label="방어 판단 기준 · 브랜드 목표 ROAS" src={<Src kind="PROPOSAL" page="p.14" title="브랜드 키워드 별도 기준 · 점유 방어와 효율을 함께 판단 (p.14). 800%는 AD Pilot 초기값" />} value={`${w.cfg.brandTargetRoas}%`} foot={<span>p.14 브랜드 키워드 별도 기준 · 수치는 AD Pilot 초기값 (온보딩 중 확정)</span>} /></Card>
       </div>
 
       <Callout tone="info" icon="search" title="점검 방식">
@@ -83,8 +83,8 @@ function SerpCard({ s, w }: { s: SerpCheck; w: WatchCtx }) {
         <span className="num">ROAS {fmt.roas(s.roas)} · 브랜드 목표 {w.cfg.brandTargetRoas}% 대비 {fmt.pct(s.roasVsTarget, 0)}</span>
         <Src kind="DEMO" />
       </div>
-      {refs.length ? <div className="xs muted">아카이브: {refs.map((r) => `${r.date.slice(5)} ${r.competitor} ${r.serp?.position}위`).join(' · ')}</div> : null}
-      {s.verdict === 'above' ? <a href="#adpilot" className="small">AD Pilot에서 방어 입찰 검토 (브랜드 목표 ROAS {w.cfg.brandTargetRoas}% · 순위 방어 우선) →</a> : null}
+      {refs.length ? <div className="xs muted">아카이브: {refs.map((r) => `${fmtDate(r.date, false)} ${r.competitor} ${r.serp?.position}위`).join(' · ')}</div> : null}
+      {s.verdict === 'above' ? <a href="#adpilot" className="small">AD Pilot에서 방어 입찰 검토 (브랜드 목표 ROAS {w.cfg.brandTargetRoas}% 초기값 · 점유 방어와 효율을 함께 판단) →</a> : null}
     </Card>
   );
 }

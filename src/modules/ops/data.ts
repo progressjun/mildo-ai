@@ -59,7 +59,7 @@ export const COMM_STRUCTURE = {
   channels: ['전용 메신저 채널', '주간 미팅', '월간 리뷰'],
 } as const;
 
-/** DECISION_MATRIX 행 ↔ ChangeRequest 승인 주체 (승인 대기 현황 집계용) */
+/** DECISION_MATRIX 행 ↔ 대표 승인 주체 (null = 승인 요청으로 집계하지 않는 유형). 실제 분류는 engine.decisionTypeOf (kind · approver) */
 export const DECISION_APPROVER: Record<string, 'AE' | 'PM' | 'CLIENT' | null> = {
   '승인 범위 내 운영 조정': 'AE',
   '예산 · 구조 변경': 'CLIENT',
@@ -89,7 +89,7 @@ export const COMPANY_FACTS = [
   { id: 'staff', value: '179명', label: '임직원', basis: '2026.04', page: 'p.56' },
   { id: 'poy', value: '2년 연속', label: '네이버 Partner of the Year', basis: '2024 · 2025 네이버 파트너 어워즈', page: 'p.56' },
   { id: 'bedding', value: '월 약 15억 원', label: '침구 카테고리 운영', basis: '침구 카테고리 월 합산 운영 규모', page: 'p.57' },
-  { id: 'cozyma', value: 'Best Performance Campaign', label: '코지마 · 2025 네이버 파트너 어워즈', basis: 'SA + DA 통합 운영 · 2025.12.08 시상', page: 'p.7' },
+  { id: 'cozyma', value: 'Best Performance Campaign', label: '코지마 · 2025 네이버 파트너 어워즈', basis: 'SA + DA 통합 운영 · 2025.12.08 시상', page: 'p.55 · p.7' },
 ] as const;
 
 export const COMPANY_HISTORY = [

@@ -20,6 +20,7 @@ export function ArchiveTab({ w }: { w: WatchCtx }) {
     [w.archive, comp, item, impact],
   );
   const week = w.archive.filter((r) => r.date >= w.brief.period.from);
+  const alertable = w.archive.filter((r) => r.alertable && r.date >= m.from);
   const pick = (c: string, i: ArchiveItemId) => {
     setComp(c);
     setItem(i);
@@ -35,7 +36,7 @@ export function ArchiveTab({ w }: { w: WatchCtx }) {
       <div className="grid g-4">
         <Card><Stat label={<>최근 7일 변경</>} src={<Src kind="DEMO" />} value={`${week.length}건`} foot={<span>영향도 높음 {week.filter((r) => r.impact.level === 'high').length}건</span>} /></Card>
         <Card><Stat label={<>최근 {m.days}일 변경</>} src={<Src kind="DEMO" />} value={`${w.archive.filter((r) => r.date >= m.from).length}건`} foot={<span>경쟁 {RFP.competitors.length}개사 · 항목 {ARCHIVE_ITEMS.length}개</span>} /></Card>
-        <Card><Stat label="Alert P3 생성 가능" src={<Src kind="PROPOSAL" page="p.44" />} value={`${w.archive.filter((r) => r.alertable && r.impact.level !== 'low').length}건`} foot={<span>가격 · 혜택 / 소재 · 프로모션 변경 · 영향도 중간 이상</span>} /></Card>
+        <Card><Stat label="Alert P3 미등록 변경" src={<Src kind="PROPOSAL" page="p.44" />} value={`${alertable.filter((r) => !w.alertExists(r)).length}건`} foot={<span>가격 · 혜택 / 소재 · 프로모션 변경 {alertable.length}건 중 · 영향도 높음 {alertable.filter((r) => r.impact.level === 'high').length}건</span>} /></Card>
         <Card><Stat label="이 화면에서 생성한 Alert 이슈" value={`${w.alerts.length}건`} foot={<a href="#alert">MILDO Alert 이슈 큐</a>} /></Card>
       </div>
 
@@ -106,12 +107,12 @@ export function ArchiveTab({ w }: { w: WatchCtx }) {
       >
         <div className="row-between">
           <div className="row">
-            <select className="select" style={{ width: 160 }} value={comp} onChange={(e) => setComp(e.target.value)} aria-label="경쟁사">
+            <select id="watch-archive-competitor" className="select" style={{ width: 160 }} value={comp} onChange={(e) => setComp(e.target.value)} aria-label="경쟁사">
               <option value="all">전체 경쟁사</option>
               {RFP.competitors.map((c) => <option key={c} value={c}>{c}</option>)}
               <option value="common">공통 (외부 변수 · 파트너)</option>
             </select>
-            <select className="select" style={{ width: 170 }} value={item} onChange={(e) => setItem(e.target.value as 'all' | ArchiveItemId)} aria-label="항목">
+            <select id="watch-archive-item" className="select" style={{ width: 170 }} value={item} onChange={(e) => setItem(e.target.value as 'all' | ArchiveItemId)} aria-label="아카이빙 항목">
               <option value="all">전체 항목</option>
               {ARCHIVE_ITEMS.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
             </select>

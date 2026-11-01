@@ -6,7 +6,7 @@ import { fmt } from '@/core/util';
 import { toCsv } from '@/core/download';
 import { Callout, Card, CopyButton, DownloadButton, Pill, Segmented, Src } from '@/ui/primitives';
 import { ShareBar } from '@/ui/charts';
-import { GEO_CASE_BLANK, PROPOSAL_PAGES, RFP_GROUP_LABEL, RFP_NOTES, RFP_PAGE_LIMIT, SUBMISSION_DOCS, type RfpGroup } from './data';
+import { GEO_CASE_BLANK, INTERNAL_FREEZE_BUSINESS_DAYS, PROPOSAL_PAGES, RFP_GROUP_LABEL, RFP_NOTES, RFP_PAGE_LIMIT, SUBMISSION_DOCS, type RfpGroup } from './data';
 import { coverageMarkdown, ddayLabel, shortDate, type CoverageRow } from './engine';
 import type { OpsLocal } from './local';
 import type { OpsModel } from './useOps';
@@ -46,7 +46,7 @@ export function CoverageTab({ model, local, patch, goTab }: { model: OpsModel; l
           <div className="stat">
             <div className="stat-label">{shortDate(dl.date)} {dl.hour}시 · 기준 {dl.passed ? '마감 지남' : '남은 시간'}</div>
             <div className="stat-value num accent">{dl.passed ? '마감' : ddayLabel(dl.days)}</div>
-            <div className="stat-foot">{dl.passed ? '—' : `${fmt.int(dl.hoursLeft)}시간 · 내부 확정 목표 ${shortDate(dl.freeze)} (마감 3영업일 전 · 운영 가정)`}</div>
+            <div className="stat-foot">{dl.passed ? '—' : `${fmt.int(dl.hoursLeft)}시간 · 내부 확정 목표 ${shortDate(dl.freeze)} (마감 ${INTERNAL_FREEZE_BUSINESS_DAYS}영업일 전 · 운영 가정)`}</div>
           </div>
           <div className="row" style={{ gap: 6 }}>
             <Pill tone={inputN ? 'warning' : 'good'} icon={inputN ? 'edit' : 'check'}>입력 필요 {inputN}개 항목</Pill>
@@ -88,12 +88,12 @@ export function CoverageTab({ model, local, patch, goTab }: { model: OpsModel; l
             </li>
             {SUBMISSION_DOCS.map((d) => (
               <li key={d.id}>
-                <label className="ops-check"><input type="checkbox" checked={!!local.docs[d.id]} onChange={() => toggleDoc(d.id)} /><strong>{d.label}</strong></label>
+                <label className="ops-check" htmlFor={`ops-doc-${d.id}`}><input id={`ops-doc-${d.id}`} type="checkbox" checked={!!local.docs[d.id]} onChange={() => toggleDoc(d.id)} /><strong>{d.label}</strong></label>
                 <span className="xs muted">{d.rule}</span>
               </li>
             ))}
             <li>
-              <label className="ops-check"><input type="checkbox" checked={!!local.docs.geo_case} onChange={() => toggleDoc('geo_case')} /><strong>GEO 사례 수치 입력 완료</strong></label>
+              <label className="ops-check" htmlFor="ops-doc-geo_case"><input id="ops-doc-geo_case" type="checkbox" checked={!!local.docs.geo_case} onChange={() => toggleDoc('geo_case')} /><strong>GEO 사례 수치 입력 완료</strong></label>
               <span className="xs muted">p.29 {GEO_CASE_BLANK} · RFP "실제 집행 사례와 수치" — <a href="#geo">SearchTuneOS 진단 전후 지표</a></span>
             </li>
           </ul>

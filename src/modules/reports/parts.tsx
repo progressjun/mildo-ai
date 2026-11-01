@@ -1,7 +1,7 @@
 /* Reports 하위 컴포넌트 — 리포트 문서 렌더러 · 섹션 코멘트 · 메신저/메일 미리보기 */
 import { useState, type ReactNode } from 'react';
 import { useStore, type Comment } from '@/core/store';
-import { nowIso, uid } from '@/core/util';
+import { fmt, nowIso, uid } from '@/core/util';
 import { Button, Pill, Src, Stat, type Tone as UiTone } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
 import { Markdown } from '@/ui/Markdown';
@@ -17,6 +17,12 @@ export const LEVEL_META: Record<Level, { tone: UiTone; icon: string; label: stri
 export function LevelPill({ level }: { level: Level }) {
   const m = LEVEL_META[level];
   return <Pill tone={m.tone} icon={m.icon}>{m.label}</Pill>;
+}
+
+/** 증감에 좋고 나쁨을 붙이지 않는 지표(광고비)용 — 색 없이 부호만 (MILDO Board와 같은 표기) */
+export function NeutralDelta({ pct }: { pct: number }) {
+  if (!Number.isFinite(pct)) return <span className="delta-flat">—</span>;
+  return <span className="delta-flat num" title="증감 방향만 표시 · 좋고 나쁨 판정 없음">{fmt.delta(pct)}</span>;
 }
 
 export function fmtAt(iso: string): string {
@@ -57,7 +63,12 @@ export function BlockView({ b }: { b: Block }) {
     case 'stats':
       return (
         <div className="reports-stats">
-          {b.items.map((s) => <Stat key={s.label} label={s.label} value={s.value} delta={s.delta !== undefined && Number.isFinite(s.delta) ? s.delta : undefined} invert={s.invert} foot={s.foot} />)}
+          {b.items.map((s) => {
+            const has = s.delta !== undefined && Number.isFinite(s.delta);
+            return s.neutral
+              ? <Stat key={s.label} label={s.label} value={s.value} foot={<>{has ? <NeutralDelta pct={s.delta as number} /> : null}{s.foot}</>} />
+              : <Stat key={s.label} label={s.label} value={s.value} delta={has ? s.delta : undefined} invert={s.invert} foot={s.foot} />;
+          })}
         </div>
       );
     case 'items':

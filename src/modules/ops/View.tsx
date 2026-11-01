@@ -95,7 +95,7 @@ export default function View() {
         ) : <Button size="sm" icon="refresh" onClick={() => setConfirmReset(true)}>입력 초기화</Button>}
       />
 
-      <Card tone="dark" title="제출 준비 현황" sub={`기준일 ${shortDate(d.today)} ${d.currentHour}시 · 칸을 누르면 해당 탭으로 이동`} actions={<Src kind="RFP" />}>
+      <Card tone="dark" title="제출 준비 현황" sub={`기준일 ${shortDate(d.today)} ${d.currentHour}시 · 칸을 누르면 해당 탭으로 이동`} actions={<><Src kind="RFP" /><Src kind="PROPOSAL" page="p.50–58" /><Src kind="DEMO" title="계정 · 결제 · 권한 칸은 시연용 테스트 데이터" /></>}>
         <div className="ops-strip">
           <Tile label="제안서 제출 마감" value={dl.passed ? '마감' : ddayLabel(dl.days)} accent active={tab === 'coverage'} onClick={() => setTab('coverage')}
             foot={`${shortDate(dl.date)} ${dl.hour}시 · ${dl.passed ? '지남' : `${fmt.int(dl.hoursLeft)}시간`} · 내부 확정 ${shortDate(dl.freeze)}`} />
@@ -104,7 +104,7 @@ export default function View() {
             foot={`성명 ${s.tf.name} · 연차 ${s.tf.years} · 투입률 ${s.tf.allocation}${s.tf.invalid ? ` · 오입력 ${s.tf.invalid}` : ''}`} />
           <Tile label="1:1 백업" value={<>{s.graph.mutualPairs.length}<span className="small">쌍 상호</span></>} active={tab === 'tf'} onClick={() => setTab('tf')}
             flag={<Flag ok={s.graph.gaps === 0}>{s.graph.gaps === 0 ? '공백 0' : `공백 ${s.graph.gaps}`}</Flag>}
-            foot={`단방향 ${s.graph.oneWay} · 백업 집중 ${s.graph.concentration} · 지정 ${s.graph.covered}/7 (기준 공백 0)`} />
+            foot={`단방향 ${s.graph.oneWay} · 백업 집중 ${s.graph.concentration} · 지정 ${s.graph.covered}/${s.roster.length} (기준 공백 0)`} />
           <Tile label="계정 · 결제 · 권한" value={<>{ownIssues}<span className="small">건</span></>} active={tab === 'structure'} onClick={() => setTab('structure')}
             flag={<Flag ok={ownIssues === 0}>{ownIssues === 0 ? '이상 없음' : '조치 필요'}</Flag>}
             foot={`비실명 ${own.nonRealName} · 결제 위험 ${own.paymentRisk} · 검수 ${own.review} · TEST DATA`} />

@@ -21,10 +21,17 @@ function inputsOf(ctx: ToolContext): OpsInputs {
   const l = loadOpsLocal();
   return { tf: ctx.state.tf, backupOverrides: l.backupOverrides, refs: l.refs, fees: l.fees, annualBudget: l.annualBudget, contract: l.contract, geoCaseDone: !!l.docs.geo_case };
 }
+/**
+ * 동작하는 모듈 id (레지스트리 등록 · '준비 중' 제외). registry가 이 파일을 정적으로 import하므로
+ * 순환을 피하려고 동적 import로 읽고, 한 번 읽은 값은 동기 브리프에서도 쓰도록 캐시한다.
+ */
+let registryCache: string[] | null = null;
 async function registryIds(): Promise<string[] | null> {
+  if (registryCache) return registryCache;
   try {
-    const { MODULES } = await import('../registry');
-    return MODULES.map((m) => m.id);
+    const { MODULES, isStubModule } = await import('../registry');
+    registryCache = MODULES.filter((m) => !isStubModule(m)).map((m) => m.id);
+    return registryCache;
   } catch {
     return null;
   }
@@ -197,7 +204,14 @@ export const agentKit: ModuleAgentKit = {
   briefs: [
     { id: 'ops_tf', match: /(TF|인력|백업|담당자|투입률|휴가|연차|실명|전담|당번|공백)/i, build: (ctx) => tfBrief(ctx.state.data, inputsOf(ctx)) },
     { id: 'ops_fee', match: /(수수료|페이백|계약|해지|견적|솔루션\s?이용료|비용 조건)/, build: (ctx) => feeBrief(inputsOf(ctx)) },
-    { id: 'ops_rfp', match: /(RFP|커버리지|제출|평가|선정 기준|비중|마감|D-?day|선정 일정|경쟁 PT|레퍼런스)/i, build: (ctx) => rfpBrief(ctx.state.data, inputsOf(ctx)) },
+    {
+      id: 'ops_rfp', match: /(RFP|커버리지|제출|평가|선정 기준|비중|마감|D-?day|선정 일정|경쟁 PT|레퍼런스)/i,
+      // 브리프는 동기 — 레지스트리를 이미 읽었으면 '준비 중' 모듈 검사까지, 아니면 다음 호출부터 반영
+      build: (ctx) => {
+        if (!registryCache) void registryIds();
+        return rfpBrief(ctx.state.data, inputsOf(ctx), registryCache);
+      },
+    },
     { id: 'ops_onboarding', match: /(온보딩|인수|킥오프|kick-?off|90일|D\+30|D\+60|D\+90|정착)/i, build: (ctx) => onboardingBrief(ctx.state.data, loadOpsLocal().kickoff) },
   ],
 };

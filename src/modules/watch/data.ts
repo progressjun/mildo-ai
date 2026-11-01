@@ -197,7 +197,7 @@ export const EVENT_SEEDS: EventSeed[] = [
     id: 'ev_sa_expand_beta',
     media: 'naver_sa', kind: 'feature',
     title: '네이버 SA 키워드 확장(베타) 테스트 참여 (가상)',
-    summary: '생활 상황 캠페인에 키워드 확장 기능을 붙여 구문형 유입을 늘리는 테스트를 가정한 시연 이벤트. 14일 테스트가 끝나 랩업 판정이 가능한 상태.',
+    summary: '생활 상황 캠페인에 키워드 확장 기능을 붙여 구문형 유입을 늘리는 테스트를 가정한 시연 이벤트. 10/17에 시작한 14일 테스트가 기준일에 끝나 랩업 판정이 가능한 상태.',
     source: '파트너 공지 · 테스트 참여',
     detectedAt: '2026-10-08 10:00',
     stage: 'test',
@@ -208,14 +208,14 @@ export const EVENT_SEEDS: EventSeed[] = [
       hypothesis: '키워드 확장을 붙인 생활 상황 광고그룹이 기존 대비 전환율을 15% 이상 높인다',
       arms: '확장 적용 광고그룹 vs 기존 광고그룹',
       metric: '전환율 · ROAS',
-      start: '2026-10-12',
+      start: '2026-10-17',
       result: { control: { clicks: 6420, conversions: 70.4 }, test: { clicks: 6080, conversions: 91.8 } },
     },
     log: [
       { at: '2026-10-08T10:00:00+09:00', by: 'MILDO Watch', action: '감지 · 파트너 공지 수집' },
       { at: '2026-10-08T15:00:00+09:00', by: 'SA Lead AE', action: '영향 진단 완료' },
       { at: '2026-10-12T10:00:00+09:00', by: 'PM', action: '실행안 확정', note: '10/12 주간 리포트' },
-      { at: '2026-10-12T14:00:00+09:00', by: 'PM', action: 'Lab 테스트 등록', note: '14일 · 일 예산 10%' },
+      { at: '2026-10-12T14:00:00+09:00', by: 'PM', action: 'Lab 테스트 등록', note: '14일 · 일 예산 10% · 승인 · 세팅 후 10/17 집행 시작' },
     ],
   },
   {
@@ -254,12 +254,13 @@ export const EVENT_SEEDS: EventSeed[] = [
  */
 export const WATCH_DEFAULTS = {
   diagnoseSlaHours: 24, // p.24 "24시간 내 영향 진단"
-  kwRecentDays: 3, // 최근 3일 (p.14 성과 급변 판단 구간과 동일)
+  kwRecentDays: 3, // 최근 3일 vs 직전 11일 (운영 가정 · MILDO Alert 키워드 성과 급변과 같은 구간)
   kwCpcUpPct: 30, // 운영 가정 — 선제 감지
   kwMinClicks: 30, // 운영 가정 — 최근 3일 최소 클릭
   mediaSpikePct: 50, // p.44 데이터 급변 ±50% (동요일 · 동시간)
   mediaWindowHours: 2, // 최근 2시간 구간 (운영 가정)
   brandRankMax: 2.0, // 브랜드 키워드 평균 순위 2.0 이상 = 상위에 다른 광고 (MILDO Alert p.45 기준과 동일)
+  brandRankDanger: 3.0, // 평균 순위 3.0 이상 = 위험 (운영 가정 — 상위 2개 이상 다른 광고)
   brandLostMin: 0.2, // 노출 기회 손실 20% 이상
   lifeMinConv: 1, // 미등록 생활 상황 검색어 최소 전환
   lifeMinTerms: 2, // 신호로 볼 최소 검색어 수
@@ -270,6 +271,13 @@ export const WATCH_DEFAULTS = {
   promoShareShiftPct: 5, // 경쟁사 프로모션 영향 추정: 해당 의도 매출 중 점유 이동 가정 (운영 가정)
   searchShiftPct: 30, // 브랜드 검색량 전일 vs 최근 4주 동요일 ±30% (MILDO Alert 외부 환경 기준과 동일)
 } as const;
+
+/**
+ * 일 예산 소진 예상 기준 — MILDO Board · AD Pilot · Alert · 커맨드 센터와 같은 값 (같은 숫자는 같은 기준으로 계산).
+ * 최근 28일(오늘 제외) 매체 시간대별 광고비 누적 비중 곡선으로 오늘 예상 마감 시각을 구하고, 선형 추정이 더 이르면 선형을 쓴다.
+ * 23시 전 마감 = 조기 소진 (p.14 '일 예산 조기 소진 예상'), 21시 전 = 저녁 21~23시 피크 전 소진 (모듈 가정 · 시간대 히트맵으로 확인).
+ */
+export const PACE_RULES = { curveDays: 28, exhaustBeforeHour: 23, peakStartHour: 21 } as const;
 
 /* ============================== 오가닉 · 페이드 통합 아카이빙 (p.25) ============================== */
 

@@ -5,6 +5,7 @@
  */
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useStore } from '@/core/store';
+import { useLab } from '@/modules/lab/store';
 import { fmtDate, monthKey } from '@/core/util';
 import { PageHeader, Pill, Src, Tabs } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
@@ -23,6 +24,9 @@ export default function View() {
   const { state } = useStore();
   const d = state.data;
   const incidents = state.incidents as IssueLike[];
+  const changes = state.changes;
+  // 키워드 테스트 판정 기준은 MILDO Lab 화면의 현재 기준을 그대로 쓴다 (Lab과 같은 판정)
+  const labCriteria = useLab().criteria;
   const [tab, setTab] = useState<TabId>('reports');
   const [type, setType] = useState<ReportType>('daily');
   const months = useMemo(() => availableMonths(d), [d]);
@@ -33,11 +37,11 @@ export default function View() {
 
   const { report, genMs } = useMemo(() => {
     const t0 = now();
-    const r = generateReport(type, d, { incidents, month, selectedIssueId: issueId });
+    const r = generateReport(type, d, { incidents, month, selectedIssueId: issueId, changes, labCriteria });
     return { report: r, genMs: now() - t0 };
-  }, [type, d, incidents, month, issueId]);
-  const cadence = useMemo(() => cadenceStatus(d, incidents), [d, incidents]);
-  const tt = useMemo(() => buildTimetable(d, { offHours: state.offHoursMode, incidents, changes: state.changes }), [d, state.offHoursMode, incidents, state.changes]);
+  }, [type, d, incidents, month, issueId, changes, labCriteria]);
+  const cadence = useMemo(() => cadenceStatus(d, incidents, changes), [d, incidents, changes]);
+  const tt = useMemo(() => buildTimetable(d, { offHours: state.offHoursMode, incidents, changes }), [d, state.offHoursMode, incidents, changes]);
   const sv = useMemo(() => computeSavings({ before: savings.before, measured: savings.measured, mode: savings.mode }), [savings.before, savings.measured, savings.mode]);
 
   const interpKey = `${type}|${report.title}`;
@@ -50,7 +54,7 @@ export default function View() {
 
   const sendLabel = type === 'daily' ? `${fmtDate(d.today)} 08:00 발송분` : type === 'weekly' ? `${report.nextSend} 발송 예정` : type === 'monthly' ? report.schedule : `감지 즉시 · ${report.periodLabel}`;
   const nowMin = dataNowMinutes(d);
-  const openP1 = incidents.filter((i) => i.status !== 'resolved' && i.severity === 'P1').length;
+  const openP1 = cadence.find((c) => c.type === 'issue')?.alert ?? 0;
   const pickReport = (t: ReportType) => { setType(t); setTab('reports'); };
 
   const tabs: { id: TabId; label: ReactNode; badge?: ReactNode }[] = [
@@ -68,6 +72,10 @@ export default function View() {
         sources={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.17–20" /><span className="xs muted">데이터 기준 {fmtDate(d.today)} {hhmm(nowMin)} · {tt.off ? `${tt.offLabel} (주말 · 공휴일 규칙 적용)` : '평일'}</span></>}
       />
 
+      <div className="row-between reports-noprint">
+        <span className="small ink2">리포트 4종 발송 현황 · 주기 · 채널은 제안서 기준, 발송 상태는 데이터 기준 시각 기준</span>
+        <span className="row" style={{ gap: 6 }}><Src kind="PROPOSAL" page="p.17" /><Src kind="DEMO" /></span>
+      </div>
       <div className="reports-cadence reports-noprint" role="group" aria-label="리포트 4종 발송 현황">
         {cadence.map((c) => (
           <button key={c.type} type="button" className="reports-cad" aria-pressed={tab === 'reports' && type === c.type} onClick={() => pickReport(c.type)}>

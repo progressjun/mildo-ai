@@ -20,6 +20,7 @@ function makeCtx(patch: Partial<AppState> = {}): ToolContext {
 }
 const tool = (ctx: ToolContext, name: string) => agentKit.tools(ctx).find((t) => t.name === name)!;
 const size = (r: unknown) => JSON.stringify(r).length;
+const bytes = (r: unknown) => new TextEncoder().encode(JSON.stringify(r)).length;
 /** orchestrator.offlineAnswer와 같은 점수 (매칭 길이 합) */
 function bestBrief(q: string): string | undefined {
   const scored = (agentKit.briefs ?? []).map((b) => {
@@ -46,6 +47,7 @@ describe('reports agentKit', () => {
     for (const type of ['daily', 'weekly', 'monthly', 'issue']) {
       const r = (await tool(ctx, 'reports_generate').execute({ type })) as Record<string, unknown>;
       expect(size(r), type).toBeLessThan(32_000);
+      expect(bytes(r), `${type} UTF-8 bytes`).toBeLessThan(32_000);
       expect(String(r.메신저), type).toContain('[MILDO');
       expect(String(r.문서), type).toContain('## 확정 팩트');
       expect(JSON.stringify(r), type).not.toMatch(/NaN|undefined|Infinity/);
@@ -57,6 +59,18 @@ describe('reports agentKit', () => {
     expect(daily.피드백).toEqual({ 전체: 1, 반영대기: 1 });
     const bad = (await tool(ctx, 'reports_generate').execute({ type: 'nope' })) as Record<string, unknown>;
     expect(bad.종류).toBe('일간');
+  });
+
+  it('reports_generate 주간: 키워드 테스트 판정이 MILDO Lab과 같다 · 이슈 목록이 비면 데이터 점검으로 재스캔 필요 표시', async () => {
+    const g = tool(makeCtx(), 'reports_generate');
+    const wk = (await g.execute({ type: 'weekly', format: 'doc' })) as Record<string, unknown>;
+    expect(String(wk.문서)).toContain('MILDO Lab과 같은 판정');
+    expect(String(wk.문서)).toContain('판정 보류 · 표본 부족');
+    const brief = agentKit.briefs!.find((b) => b.id === 'reports_weekly')!.build(makeCtx());
+    expect(brief.facts.join(' ')).toContain('MILDO Lab 판정');
+    const empty = (await tool(makeCtx({ incidents: [] }), 'reports_generate').execute({ type: 'issue' })) as Record<string, unknown>;
+    expect(String(empty.제목)).toContain('Alert 미등록');
+    expect(String(empty.메신저)).toContain('재스캔');
   });
 
   it('reports_timetable: 토요일 이동 규칙 · 상태 · 산출물', async () => {

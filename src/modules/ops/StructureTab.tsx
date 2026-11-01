@@ -26,8 +26,15 @@ export function StructureTab({ model }: { model: OpsModel }) {
     } },
     { key: 'b', label: '백업', render: (b) => <span className="small">{[...new Set(b.duties.map((x) => x.backup))].join(' · ')}</span> },
     { key: 'acc', label: '당번 권한 계정', align: 'right', render: (b) => {
-      const a = dutyAccess(d, b.duties[0].roleId);
-      return <span className="num small" title={a.missing.length ? `권한 없음: ${a.missing.join(', ')}` : undefined}>{a.has} / {a.total}</span>;
+      const ids = [...new Set(b.duties.map((x) => x.roleId))];
+      return (
+        <div className="stack-sm" style={{ gap: 0 }}>
+          {ids.map((id) => {
+            const a = dutyAccess(d, id);
+            return <span key={id} className="num small" title={a.missing.length ? `권한 없음: ${a.missing.join(', ')}` : undefined}>{ids.length > 1 ? <span className="xs muted">{b.duties.find((x) => x.roleId === id)!.role} </span> : null}{a.has} / {a.total}</span>;
+          })}
+        </div>
+      );
     } },
     { key: 'e', label: '3차', render: () => <span className="xs">PM 에스컬레이션 · P1 한정</span> },
     { key: 'n', label: '다음 영업일 브리핑', render: (b) => <span className="small num">{shortDate(b.briefing)} 09:30</span> },
@@ -51,7 +58,7 @@ export function StructureTab({ model }: { model: OpsModel }) {
     { key: 'st', label: '상태', render: (a) => (a.status === 'active' ? <span className="xs">정상</span> : <Pill tone="warning" icon="alert">{a.status === 'review' ? '검수 · 확인 필요' : '제재'}</Pill>) },
     { key: 'f', label: '점검 결과 · 조치', render: (a) => (
       <div className="stack-sm" style={{ gap: 3 }}>
-        {a.findings.filter((f) => f.level !== 'info' || a.findings.length === 1).map((f, i) => <div key={i} className="xs"><LevelPill level={f.level}>{f.item}</LevelPill> {f.text}{f.action !== '—' ? <span className="muted"> → {f.action}</span> : null}</div>)}
+        {a.findings.filter((f) => f.level !== 'info' || a.findings.length === 1).map((f) => <div key={`${f.item}-${f.text}`} className="xs"><LevelPill level={f.level}>{f.item}</LevelPill> {f.text}{f.action !== '—' ? <span className="muted"> → {f.action}</span> : null}</div>)}
       </div>
     ) },
   ];
@@ -100,7 +107,7 @@ export function StructureTab({ model }: { model: OpsModel }) {
           </div>
           <div className="row" style={{ gap: 6 }}>
             {COMM_STRUCTURE.channels.map((c) => <Pill key={c} tone="neutral">{c}</Pill>)}
-            <span className="xs muted">승인 대기는 MILDO Flow의 요청 · 승인 이력(state.changes) 기준 · 승인 범위 내 = 담당 AE, 예산 · 구조 = 수면밀도, 알림 기준 = PM 승인 건</span>
+            <span className="xs muted">승인 대기는 MILDO Flow의 요청 · 승인 이력 기준 · 승인 범위 내 = 담당 AE · PM 승인 건, 예산 · 구조 = 수면밀도 승인 건, 알림 · 시스템 = 탐지 기준 변경 건</span>
           </div>
         </Card>
       </div>
@@ -111,7 +118,7 @@ export function StructureTab({ model }: { model: OpsModel }) {
         <div className="row" style={{ gap: 8 }}>
           <Pill tone={own.summary.ownerOk === own.summary.accounts ? 'good' : 'critical'} icon={own.summary.ownerOk === own.summary.accounts ? 'check' : 'x'}>수면밀도 소유 {own.summary.ownerOk}/{own.summary.accounts}</Pill>
           <Pill tone={own.summary.nonRealName ? 'critical' : 'good'} icon={own.summary.nonRealName ? 'x' : 'check'}>비실명 권한 {own.summary.nonRealName}건 · 기준 0</Pill>
-          <Pill tone={own.summary.paymentRisk ? 'critical' : 'good'} icon={own.summary.paymentRisk ? 'x' : 'check'}>결제 위험 {own.summary.paymentRisk}개 · 기준 잔액 1일치 이상</Pill>
+          <Pill tone={own.summary.paymentRisk ? 'critical' : 'good'} icon={own.summary.paymentRisk ? 'x' : 'check'}>결제 위험 {own.summary.paymentRisk}개 · 기준 잔액 1일치 이상 · 자동충전 정상</Pill>
           <Pill tone={own.summary.review ? 'warning' : 'good'} icon={own.summary.review ? 'alert' : 'check'}>검수 · 제재 {own.summary.review}개</Pill>
         </div>
         <DataTable rows={own.checks} columns={accCols} rowKey={(a) => a.id} initialSort={{ key: 'run', dir: 'asc' }} />

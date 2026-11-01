@@ -5,7 +5,7 @@ import { fmt } from '@/core/util';
 import { Gantt } from '@/ui/charts';
 import { Button, Callout, Card, CopyButton, DownloadButton, Field, Pill, Src, Stat } from '@/ui/primitives';
 import { DEFAULT_KICKOFF, ONBOARDING_PRINCIPLES } from './data';
-import { ddayLabel, onboardingMarkdown, onboardingPlan, performanceBaseline, shortDate } from './engine';
+import { ddayLabel, onboardingMarkdown, onboardingPlan, onboardingWindows, performanceBaseline, shortDate } from './engine';
 import type { OpsLocal } from './local';
 
 export function OnboardingTab({ local, patch }: { local: OpsLocal; patch: (p: Partial<OpsLocal>) => void }) {
@@ -14,6 +14,10 @@ export function OnboardingTab({ local, patch }: { local: OpsLocal; patch: (p: Pa
   const plan = useMemo(() => onboardingPlan(local.kickoff, d.today), [local.kickoff, d.today]);
   const base = useMemo(() => performanceBaseline(d), [d]);
   const ganttRows = plan.tasks.map((t) => ({ task: t.task, start: t.start, end: t.end, tone: t.task.startsWith('병행') ? ('accent' as const) : undefined }));
+  const win = onboardingWindows();
+  const lastWeek = plan.weeks.length;
+  const mileAt = (week: number) => plan.milestones.filter((m) => m.calendarWeek === week);
+  const after = plan.milestones.filter((m) => m.calendarWeek > lastWeek);
 
   return (
     <div className="stack-lg">
@@ -24,6 +28,7 @@ export function OnboardingTab({ local, patch }: { local: OpsLocal; patch: (p: Pa
             <input id="ops-kickoff" type="date" className="input" style={{ width: 180 }} value={plan.kickoff} onChange={(e) => e.target.value && patch({ kickoff: e.target.value })} />
           </Field>
           {local.kickoff !== DEFAULT_KICKOFF ? <Button size="sm" icon="rollback" onClick={() => patch({ kickoff: DEFAULT_KICKOFF })}>기본 가정으로</Button> : null}
+          {!plan.valid ? <Pill tone="critical" icon="x">날짜 형식 오류 · {DEFAULT_KICKOFF} 기준으로 표시</Pill> : null}
           <div className="row" style={{ gap: 6 }}>
             {plan.kickoffOff.off ? <Pill tone="warning" icon="alert">Kick-off가 휴무일({plan.kickoffOff.label})</Pill> : <Pill tone="neutral">{shortDate(plan.kickoff)} 영업일</Pill>}
             {plan.selection.beforeSelection ? <Pill tone="critical" icon="x">최종 선정 주 이전 날짜</Pill> : <Pill tone="neutral">선정 주 종료 후 {plan.selection.gapDays}일</Pill>}
@@ -34,7 +39,7 @@ export function OnboardingTab({ local, patch }: { local: OpsLocal; patch: (p: Pa
           <div className="ops-mile-item kick"><span className="xs muted">Kick-off · W1 시작</span><span className="ops-mile-date">{shortDate(plan.kickoff)}</span><span className="xs muted">{plan.kickoff}</span></div>
           {plan.milestones.map((m) => (
             <div key={m.label} className="ops-mile-item">
-              <span className="xs muted">W{m.week} · {m.label.split(' ')[0]}</span>
+              <span className="xs muted">{m.label.split(' ')[0]} · 장표 W{m.week} · 실제 {m.calendarWeek > lastWeek ? `W${lastWeek} 종료 후` : `W${m.calendarWeek}`}</span>
               <span className="ops-mile-date">{shortDate(m.date)}</span>
               <span className="xs">{m.label.split(' ').slice(1).join(' ')}</span>
               {m.off.off ? <span className="xs"><Pill tone="warning" icon="calendar">{m.off.label} · 보고 {shortDate(m.reportDay)}</Pill></span> : null}
@@ -43,7 +48,7 @@ export function OnboardingTab({ local, patch }: { local: OpsLocal; patch: (p: Pa
         </div>
         <Gantt weeks={12} rows={ganttRows} milestones={[...plan.milestones.map((m) => ({ week: m.week, label: m.label }))]} current={plan.currentWeek ?? undefined} />
         <div className="xs muted">
-          {plan.currentWeek ? `현재 W${plan.currentWeek} 진행 중 (분홍 세로선).` : `기준일 ${shortDate(d.today)}은 Kick-off 전입니다.`} 분홍 막대: 병행 운영 · 기존 로직 유지 구간 (성과 공백 최소화).
+          {plan.currentWeek ? `현재 W${plan.currentWeek} 진행 중 (분홍 세로선).` : plan.daysToKickoff > 0 ? `기준일 ${shortDate(d.today)}은 Kick-off 전입니다.` : `기준일 ${shortDate(d.today)}은 W${lastWeek} 이후입니다.`} 분홍 막대: 병행 운영 · 기존 로직 유지 구간 (성과 공백 최소화). 간트 마일스톤 위치는 장표(p.54) 기준이고, 날짜는 Kick-off + D일로 환산합니다 (W1–W{lastWeek} = {lastWeek * 7}일).
           {plan.holidays.length ? ` 기간 내 공휴일: ${plan.holidays.map((h) => `W${h.week} ${shortDate(h.date)} ${h.label}`).join(' · ')} — 주말 · 공휴일 당번 체계 적용.` : ''}
         </div>
       </Card>
@@ -64,8 +69,8 @@ export function OnboardingTab({ local, patch }: { local: OpsLocal; patch: (p: Pa
           <ul className="ops-issues">
             {ONBOARDING_PRINCIPLES.map((p) => <li key={p.title}><Pill tone="dark">{p.title}</Pill><span>{p.text}</span></li>)}
           </ul>
-          <Callout tone="info" title="AD Pilot 자동 조정은 W8 이후 단계 적용">
-            W1–W8은 기존 입찰 로직을 보존한 병행 운영 구간입니다. 자동 조정 전환 전에 D+60 일간 루틴 재현(리포트 · 알림 자동화 가동)을 확인합니다.
+          <Callout tone="info" title={`AD Pilot 자동 조정은 ${win.pilot ? `W${win.pilot.start}–W${win.pilot.end}` : '병행 운영 이후'} 단계 적용`}>
+            {win.keep ? `W${win.keep.start}–W${win.keep.end} 기존 입찰 로직 문서화 · 보존, ` : ''}{win.parallel ? `W${win.parallel.start}–W${win.parallel.end} 병행 운영 · 기존 로직 유지 구간입니다. ` : ''}자동 조정 전환 전에 D+60 일간 루틴 재현(리포트 · 알림 자동화 가동)을 확인합니다.
           </Callout>
         </Card>
         <Card title="D+30 측정 기준 · 성과 기준선 후보" sub={`'전월 대비 성과 유지' 판정용 · ${base.label} ${base.from} ~ ${base.to}`} actions={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.20" /></>}>
@@ -85,7 +90,7 @@ export function OnboardingTab({ local, patch }: { local: OpsLocal; patch: (p: Pa
             <tbody>
               {plan.weeks.map((w) => (
                 <tr key={w.week} className={plan.currentWeek === w.week ? 'selected' : undefined}>
-                  <td className="small"><strong>W{w.week}</strong>{plan.milestones.find((m) => m.week === w.week) ? <span className="xs accent"> · {plan.milestones.find((m) => m.week === w.week)!.label.split(' ')[0]}</span> : null}</td>
+                  <td className="small"><strong>W{w.week}</strong>{mileAt(w.week).map((m) => <span key={m.label} className="xs accent"> · {m.label.split(' ')[0]} {shortDate(m.date)}</span>)}</td>
                   <td className="small num">{shortDate(w.start)} ~ {shortDate(w.end)}</td>
                   <td className="xs">{plan.tasks.filter((t) => t.start <= w.week && t.end >= w.week).map((t) => t.task).join(' · ')}</td>
                   <td className="r">{w.offDays}일</td>
@@ -95,6 +100,7 @@ export function OnboardingTab({ local, patch }: { local: OpsLocal; patch: (p: Pa
             </tbody>
           </table>
         </div>
+        {after.length ? <div className="xs muted">{after.map((m) => `${m.label.split(' ')[0]} ${shortDate(m.date)}`).join(' · ')}은 W{lastWeek} 종료({shortDate(plan.weeks[lastWeek - 1].end)}) 후입니다. 장표의 12주 간트와 D+90 사이의 차이로, 전체 루틴 정착 리뷰는 이 날짜 기준으로 잡습니다.</div> : null}
       </Card>
     </div>
   );

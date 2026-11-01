@@ -2,11 +2,11 @@
 import { useMemo, useState } from 'react';
 import type { MediaId } from '@/core/types';
 import { fmt } from '@/core/util';
-import { Button, Card, DataTable, Delta, Empty, Pill, Segmented, Src, type Column } from '@/ui/primitives';
-import { KIND_LABEL, VERDICT_META, type EvaluatedEvent, type StageId } from './engine';
-import { MEDIA_TRACKING } from './data';
+import { Button, Card, DataTable, Delta, Empty, Pill, Segmented, Sev, Src, type Column } from '@/ui/primitives';
+import { CHANGE_STATUS_LABEL, fmtKst, KIND_LABEL, kstMs, linkedIncidents, VERDICT_META, type EvaluatedEvent, type StageId } from './engine';
+import { MEDIA_TRACKING, PACE_RULES } from './data';
 import type { WatchCtx } from './hooks';
-import { Chips, DueTag, MediaTag, PipelineSteps, VerdictBadge, mediaLabel } from './parts';
+import { Chips, DueTag, MediaTag, PipelineSteps, TestBadge, VerdictBadge, mediaLabel } from './parts';
 
 type Row = WatchCtx['tracking'][number];
 type StageFilter = 'open' | 'all' | StageId;
@@ -17,11 +17,13 @@ export function TrackingTab({ w, onOpen }: { w: WatchCtx; onOpen: (id: string) =
   const [origin, setOrigin] = useState<'all' | 'notice' | 'signal'>('all');
 
   const list = useMemo(() => {
-    const order = (e: EvaluatedEvent) => (e.closed || e.stage === 'wrapup' ? 2 : e.due.overdue || e.due.urgent ? 0 : 1);
+    // 정렬: 24시간 진단 기한 초과 · 임박(SLA) → 랩업 가능 등 처리 가능 → 진행 중 → 완료. 진단 대기는 기한 순, 나머지는 영향 판정 순
+    const order = (e: EvaluatedEvent) => (e.closed || e.stage === 'wrapup' ? 3 : e.stage === 'detect' && (e.due.overdue || e.due.urgent) ? 0 : e.due.overdue || e.due.urgent ? 1 : 2);
+    const byDue = (a: EvaluatedEvent, b: EvaluatedEvent) => (a.stage === 'detect' && b.stage === 'detect' ? (a.due.remainingH ?? 1e9) - (b.due.remainingH ?? 1e9) : 0);
     return w.events
       .filter((e) => (media === 'all' || e.media === media) && (origin === 'all' || e.origin === origin))
       .filter((e) => (stage === 'all' ? true : stage === 'open' ? !e.closed && e.stage !== 'wrapup' : e.stage === stage && !e.closed))
-      .sort((a, b) => order(a) - order(b) || (a.due.remainingH ?? 1e9) - (b.due.remainingH ?? 1e9) || VERDICT_META[b.diag.verdict].rank - VERDICT_META[a.diag.verdict].rank);
+      .sort((a, b) => order(a) - order(b) || byDue(a, b) || VERDICT_META[b.diag.verdict].rank - VERDICT_META[a.diag.verdict].rank || (a.due.remainingH ?? 1e9) - (b.due.remainingH ?? 1e9));
   }, [w.events, media, stage, origin]);
 
   const columns: Column<Row>[] = [
@@ -30,7 +32,16 @@ export function TrackingTab({ w, onOpen }: { w: WatchCtx; onOpen: (id: string) =
     { key: 'method', label: '감지 방식', render: (r) => <span className="small ink2">{r.method}</span> },
     { key: 'plan', label: '수면밀도 실행안', render: (r) => <span className="small">{r.plan}</span> },
     { key: 'open', label: '진행 이벤트', align: 'right', sort: (r) => r.open, render: (r) => <div className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><strong className="num">{r.open}<span className="muted xs"> / {r.total}</span></strong><span className="xs muted">공지 {r.notices} · 데이터 {r.signals}</span></div> },
-    { key: 'kpi', label: '판단 지표 · 최근 7일', align: 'right', sort: (r) => r.roas, render: (r) => <div className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><span className="xs muted">{r.judgeMetric}</span><span className="num small">ROAS {fmt.roas(r.roas)} <Delta pct={r.roasDelta} /></span></div> },
+    {
+      key: 'kpi', label: '판단 지표 · 최근 7일', align: 'right', sort: (r) => r.roas,
+      // p.37 판단 지표가 CPA 계열인 매체(GFA · Meta · 카카오)는 CPA를 먼저, 나머지는 ROAS를 먼저 보여준다
+      render: (r) => {
+        const cpaFirst = /CPA/.test(r.judgeMetric);
+        const cpa = <span className="num small">CPA {fmt.won(r.cpa)} <Delta pct={r.cpaDelta} invert /></span>;
+        const roas = <span className="num small">ROAS {fmt.roas(r.roas)} <Delta pct={r.roasDelta} /></span>;
+        return <div className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><span className="xs muted">{r.judgeMetric}</span>{cpaFirst ? cpa : roas}<span className="xs muted">{cpaFirst ? <>ROAS {fmt.roas(r.roas)}</> : <>CPA {fmt.won(r.cpa)}</>}</span></div>;
+      },
+    },
     { key: 'worst', label: '현재 판정 · 근거', width: 280, render: (r) => (r.worst ? <div className="stack-sm" style={{ gap: 2 }}><Pill tone={VERDICT_META[r.worst.verdict].tone} icon={VERDICT_META[r.worst.verdict].icon}>{r.worst.label}</Pill><span className="xs muted watch-clip2">{r.worst.basis}</span></div> : <span className="xs muted">진행 이벤트 없음</span>) },
   ];
 
@@ -42,7 +53,7 @@ export function TrackingTab({ w, onOpen }: { w: WatchCtx; onOpen: (id: string) =
         actions={<><Src kind="PROPOSAL" page="p.24" /><Src kind="DEMO" /></>}
       >
         <DataTable rows={w.tracking} columns={columns} rowKey={(r) => r.media} onRowClick={(r) => setMedia(media === r.media ? 'all' : r.media)} selectedKey={media === 'all' ? null : media} />
-        <div className="xs muted">판단 지표는 제안서 p.37 매체별 역할 기준. 진행 이벤트 = 랩업 · 관찰 종료 전 이벤트. 판정은 p.47 주의 기준(광고비 · 클릭 ±{w.cfg.warn.cost}%, CPA +{w.cfg.warn.cpa}%, ROAS −{w.cfg.warn.roas}%)으로 계산합니다.</div>
+        <div className="xs muted">판단 지표는 제안서 p.37 매체별 역할 기준. 진행 이벤트 = 랩업 · 관찰 종료 전 이벤트. 판정은 p.47 주의 기준(광고비 · 클릭 ±{w.cfg.warn.cost}%, CPA +{w.cfg.warn.cpa}%, ROAS −{w.cfg.warn.roas}%)에 계정 상태 · 잔액(p.44), 일 예산 {PACE_RULES.exhaustBeforeHour}시 전 마감(최근 {PACE_RULES.curveDays}일 시간대 소진 곡선), 전환 추적 단절(p.45)을 함께 대조합니다.</div>
       </Card>
 
       <Card
@@ -79,6 +90,7 @@ export function TrackingTab({ w, onOpen }: { w: WatchCtx; onOpen: (id: string) =
 
 export function EventRow({ e, w, onOpen }: { e: EvaluatedEvent; w: WatchCtx; onOpen: (id: string) => void }) {
   const done = e.closed || e.stage === 'wrapup';
+  const alerts = done ? [] : linkedIncidents(e, w.state.incidents, w.state.data);
   return (
     <article className={`watch-ev ${done ? 'done' : ''} v-${e.diag.verdict}`}>
       <span className="watch-ev-stripe" aria-hidden />
@@ -88,11 +100,14 @@ export function EventRow({ e, w, onOpen }: { e: EvaluatedEvent; w: WatchCtx; onO
           <Pill tone="outline">{KIND_LABEL[e.kind]}</Pill>
           <Pill tone={e.origin === 'signal' ? 'dark' : 'neutral'} icon={e.origin === 'signal' ? 'zap' : 'bell'}>{e.origin === 'signal' ? '데이터 감지' : '매체 공지'}</Pill>
           {e.scenario ? <Pill tone="accent" icon="flow">p.23 시나리오 D+0</Pill> : null}
-          <span className="xs muted">감지 {e.detectedAt.slice(5).replace('-', '/')} · {e.source}</span>
+          <span className="xs muted">감지 {fmtKst(kstMs(e.detectedAt))} · {e.source}</span>
         </div>
         <button type="button" className="watch-ev-title" onClick={() => onOpen(e.id)}>{e.title}</button>
         <PipelineSteps stage={e.stage} closed={e.closed} />
         <VerdictBadge diag={e.diag} compact />
+        {(e.stage === 'test' || e.stage === 'wrapup') && e.judge.verdict !== 'pending' ? (
+          <TestBadge judge={e.judge} compact prefix={e.stage === 'wrapup' ? '랩업 판정' : '소액 테스트'} />
+        ) : null}
         <div className="row xs ink2" style={{ gap: 10 }}>
           <span>영향 범위 · {e.diag.affected.scope}: 광고비 일 {fmt.krw(e.diag.affected.spendPerDay)}원 · 매출 일 {fmt.krw(e.diag.affected.revenuePerDay)}원</span>
           <Chips items={e.keywords.length ? e.keywords : e.campaigns} />
@@ -107,7 +122,12 @@ export function EventRow({ e, w, onOpen }: { e: EvaluatedEvent; w: WatchCtx; onO
           </Button>
         ) : <Pill tone={e.closed ? 'outline' : 'good'} icon="check">{e.next.label}</Pill>}
         {e.next.disabled ? <span className="xs muted watch-clip2" style={{ textAlign: 'right' }}>{e.next.disabled}</span> : null}
-        {e.testChange ? <a className="xs" href="#flow">Lab 요청 {e.testChange.status === 'pending' ? '승인 대기' : e.testChange.status} · Flow</a> : e.testRejected ? <span className="xs muted">Lab 요청 반려 · 재등록 가능</span> : null}
+        {alerts.length ? (
+          <a className="xs watch-alert-link" href="#alert" title={alerts.map((i) => `${i.severity} ${i.title}`).join('\n')}>
+            <Sev level={alerts[0].severity} /> MILDO Alert 연결 {alerts.length}건
+          </a>
+        ) : null}
+        {e.testChange ? <a className="xs" href="#flow">Lab 요청 {CHANGE_STATUS_LABEL[e.testChange.status] ?? e.testChange.status} · MILDO Flow</a> : e.testRejected ? <span className="xs muted">Lab 요청 {CHANGE_STATUS_LABEL[e.testRejected.status] ?? e.testRejected.status} · 재등록 가능</span> : null}
         <div className="row" style={{ gap: 4, justifyContent: 'flex-end' }}>
           {e.next.canClose ? <Button size="sm" variant="ghost" onClick={() => w.close(e)}>관찰 종료</Button> : null}
           <Button size="sm" variant="ghost" icon="external" onClick={() => onOpen(e.id)}>상세</Button>

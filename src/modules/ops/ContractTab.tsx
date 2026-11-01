@@ -3,7 +3,7 @@ import { RFP } from '@/data/constants';
 import { fmt } from '@/core/util';
 import { Button, Callout, Card, CopyButton, Field, NumberInput, Pill, Segmented, Src, Stat } from '@/ui/primitives';
 import { RFP_NOTES } from './data';
-import { annualCost, type contractCheck, type FeeCalc, type FeeInput, type PaybackChoice, type SolutionFeeChoice } from './engine';
+import { allocationText, annualCost, type contractCheck, type FeeCalc, type FeeInput, type PaybackChoice, type SolutionFeeChoice } from './engine';
 import type { OpsLocal } from './local';
 import { InputFlag } from './parts';
 
@@ -42,13 +42,13 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
         </Card>
       </div>
 
-      <Card title="매체별 수수료 · 페이백 계산기" sub="매체별 수수료와 페이백 적용 여부를 모두 공개 · 연 광고비를 p.37 배분 가안(SA 43 · GFA 18 · Google 12 · Meta 12 · 카카오 8 · 버티컬 7)으로 나눠 계산"
+      <Card title="매체별 수수료 · 페이백 계산기" sub={`매체별 수수료와 페이백 적용 여부를 모두 공개 · 연 광고비를 p.37 배분 가안(${allocationText()})으로 나눠 계산`}
         actions={<><Src kind="PROPOSAL" page="p.58" /><Src kind="PROPOSAL" page="p.37" /><InputFlag missing={fee.missing.total + fee.missing.invalid} /><CopyButton text={() => feeMarkdown(fee, contract)} label="표 복사" /></>}>
         <div className="row" style={{ alignItems: 'flex-end', gap: 14 }}>
           <Field label="연간 광고비 (원) · RFP 약 50억, 운영 방향에 따라 변동" id="ops-budget">
             <NumberInput id="ops-budget" value={local.annualBudget} min={0} step={100_000_000} onChange={(v) => patch({ annualBudget: v > 0 ? v : 0 })} suffix={`= ${fmt.krw(local.annualBudget)}원`} style={{ width: 280 }} />
           </Field>
-          {local.annualBudget !== RFP.annualBudget ? <Button size="sm" icon="rollback" onClick={() => patch({ annualBudget: RFP.annualBudget })}>RFP 50억으로</Button> : null}
+          {local.annualBudget !== RFP.annualBudget ? <Button size="sm" icon="rollback" onClick={() => patch({ annualBudget: RFP.annualBudget })}>RFP {fmt.krw(RFP.annualBudget)}으로</Button> : null}
           <Src kind="RFP" />
         </div>
         {fee.warnings.length ? <Callout tone="warning">{fee.warnings.join(' / ')}</Callout> : null}
@@ -56,7 +56,7 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
           <table className="tbl">
             <thead><tr><th>매체</th><th className="r">배분 비중</th><th className="r">연 광고비</th><th>수수료율</th><th className="r">연 수수료</th><th>페이백</th><th className="r">연 순 수수료</th><th className="r">실효율</th></tr></thead>
             <tbody>
-              {fee.rows.map((r) => {
+              {fee.rows.map((r, k) => {
                 const inp = local.fees[r.media] ?? {};
                 return (
                   <tr key={r.media}>
@@ -65,7 +65,7 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
                     <td className="r">{fmt.krw(r.budget)}</td>
                     <td>
                       <div className="ops-cell-wrap">
-                        <input aria-label={`${r.media} 수수료율`} inputMode="decimal" className={`input ops-cell${r.feeInvalid ? ' ops-invalid' : r.feePct === null ? ' ops-blank' : ''}`} placeholder="[n]" value={inp.fee ?? ''} onChange={(e) => setFee(r.media, { fee: e.target.value })} />
+                        <input id={`ops-fee-${k}-rate`} aria-label={`${r.media} 수수료율`} inputMode="decimal" className={`input ops-cell${r.feeInvalid ? ' ops-invalid' : r.feePct === null ? ' ops-blank' : ''}`} placeholder="[n]" value={inp.fee ?? ''} onChange={(e) => setFee(r.media, { fee: e.target.value })} />
                         <span className="xs muted">%</span>
                       </div>
                       {r.feeInvalid ? <div className="xs" style={{ color: 'var(--critical-ink)' }}>0~30% 숫자</div> : null}
@@ -77,7 +77,7 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
                           options={[{ id: 'unset', label: '[적용 여부]' }, { id: 'yes', label: '적용' }, { id: 'no', label: '미적용' }]} />
                         {r.payback === 'yes' ? (
                           <div className="ops-cell-wrap">
-                            <input aria-label={`${r.media} 페이백율`} inputMode="decimal" className={`input ops-cell${r.paybackInvalid ? ' ops-invalid' : r.paybackPct === null ? ' ops-blank' : ''}`} style={{ width: 60 }} placeholder="[n]" value={inp.paybackPct ?? ''} onChange={(e) => setFee(r.media, { paybackPct: e.target.value })} />
+                            <input id={`ops-fee-${k}-payback`} aria-label={`${r.media} 페이백율`} inputMode="decimal" className={`input ops-cell${r.paybackInvalid ? ' ops-invalid' : r.paybackPct === null ? ' ops-blank' : ''}`} style={{ width: 60 }} placeholder="[n]" value={inp.paybackPct ?? ''} onChange={(e) => setFee(r.media, { paybackPct: e.target.value })} />
                             <span className="xs muted">%</span>
                           </div>
                         ) : null}
@@ -92,7 +92,7 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
                 <td>합계</td>
                 <td className="r">{fmt.ratio(fee.rows.reduce((s, r) => s + r.share, 0))}</td>
                 <td className="r">{fmt.krw(fee.annualBudget)}</td>
-                <td className="xs">{fee.missing.fee ? `미입력 ${fee.missing.fee}` : '입력 완료'}</td>
+                <td className="xs">{[fee.missing.fee ? `미입력 ${fee.missing.fee}` : '', fee.rows.some((r) => r.feeInvalid) ? `오입력 ${fee.rows.filter((r) => r.feeInvalid).length}` : ''].filter(Boolean).join(' · ') || '입력 완료'}</td>
                 <td className="r">{fmt.krw(fee.totals.fee)}</td>
                 <td className="xs">페이백 {fmt.krw(fee.totals.payback)}{fee.missing.payback ? ` · 미정 ${fee.missing.payback}` : ''}</td>
                 <td className="r">{fmt.krw(fee.totals.net)}</td>
@@ -115,13 +115,13 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
                     <td className="small"><strong>{i.label}</strong></td>
                     <td className="small">
                       {i.id === 'termination' ? (
-                        <div className="ops-cell-wrap"><span className="xs muted">해지</span><input aria-label="해지 통보 기한(일)" inputMode="numeric" className={`input ops-cell${i.status === 'invalid' ? ' ops-invalid' : i.status === 'missing' ? ' ops-blank' : ''}`} placeholder="[통보 기한]" value={local.contract.terminationDays ?? ''} onChange={(e) => setContract({ terminationDays: e.target.value })} /><span className="xs muted">일 전 서면 통보</span></div>
+                        <div className="ops-cell-wrap"><span className="xs muted">해지</span><input id="ops-contract-termination" aria-label="해지 통보 기한(일)" inputMode="numeric" className={`input ops-cell${i.status === 'invalid' ? ' ops-invalid' : i.status === 'missing' ? ' ops-blank' : ''}`} placeholder="[통보 기한]" value={local.contract.terminationDays ?? ''} onChange={(e) => setContract({ terminationDays: e.target.value })} /><span className="xs muted">일 전 서면 통보</span></div>
                       ) : i.id === 'solution' ? (
                         <div className="stack-sm" style={{ gap: 4 }}>
                           <Segmented<SolutionFeeChoice> label="솔루션 이용료" value={local.contract.solutionFee ?? 'unset'} onChange={(v) => setContract({ solutionFee: v })}
                             options={[{ id: 'unset', label: '[포함 여부]' }, { id: 'included', label: '수수료에 포함' }, { id: 'separate', label: '별도' }]} />
                           {local.contract.solutionFee === 'separate' ? (
-                            <div className="ops-cell-wrap"><span className="xs muted">월</span><input aria-label="솔루션 이용료 월 금액" inputMode="numeric" className={`input ops-cell${i.status !== 'ok' ? ' ops-blank' : ''}`} style={{ width: 110 }} placeholder="[금액]" value={local.contract.solutionMonthly ?? ''} onChange={(e) => setContract({ solutionMonthly: e.target.value })} /><span className="xs muted">원</span></div>
+                            <div className="ops-cell-wrap"><span className="xs muted">월</span><input id="ops-contract-solution" aria-label="솔루션 이용료 월 금액" inputMode="numeric" className={`input ops-cell${i.status !== 'ok' ? ' ops-blank' : ''}`} style={{ width: 110 }} placeholder="[금액]" value={local.contract.solutionMonthly ?? ''} onChange={(e) => setContract({ solutionMonthly: e.target.value })} /><span className="xs muted">원</span></div>
                           ) : null}
                           <span className="xs muted">{i.value}</span>
                         </div>

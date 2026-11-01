@@ -44,6 +44,10 @@ describe('리포트 화면 렌더', () => {
     expect(html).toContain('킹 매트리스');
     expect(html).toContain('메신저 미리보기');
     expect(html).toContain('담당 AE 해석 · 다음 액션');
+    // 발송 현황 카드 — 주기 · 채널은 제안서 p.17 기준 표기
+    expect(html).toMatch(/리포트 4종 발송 현황[\s\S]*?제안서 p\.17/);
+    // 광고비 증감은 색 없는 중립 표기
+    expect(html).toContain('증감 방향만 표시');
     expect(html).not.toMatch(/NaN|undefined/);
   });
 
@@ -83,7 +87,14 @@ describe('리포트 화면 렌더', () => {
       expect(html, type).toContain('확정 팩트');
       expect(html, type).toContain('.md 다운로드');
       expect(html, type).not.toMatch(/NaN|undefined/);
-      if (type === 'weekly') { expect(html).toContain('메일 미리보기'); expect(html).toContain('해석 문단'); }
+      if (type === 'weekly') {
+        expect(html).toContain('메일 미리보기');
+        expect(html).toContain('해석 문단');
+        // 키워드 테스트 판정은 MILDO Lab과 같은 판정 · 배지 옆 기준값
+        expect(html).toContain('판정 보류 · 표본 부족 (클릭 20 &lt; 30)');
+        expect(html).toContain('확장 · 목표 ROAS 400% 대비');
+        expect(html).toContain('MILDO Lab과 같은 판정');
+      }
       if (type === 'issue') expect(html).toContain('카카오 전환 추적 단절');
     }
   });
@@ -95,6 +106,9 @@ describe('리포트 화면 렌더', () => {
     expect(html).toContain('11/2(월) 09:30 이동');
     expect(html).toContain('SA_일반 제품');
     expect(html).toContain('현재 15:30');
+    // 공휴일 바로가기는 공용 KR_HOLIDAYS에서 데이터 기준일 이후 첫 공휴일
+    expect(html).toContain('공휴일 12/25(금) 성탄절');
+    expect(html).toContain('운영 가정');
     expect(html).not.toMatch(/NaN|undefined/);
   });
 

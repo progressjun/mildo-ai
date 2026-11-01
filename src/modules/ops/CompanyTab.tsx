@@ -57,7 +57,7 @@ export function CompanyTab({ rows, check, patch }: { rows: RefView[]; check: Ref
           <Callout tone="warning" title={`레퍼런스 빈칸 ${check.total}칸 / ${check.editable}칸 · 같은 양식 미충족`}>
             {check.blanks.map((x) => `${x.brand} ${REFERENCE_FIELD_LABEL[x.field]}`).join(' · ')}. 성과 수치는 증빙(매체 리포트 · 광고주 동의)이 있는 값만 입력합니다. RFP는 허위 기재 시 제안 검토 제외 · 손해배상을 명시했습니다.
           </Callout>
-        ) : <Callout tone="good" title="레퍼런스 같은 양식 충족">3개 레퍼런스 모두 운영 기간 · 월 광고비 · 성과 수치가 채워졌습니다.</Callout>}
+        ) : <Callout tone="good" title="레퍼런스 같은 양식 충족">{rows.length}개 레퍼런스 모두 운영 기간 · 월 광고비 · 성과 수치가 채워졌습니다.</Callout>}
         <div className="table-wrap">
           <table className="tbl">
             <thead><tr><th>브랜드 · 카테고리</th><th>운영 기간</th><th>월 광고비</th><th>성과 수치</th></tr></thead>
@@ -68,7 +68,7 @@ export function CompanyTab({ rows, check, patch }: { rows: RefView[]; check: Ref
                   {(['period', 'monthly'] as const).map((f) => (
                     <td key={f}>
                       {r.cells[f].editable ? (
-                        <input aria-label={`${r.ref.brand} ${REFERENCE_FIELD_LABEL[f]}`} className={`input ops-cell${r.cells[f].blank ? ' ops-blank' : ''}`} style={{ width: 150 }}
+                        <input id={`ops-ref-${r.ref.id}-${f}`} aria-label={`${r.ref.brand} ${REFERENCE_FIELD_LABEL[f]}`} className={`input ops-cell${r.cells[f].blank ? ' ops-blank' : ''}`} style={{ width: 150 }}
                           placeholder={r.cells[f].original} value={r.cells[f].value} onChange={(e) => setCell(r.ref.id, f, e.target.value)} />
                       ) : <span className="small">{r.cells[f].value}</span>}
                       {f === 'monthly' && r.cells.monthly.value && r.monthlyKrw === null ? <div className="xs muted">금액 해석 불가 · 예: 월 약 2억 원</div> : null}
@@ -77,8 +77,10 @@ export function CompanyTab({ rows, check, patch }: { rows: RefView[]; check: Ref
                   <td>
                     <div className="stack-sm" style={{ gap: 4 }}>
                       {r.ref.results.map((x) => <span key={x} className="small"><Pill tone="neutral">확정</Pill> {x}</span>)}
-                      <input aria-label={`${r.ref.brand} 성과 수치`} className={`input ops-cell${r.cells.metric.blank ? ' ops-blank' : ''}`} style={{ width: 230 }}
-                        placeholder={r.cells.metric.original} value={r.cells.metric.value} onChange={(e) => setCell(r.ref.id, 'metric', e.target.value)} />
+                      {r.cells.metric.editable ? (
+                        <input id={`ops-ref-${r.ref.id}-metric`} aria-label={`${r.ref.brand} 성과 수치`} className={`input ops-cell${r.cells.metric.blank ? ' ops-blank' : ''}`} style={{ width: 230 }}
+                          placeholder={r.cells.metric.original} value={r.cells.metric.value} onChange={(e) => setCell(r.ref.id, 'metric', e.target.value)} />
+                      ) : <span className="small">{r.cells.metric.value}</span>}
                     </div>
                   </td>
                 </tr>

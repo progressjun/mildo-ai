@@ -5,7 +5,7 @@
 import type { ModuleAgentKit, ToolContext } from '../types';
 import { RFP } from '@/data/constants';
 import { addDays } from '@/core/util';
-import { evidenceLine, roundN, STAGE_LABEL, testChangePayload, KIND_LABEL, type StageId } from './engine';
+import { evidenceLine, executionRisks, linkedIncidents, roundN, STAGE_LABEL, testChangePayload, KIND_LABEL, type StageId } from './engine';
 import { ARCHIVE_ITEMS, MEDIA_TRACKING } from './data';
 import { getWatchStore } from './progress';
 import { changesBrief, competitorsBrief, computeWatch, seasonBrief, weeklyBriefOf } from './briefs';
@@ -52,8 +52,13 @@ export const agentKit: ModuleAgentKit = {
             keywords: e.keywords.slice(0, 6),
             plan: e.plan,
             next: { action: e.next.action ? e.next.label : null, blocked: e.next.disabled ?? null },
-            test: e.test ? { arms: e.design.arms, perDay: e.design.perDay, days: e.design.days, approver: e.design.approverLabel, judge: e.judge.verdict === 'pending' ? null : { label: e.judge.label, basis: e.judge.basis } } : null,
+            test: e.test ? {
+              arms: e.design.arms, perDay: e.design.perDay, days: e.design.days, approver: e.design.approverLabel,
+              judge: e.judge.verdict === 'pending' ? null : { label: e.judge.label, basis: e.judge.basis },
+              executionRisks: e.closed || e.stage === 'wrapup' ? [] : executionRisks(e, ctx.state.data).map(evidenceLine),
+            } : null,
             labRequest: e.testChange ? { id: e.testChange.id, status: e.testChange.status } : null,
+            alertIssues: linkedIncidents(e, ctx.state.incidents, ctx.state.data).map((i) => ({ id: i.id, severity: i.severity, title: i.title, status: i.status })),
           })),
         };
       },

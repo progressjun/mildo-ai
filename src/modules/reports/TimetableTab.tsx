@@ -1,10 +1,10 @@
 /* 데이터 제공 시간표 (p.18) — 07:00 → 17:00, 수면밀도 업무시간 08–17, 주말 · 공휴일 규칙 */
 import { useMemo, useState } from 'react';
 import { useStore } from '@/core/store';
-import { fmtDate } from '@/core/util';
+import { fmtDate, KR_HOLIDAYS } from '@/core/util';
 import { Button, Card, Pill, Src, Stat, Toggle } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
-import { buildTimetable, nextBusinessDay, REPORT_HOLIDAYS, upcomingOffBlocks, type TimetableItem } from './engine';
+import { buildTimetable, nextBusinessDay, upcomingOffBlocks, type TimetableItem } from './engine';
 import { TIMELINE_RANGE, TIMETABLE_META } from './data';
 import { LevelPill } from './parts';
 
@@ -25,7 +25,7 @@ export function TimetableTab() {
   const [date, setDate] = useState(d.today);
   const t = useMemo(() => buildTimetable(d, { date, offHours: state.offHoursMode, incidents: state.incidents, changes: state.changes }), [d, date, state.offHoursMode, state.incidents, state.changes]);
   const nbd = nextBusinessDay(d.today);
-  const nextHoliday = Object.keys(REPORT_HOLIDAYS).sort().find((x) => x > d.today);
+  const nextHoliday = Object.keys(KR_HOLIDAYS).sort().find((x) => x > d.today);
   const blocks = useMemo(() => upcomingOffBlocks(d.today, 70).slice(0, 5), [d.today]);
   const next = t.items.find((i) => i.status !== 'done');
   const ticks = Array.from({ length: 11 }, (_, i) => (7 + i) * 60);
@@ -37,7 +37,7 @@ export function TimetableTab() {
           <span className="small muted">기준일</span>
           <Button size="sm" variant={date === d.today ? 'primary' : 'default'} onClick={() => setDate(d.today)}>오늘 {fmtDate(d.today)}</Button>
           <Button size="sm" variant={date === nbd ? 'primary' : 'default'} onClick={() => setDate(nbd)}>다음 영업일 {fmtDate(nbd)}</Button>
-          {nextHoliday ? <Button size="sm" variant={date === nextHoliday ? 'primary' : 'default'} onClick={() => setDate(nextHoliday)}>공휴일 {fmtDate(nextHoliday)} {REPORT_HOLIDAYS[nextHoliday]}</Button> : null}
+          {nextHoliday ? <Button size="sm" variant={date === nextHoliday ? 'primary' : 'default'} onClick={() => setDate(nextHoliday)}>공휴일 {fmtDate(nextHoliday)} {KR_HOLIDAYS[nextHoliday]}</Button> : null}
           <input id="reports-tt-date" type="date" className="input" aria-label="기준일 선택" style={{ width: 150, padding: '4px 8px' }} value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
         </div>
         <Toggle id="reports-offhours" checked={state.offHoursMode} onChange={(v) => dispatch({ type: 'offhours/set', on: v })} label="주말 · 공휴일 모드 시뮬레이션 (MILDO Alert와 공유)" />

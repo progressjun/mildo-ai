@@ -6,6 +6,7 @@ import type { AgentTool } from '@/ai/claude';
 import type { Brief } from '@/ai/prompts';
 import type { ModuleAgentKit, ToolContext } from '../types';
 import { fmt, fmtDate } from '@/core/util';
+import { getLab } from '@/modules/lab/store';
 import {
   aboutHours, aeTarget, automationRollout, availableMonths, buildTimetable, cadenceStatus, commentTarget, computeSavings, dataNowMinutes, generateReport, nextSends, reinvestPlan,
   reportToMarkdown, scopeOf, type IssueLike, type Report,
@@ -13,12 +14,25 @@ import {
 import type { ReportType } from './data';
 import { KICKOFF_ASSUMED, REINVEST_DEFAULT, REPORT_META, REPORT_TYPES, SAVINGS_CONFIRM_DAYS, SAVINGS_FLOOR_PCT } from './data';
 
+const DOC_MAX_CHARS = 9000;
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 const r1 = (v: number) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
 const r0 = (v: number) => (Number.isFinite(v) ? Math.round(v) : null);
 
 function incidentsOf(ctx: ToolContext): IssueLike[] {
   return ctx.state.incidents as IssueLike[];
+}
+/** MILDO Lab 화면의 현재 판정 기준 (없으면 p.26 초기값) */
+function labCriteriaOf() {
+  try {
+    return getLab().criteria;
+  } catch {
+    return null;
+  }
+}
+/** 화면과 같은 리포트 옵션 — Alert 이슈 · 변경 이력(Lab 등록 요청 · Alert 기준 변경) · Lab 판정 기준 */
+function optsOf(ctx: ToolContext) {
+  return { incidents: incidentsOf(ctx), changes: ctx.state.changes, labCriteria: labCriteriaOf() };
 }
 /** AE 코멘트 (target = reports:<scope>:ae — 월간은 대상 월, 이슈 알림은 이슈별) */
 function aeNotesOf(ctx: ToolContext, r: Report) {
@@ -48,7 +62,7 @@ export const agentKit: ModuleAgentKit = {
       execute: (inp) => {
         const type = (REPORT_TYPES as string[]).includes(String(inp.type)) ? (String(inp.type) as ReportType) : 'daily';
         const format = String(inp.format ?? 'both');
-        const r = generateReport(type, ctx.state.data, { incidents: incidentsOf(ctx), month: inp.month ? String(inp.month) : undefined, selectedIssueId: inp.incidentId ? String(inp.incidentId) : null });
+        const r = generateReport(type, ctx.state.data, { ...optsOf(ctx), month: inp.month ? String(inp.month) : undefined, selectedIssueId: inp.incidentId ? String(inp.incidentId) : null });
         const fb = feedbackOf(ctx, r);
         const md = reportToMarkdown(r, { aeNotes: aeNotesOf(ctx, r), feedback: fb.map((f) => ({ sectionTitle: f.sectionTitle, author: f.author, text: f.text, resolved: f.resolved })) });
         return {
@@ -56,7 +70,8 @@ export const agentKit: ModuleAgentKit = {
           생성기준: r.generatedAt, 잠정: !!r.provisional, 출처: 'TEST DATA · 제안서 p.17',
           섹션: r.sections.map((s) => ({ id: s.id, 제목: s.title, 영역: s.zone })),
           피드백: { 전체: fb.length, 반영대기: fb.filter((f) => !f.resolved && f.author === '수면밀도 담당자').length },
-          ...(format !== 'messenger' ? { 문서: md.length > 20000 ? `${md.slice(0, 20000)}\n…(생략)` : md } : {}),
+          // 한글 1자 = UTF-8 3바이트 — 결과 JSON이 32KB를 넘지 않도록 문서는 9,000자에서 자른다
+          ...(format !== 'messenger' ? { 문서: md.length > DOC_MAX_CHARS ? `${md.slice(0, DOC_MAX_CHARS)}\n…(생략 · 전체는 MILDO OS 리포트 화면 · .md 다운로드)` : md } : {}),
           ...(format !== 'doc' ? { 메신저: r.messenger } : {}),
           ...(type === 'monthly' ? { 선택가능월: availableMonths(ctx.state.data) } : {}),
         };
@@ -112,24 +127,24 @@ export const agentKit: ModuleAgentKit = {
     {
       id: 'reports_weekly',
       match: /주간\s?(리포트|보고서?|메일)?|키워드 테스트 결과|개선 제안|이번 주/,
-      build: (ctx) => generateReport('weekly', ctx.state.data).brief,
+      build: (ctx) => generateReport('weekly', ctx.state.data, optsOf(ctx)).brief,
     },
     {
       id: 'reports_monthly',
       match: /월간\s?(리포트|보고서?|미팅)?|채널별 매출( 기여)?|다음 달 계획|월 계획/,
-      build: (ctx) => generateReport('monthly', ctx.state.data).brief,
+      build: (ctx) => generateReport('monthly', ctx.state.data, optsOf(ctx)).brief,
     },
     {
       id: 'reports_issue',
       match: /이슈\s?(알림|리포트|보고)|조치 상태|영향 범위/,
-      build: (ctx) => generateReport('issue', ctx.state.data, { incidents: incidentsOf(ctx) }).brief,
+      build: (ctx) => generateReport('issue', ctx.state.data, optsOf(ctx)).brief,
     },
     {
       id: 'reports_today',
       match: /(일간|오늘|어제|전일)\s?(리포트|보고서?|성과)|일간|리포트|보고서|발송 현황/,
       build: (ctx): Brief => {
-        const b = generateReport('daily', ctx.state.data, { incidents: incidentsOf(ctx) }).brief;
-        const cad = cadenceStatus(ctx.state.data, ctx.state.incidents);
+        const b = generateReport('daily', ctx.state.data, optsOf(ctx)).brief;
+        const cad = cadenceStatus(ctx.state.data, ctx.state.incidents, ctx.state.changes);
         return { ...b, facts: [...b.facts, `리포트 발송 현황: ${cad.map((c) => `${c.name} ${c.stateLabel}`).join(' · ')} (제안서 p.17 주기).`] };
       },
     },

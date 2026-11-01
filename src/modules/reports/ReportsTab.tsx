@@ -124,8 +124,8 @@ export function ReportsTab({ type, report, genMs, month, setMonth, issueId, setI
           </div>
         </Card>
         {type === 'issue' && !issues.length ? (
-          <Callout tone="info" title="MILDO Alert 이슈가 없습니다">
-            이슈 알림은 MILDO Alert가 감지한 이슈로 만들어집니다. <a href="#alert">MILDO Alert</a>에서 재스캔하거나 테스트 이슈를 주입하면 이 화면에 바로 반영됩니다.
+          <Callout tone="warning" title="MILDO Alert에 등록된 이슈가 없습니다">
+            아래 이슈 알림은 같은 탐지 기준으로 다시 확인한 미리보기입니다. <a href="#alert">MILDO Alert</a>에서 재스캔해 등록하면 담당 · 백업 · SLA 시각이 확정되고, 이 화면에서 이슈를 골라 리포트를 만들 수 있습니다.
           </Callout>
         ) : null}
         <ReportDocument report={report} interp={interp} aeNotes={aeNotes} aiSlot={aiSlot} />

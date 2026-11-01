@@ -14,7 +14,7 @@
 import type { AdAccount, ChangeRequest, Dataset } from '@/core/types';
 import type { Brief } from '@/ai/prompts';
 import {
-  CONTRACT_TERMS, DECISION_MATRIX, MEDIA, ONBOARDING_GANTT, ONBOARDING_MILESTONES, ONBOARDING_PHASES, OWNERSHIP, RFP, SALES_CHANNELS, TF_ROLES,
+  CONTRACT_TERMS, DECISION_MATRIX, MEDIA, MEDIA_IDS, ONBOARDING_GANTT, ONBOARDING_MILESTONES, ONBOARDING_PHASES, OWNERSHIP, RFP, SALES_CHANNELS, TF_ROLES,
 } from '@/data/constants';
 import { mediaRows, rangeOf, totalsOf } from '@/core/selectors';
 import { addDays, fmt, isOffDay, KR_HOLIDAYS, WEEKDAY_KO } from '@/core/util';
@@ -441,7 +441,7 @@ export function accountChecks(data: Dataset): AccountCheck[] {
     if (!ownerOk) findings.push({ level: 'fail', item: '광고 계정', text: `소유 주체 ${a.owner || '미기재'} · 기준 수면밀도 소유`, action: '계정 소유권 수면밀도로 이전 · 운영 권한만 위임' });
     const runway = a.balance >= 0 && a.avgDailySpend > 0 ? a.balance / a.avgDailySpend : null;
     if (a.autoCharge === 'failed') findings.push({ level: 'fail', item: '결제 수단', text: '자동충전 실패', action: 'PM → 수면밀도 결제 담당자 충전 요청 · 결제 수단 확인' });
-    if (runway !== null && runway < 1) findings.push({ level: 'fail', item: '결제 수단', text: `잔액 ${fmt.krw(a.balance)} · 일 평균 소진 ${fmt.krw(a.avgDailySpend)} → ${runway.toFixed(1)}일치 (기준 1일치)`, action: '즉시 충전 요청 · 소진 시 광고 중단 위험' });
+    if (runway !== null && runway < 1) findings.push({ level: 'fail', item: '결제 수단', text: `잔액 ${fmt.krw(a.balance)}원 · 일 평균 소진 ${fmt.krw(a.avgDailySpend)}원 → ${runway.toFixed(1)}일치 (기준 1일치)`, action: '즉시 충전 요청 · 소진 시 광고 중단 위험' });
     else if (runway !== null && runway < 3) findings.push({ level: 'warn', item: '결제 수단', text: `잔액 ${runway.toFixed(1)}일치 (주의 기준 3일치 · 운영 가정)`, action: '연휴 전 사전 충전 확인' });
     if (a.autoCharge === 'off' && runway !== null && runway >= 1) findings.push({ level: 'info', item: '결제 수단', text: '선충전 · 자동충전 없음', action: '잔액 모니터링 유지' });
     const nonReal = a.permissions.filter((p) => !p.realName);
@@ -468,10 +468,12 @@ export function ownershipStatus(data: Dataset, changes: ChangeRequest[] = []): {
   const nonReal = checks.reduce((s, c) => s + c.nonRealName.length, 0);
   const pay = checks.filter((c) => c.findings.some((f) => f.item === '결제 수단' && f.level === 'fail')).length;
   const review = checks.filter((c) => c.status !== 'active').length;
-  const clientPending = changes.filter((c) => c.status === 'pending' && c.approver === 'CLIENT').length;
+  const clientPending = changes.filter((c) => c.status === 'pending' && decisionTypeOf(c) === '예산 · 구조 변경').length;
   const rows: OwnershipRow[] = OWNERSHIP.map((o) => {
     let level: CheckLevel = 'info';
     let live = '';
+    const noData = n === 0 && (o.item === '광고 계정' || o.item === '결제 수단' || o.item === '접근 권한');
+    if (noData) return { item: o.item, owner: o.owner, role: o.role, approval: o.approval, level: 'info' as const, live: '계정 데이터 없음 · 점검 불가 (연동 후 확인)' };
     switch (o.item) {
       case '광고 계정':
         level = ownerOk === n && review === 0 ? 'pass' : ownerOk < n ? 'fail' : 'warn';
@@ -498,11 +500,26 @@ export function ownershipStatus(data: Dataset, changes: ChangeRequest[] = []): {
   return { rows, checks, summary: { accounts: n, ownerOk, nonRealName: nonReal, paymentRisk: pay, review, pass: checks.filter((c) => c.level === 'pass' || c.level === 'info').length } };
 }
 
+/**
+ * 승인 요청 → p.53 결정 유형 분류.
+ *  - 알림 · 시스템 기준: 탐지 기준 변경(kind 'alert_rule') — 승인 주체와 무관
+ *  - 예산 · 구조 변경: 수면밀도 승인 건(GFA 30% 초과 · 신규 캠페인 등)
+ *  - 승인 범위 내 운영 조정: 담당 AE · PM 승인 건(입찰 · 일 예산 ±30% 이내 · ON/OFF 등)
+ *  - 전략 방향: 승인 요청으로 들어오지 않음 (월간 리뷰 안건)
+ */
+export function decisionTypeOf(c: Pick<ChangeRequest, 'kind' | 'approver'>): string | null {
+  if (c.kind === 'alert_rule') return '알림 · 시스템 기준';
+  if (c.approver === 'CLIENT') return '예산 · 구조 변경';
+  if (c.approver === 'AE' || c.approver === 'PM') return '승인 범위 내 운영 조정';
+  return null;
+}
+
 /** p.53 의사결정 체계 × 현재 승인 대기 */
 export function decisionLoad(changes: ChangeRequest[]): { type: string; decider: string; lead: string; pending: number | null }[] {
+  const pending = changes.filter((c) => c.status === 'pending');
   return DECISION_MATRIX.map((d) => {
-    const ap = DECISION_APPROVER[d.type] ?? null;
-    return { type: d.type, decider: d.decider, lead: d.lead, pending: ap ? changes.filter((c) => c.status === 'pending' && c.approver === ap).length : null };
+    const tracked = DECISION_APPROVER[d.type] !== null && d.type in DECISION_APPROVER;
+    return { type: d.type, decider: d.decider, lead: d.lead, pending: tracked ? pending.filter((c) => decisionTypeOf(c) === d.type).length : null };
   });
 }
 
@@ -516,7 +533,11 @@ export interface OnboardingPlan {
   end: string;
   weeks: OnboardingWeek[];
   tasks: { task: string; start: number; end: number; from: string; to: string }[];
-  milestones: { week: number; label: string; day: number; date: string; off: { off: boolean; label: string }; reportDay: string }[];
+  /**
+   * week = 장표 간트 위치(p.54 W4 · W8 · W12), calendarWeek = 실제 날짜(Kick-off + D일)가 속한 주차.
+   * 12주(84일)와 D+90이 정확히 맞지 않으므로 두 값이 최대 1주 다를 수 있다 (W13 = W12 종료 후).
+   */
+  milestones: { week: number; calendarWeek: number; label: string; day: number; date: string; off: { off: boolean; label: string }; reportDay: string }[];
   phases: { id: string; label: string; from: string; to: string; items: readonly string[]; metric: string }[];
   daysToKickoff: number;
   currentWeek: number | null;
@@ -552,7 +573,7 @@ export function onboardingPlan(kickoff: string, today: string): OnboardingPlan {
     const day = milestoneDay(m.label, m.week);
     const date = addDays(k, day);
     const off = isOffDay(date);
-    return { week: m.week, label: m.label, day, date, off, reportDay: off.off ? prevBusinessDay(date) : date };
+    return { week: m.week, calendarWeek: Math.floor(day / 7) + 1, label: m.label, day, date, off, reportDay: off.off ? prevBusinessDay(date) : date };
   });
   const bounds = [0, ...milestones.map((m) => m.day)];
   const phases = ONBOARDING_PHASES.map((p, i) => ({
@@ -686,10 +707,11 @@ export function feeCalc(inputs: Record<string, FeeInput | undefined> = {}, annua
   const fee = rows.reduce((s, r) => s + (r.fee ?? 0), 0);
   const payback = rows.reduce((s, r) => s + (r.fee !== null ? r.paybackAmt ?? 0 : 0), 0);
   const net = fee - payback;
-  const missingFee = rows.filter((r) => r.feePct === null).length;
+  // 오입력 칸은 invalid로만 센다 (미입력과 중복 집계하지 않음)
+  const missingFee = rows.filter((r) => r.feePct === null && !r.feeInvalid).length;
   const missingPb = rows.filter((r) => r.payback === 'unset').length;
-  const missingPbPct = rows.filter((r) => r.payback === 'yes' && r.paybackPct === null).length;
-  const invalid = rows.filter((r) => r.feeInvalid || r.paybackInvalid).length;
+  const missingPbPct = rows.filter((r) => r.payback === 'yes' && r.paybackPct === null && !r.paybackInvalid).length;
+  const invalid = rows.filter((r) => r.feeInvalid).length + rows.filter((r) => r.paybackInvalid).length;
   if (budgetTotal <= 0) warnings.push('연간 광고비가 0원 이하 — 계산 불가');
   return {
     annualBudget: budgetTotal,
@@ -704,6 +726,11 @@ export function feeCalc(inputs: Record<string, FeeInput | undefined> = {}, annua
     perPointKrw: budgetTotal / 100,
     warnings,
   };
+}
+
+/** p.37 배분 가안 표기 ('SA 43% · GFA 18% · …') — MEDIA 상수에서 생성 */
+export function allocationText(withPct = true): string {
+  return MEDIA_IDS.map((m) => `${MEDIA[m].short} ${Math.round(MEDIA[m].share * 1000) / 10}${withPct ? '%' : ''}`).join(' · ');
 }
 
 export type SolutionFeeChoice = 'unset' | 'included' | 'separate';
@@ -819,7 +846,7 @@ export interface CoverageRow extends RfpItem {
   missingModules: string[];
 }
 
-/** moduleIds를 주면 레지스트리에 없는 모듈을 '입력 필요'로 표시 (null이면 검사 생략) */
+/** moduleIds(동작하는 모듈 = 레지스트리 등록 · '준비 중' 아님)를 주면 그 밖의 모듈에 기대는 항목을 '입력 필요'로 표시 (null이면 검사 생략) */
 export function rfpCoverage(readiness: Readiness, moduleIds: string[] | null = null, items: RfpItem[] = RFP_ITEMS, groupLabel: Record<RfpGroup, string> = RFP_GROUP_LABEL): CoverageRow[] {
   const known = moduleIds ? new Set(moduleIds) : null;
   return items.map((it) => {
@@ -846,7 +873,7 @@ export function rfpCoverage(readiness: Readiness, moduleIds: string[] | null = n
       default:
         break;
     }
-    if (missingModules.length) { status = 'input'; note = [note, `모듈 미등록: ${missingModules.join(', ')}`].filter(Boolean).join(' · '); }
+    if (missingModules.length) { status = 'input'; note = [note, `모듈 준비 중 · 미등록: ${missingModules.join(', ')}`].filter(Boolean).join(' · '); }
     if (status === 'done' && !note) note = '화면 · 데이터로 시연 가능';
     return { ...it, groupLabel: groupLabel[it.group] ?? it.group, status, note, missingModules };
   });
@@ -916,7 +943,7 @@ export function tfBrief(data: Dataset, inp: OpsInputs, absent: string[] = ['sa_a
   const conc = g.issues.filter((i) => i.code === 'concentration').map((i) => i.text);
   const over = sim.members.filter((x) => x.overload);
   const facts = [
-    `전담 TF는 ${roster.length}개 역할(${roster.map((r) => r.role).join(' · ')})로 구성되며 RFP가 요구한 매체별 전담자 SA · DA · 총괄이 모두 지정되어 있습니다 (제안서 p.52).`,
+    `전담 TF는 ${roster.length}개 역할(${roster.map((r) => r.role).join(' · ')})로 구성되며 RFP가 요구한 매체별 전담자는 ${m.dedicated.map((x) => `${x.label} ${x.ok ? '지정' : '미지정'}`).join(' · ')} 상태입니다 (제안서 p.52).`,
     m.complete
       ? `TF 명단 ${m.cells}칸이 모두 입력되었고 입력 투입률 합계는 ${fmt.dec1(m.fte)} FTE입니다.`
       : `TF 명단 ${m.cells}칸 중 ${m.total}칸이 미입력입니다 (성명 ${m.name} · 연차 ${m.years} · 투입률 ${m.allocation}${m.invalid ? ` · 오입력 ${m.invalid}명` : ''}). RFP 필수 제출물 4) TF 명단은 실명 · 연차 · 투입률 · 백업을 요구합니다.`,
@@ -928,7 +955,7 @@ export function tfBrief(data: Dataset, inp: OpsInputs, absent: string[] = ['sa_a
   ];
   if (sim.dutyConflicts.length) patterns.push(`부재 기간 당번 충돌 ${sim.dutyConflicts.length}일: ${sim.dutyConflicts.map((c) => `${shortDate(c.date)} ${c.role} → ${c.replacement}`).join(', ')}.`);
   const interp = [
-    `평가 비중 '인력 · 백업 · 온보딩' 15%는 명단 실명 여부와 백업이 실제로 작동하는지로 판단될 가능성이 높습니다. 상호 백업 쌍이 동시에 비는 경우(예: SA 2인 동시 휴가)는 2차 백업이 없으므로 PM이 직접 대행하는 규칙을 명단에 함께 적는 편이 응답 공백 최소화 요건을 직접 충족합니다.`,
+    `평가 비중 '인력 · 백업 · 온보딩' ${RFP.evaluation.find((e) => e.id === 'people')?.weight ?? 15}%는 명단 실명 여부와 백업이 실제로 작동하는지로 판단될 가능성이 높습니다. 상호 백업 쌍이 동시에 비는 경우(예: SA 2인 동시 휴가)는 2차 백업이 없으므로 PM이 직접 대행하는 규칙을 명단에 함께 적는 편이 응답 공백 최소화 요건을 직접 충족합니다.`,
   ];
   if (sim.assumptions.assumedRoles.length) interp.push(`투입률이 입력되지 않은 ${sim.assumptions.assumedRoles.length}명은 전담 100%로 가정해 계산했으므로 과부하 판정은 입력 후 다시 확인해야 합니다.`);
   return {
@@ -954,7 +981,7 @@ export function feeBrief(inp: OpsInputs): Brief {
   const cost = annualCost(f, c);
   const entered = f.rows.filter((r) => r.net !== null);
   const facts = [
-    `연간 광고비 ${fmt.krw(f.annualBudget)}원을 p.37 배분 가안(SA 43% · GFA 18% · Google 12% · Meta 12% · 카카오 8% · 버티컬 7%)으로 나누면 수수료 표 기준 ${f.rows.map((r) => `${r.media} ${fmt.krw(r.budget)}원`).join(', ')}입니다.`,
+    `연간 광고비 ${fmt.krw(f.annualBudget)}원을 p.37 배분 가안(${allocationText()})으로 나누면 수수료 표 기준 ${f.rows.map((r) => `${r.media} ${fmt.krw(r.budget)}원`).join(', ')}입니다.`,
     entered.length
       ? `입력된 ${entered.length}개 매체 기준 연간 수수료 ${fmt.krw(f.totals.fee)}원 · 페이백 ${fmt.krw(f.totals.payback)}원 · 순 수수료 ${fmt.krw(f.totals.net)}원, 실효 수수료율 ${fmt.pct(f.totals.effectivePct, 2)}입니다.`
       : `p.58 수수료율이 5개 매체 모두 미입력 상태입니다. 수수료율 1%p당 연 수수료는 ${fmt.krw(f.perPointKrw)}원씩 달라집니다.`,
@@ -971,7 +998,7 @@ export function feeBrief(inp: OpsInputs): Brief {
     conditions: ['배분은 p.37 연 50억 가안 기준 · VAT 별도. 실제 배분은 월 1회 재배분 원칙에 따라 바뀌므로 수수료 총액도 같이 변합니다. 페이백은 광고비 대비 비율로 계산했습니다.'],
     counter: ['연 예산이 RFP 표기처럼 브랜드 운영 방향에 따라 변동되면 정액(솔루션 이용료)과 정률(수수료)의 비중이 달라집니다. 예산이 줄면 정액 비용의 실효율이 올라갑니다.'],
     actions: [
-      `PM: 매체별 수수료율 · 페이백 적용 여부 ${f.missing.total}칸과 계약 조건 ${c.missing}건을 확정해 p.58에 반영합니다 (수면밀도 제출 마감 전).`,
+      `PM: 매체별 수수료율 · 페이백 미입력 ${f.missing.total}칸${f.missing.invalid ? ` · 오입력 ${f.missing.invalid}칸` : ''}과 계약 조건 ${c.missing}건을 확정해 p.58에 반영합니다 (제안서 제출 마감 전).`,
     ],
   };
 }
@@ -990,7 +1017,7 @@ export function rfpBrief(data: Dataset, inp: OpsInputs, moduleIds: string[] | nu
     ],
     patterns: inputRows.map((r) => `${r.groupLabel} · ${r.text.slice(0, 40)}${r.text.length > 40 ? '…' : ''} → ${r.note}`),
     interpretation: [
-      `${RFP_NOTES.priority}. 따라서 리소스 절감 자동화(25)와 운영 안정성(20) 합계 ${s.eval.priorityWeight}% 항목의 시연 완성도가 1차 판단 기준이고, 현재 이 두 영역 준비도는 ${fmt.dec1(s.eval.priorityReady)} / ${s.eval.priorityWeight}입니다. 남은 입력 항목은 인력 · 비용 · 레퍼런스 영역이므로 화면 개발보다 사실 확인 · 증빙 일정이 제출 리스크입니다.`,
+      `${RFP_NOTES.priority}. 따라서 ${s.eval.rows.filter((e) => e.priority).map((e) => `${e.label}(${e.weight})`).join('와 ')} 합계 ${s.eval.priorityWeight}% 항목의 시연 완성도가 1차 판단 기준이고, 현재 이 두 영역 준비도는 ${fmt.dec1(s.eval.priorityReady)} / ${s.eval.priorityWeight}입니다. 남은 입력 항목은 인력 · 비용 · 레퍼런스 영역이므로 화면 개발보다 사실 확인 · 증빙 일정이 제출 리스크입니다.`,
     ],
     conditions: [`${RFP_NOTES.undisclosed} 준비도는 RFP 항목 대비 입력 완료 여부만 셉니다.`],
     counter: ['구현됨 표시는 시연 화면이 있다는 뜻이며 평가자가 수치 근거(실집행 사례 · 증빙)를 요구하면 별도 자료가 필요합니다. GEO 사례 수치처럼 실제 집행 데이터가 없으면 공란 대신 진단 방식만 제시하는 대안을 검토합니다.'],
@@ -1000,10 +1027,24 @@ export function rfpBrief(data: Dataset, inp: OpsInputs, moduleIds: string[] | nu
   };
 }
 
+/** p.54 간트에서 병행 운영 · AD Pilot 단계 적용 구간 (상수에서 읽음) */
+export function onboardingWindows() {
+  const parallel = ONBOARDING_GANTT.find((g) => g.task.startsWith('병행'));
+  const pilot = ONBOARDING_GANTT.find((g) => g.task.startsWith('AD Pilot'));
+  const keep = ONBOARDING_GANTT.find((g) => g.task.startsWith('기존 입찰'));
+  return {
+    parallel: parallel ? { start: parallel.start, end: parallel.end } : null,
+    pilot: pilot ? { start: pilot.start, end: pilot.end } : null,
+    keep: keep ? { start: keep.start, end: keep.end } : null,
+  };
+}
+
 export function onboardingBrief(data: Dataset, kickoff: string): Brief {
   const p = onboardingPlan(kickoff, data.today);
   const b = performanceBaseline(data);
   const own = ownershipStatus(data);
+  const win = onboardingWindows();
+  const hw = [...new Set(p.holidays.map((h) => h.week))].sort((x, y) => x - y);
   return {
     title: '계정 인수 · 90일 온보딩',
     facts: [
@@ -1014,10 +1055,15 @@ export function onboardingBrief(data: Dataset, kickoff: string): Brief {
     ],
     patterns: [],
     interpretation: [
-      `성과 공백 최소화 요건은 W2–W8 병행 운영 · 기존 입찰 로직 유지 구간이 핵심입니다. AD Pilot 자동 조정은 W8 이후 단계 적용이므로 인수 직후 입찰 구조 변경으로 인한 CPA 변동은 구조적으로 제한됩니다. 인수 첫 주에는 비실명 권한 회수와 결제 수단 확인이 계정 · 권한 · 결제 인수 항목의 선행 조건입니다.`,
+      `성과 공백 최소화 요건은 ${win.parallel ? `W${win.parallel.start}–W${win.parallel.end}` : ''} 병행 운영 · 기존 입찰 로직 유지 구간이 핵심입니다. AD Pilot 자동 조정은 ${win.pilot ? `W${win.pilot.start}부터` : '병행 운영 이후'} 단계 적용이므로 인수 직후 입찰 구조 변경으로 인한 CPA 변동은 구조적으로 제한됩니다. 인수 첫 주에는 비실명 권한 회수와 결제 수단 확인이 계정 · 권한 · 결제 인수 항목의 선행 조건입니다.`,
     ],
     conditions: [`성과 유지 판정 허용 폭 ±${b.tolerancePct}%는 운영 가정이며 온보딩 중 수면밀도와 확정합니다 (ROAS 하한 ${fmt.roas(b.roasFloor)} · CPA 상한 ${fmt.won(b.cpaCeiling)}).`],
-    counter: ['연말 · 설 연휴가 W4–W11에 걸쳐 있어 계절 수요 변화가 기준선 비교를 왜곡할 수 있습니다. 전년 동기 데이터가 확보되면 전월 대비 대신 전년 동기 대비 지표를 함께 봅니다.'],
+    counter: [
+      hw.length
+        ? `공휴일이 ${hw.length === 1 ? `W${hw[0]}` : `W${hw[0]}–W${hw[hw.length - 1]}`}에 걸쳐 있어 영업일 수와 계절 수요 변화가 기준선 비교를 왜곡할 수 있습니다. 전년 동기 데이터가 확보되면 전월 대비 대신 전년 동기 대비 지표를 함께 봅니다.`
+        : '온보딩 기간에 공휴일은 없지만 기획전 · 시즌 수요 변화가 기준선 비교를 왜곡할 수 있습니다. 전년 동기 데이터가 확보되면 전년 동기 대비 지표를 함께 봅니다.',
+      `마일스톤 날짜는 Kick-off + 일수(D+30 · D+60 · D+90)로 환산했고, 장표 간트(W1–W${ONBOARDING_WEEKS}, ${ONBOARDING_WEEKS * 7}일)와는 최대 1주 차이가 납니다.`,
+    ],
     actions: [
       'PM: Kick-off 전 계정 · 권한 목록과 기존 입찰 로직 문서를 요청하고, D+30 기준선 지표를 수면밀도와 합의합니다.',
     ],
@@ -1031,7 +1077,7 @@ export function tfMarkdown(rows: TfRow[]): string {
   const lines = [
     '| 역할 | 성명 | 연차 | 담당 | 투입률 | 백업 |',
     '|---|---|---|---|---|---|',
-    ...rows.map((r) => `| ${r.role} | ${cell(r.name, '[성명]')} | ${r.years !== null && !r.invalid.years ? `${r.years}년` : '[n]년'} | ${r.scope} | ${r.allocation !== null && !r.invalid.allocation ? `${r.allocation}%` : '[n]%'} | ${r.backupRole} |`),
+    ...rows.map((r) => `| ${r.role} | ${cell(r.invalid.name ? '' : r.name, '[성명]')} | ${r.years !== null && !r.invalid.years ? `${r.years}년` : '[n]년'} | ${r.scope} | ${r.allocation !== null && !r.invalid.allocation ? `${r.allocation}%` : '[n]%'} | ${r.backupRole} |`),
   ];
   return `## 전담 TF 명단 (제안서 p.52)\n\n${lines.join('\n')}\n`;
 }

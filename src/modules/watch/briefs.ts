@@ -7,7 +7,7 @@ import type { Brief } from '@/ai/prompts';
 import { fmt, fmtDate } from '@/core/util';
 import { MEDIA } from '@/data/constants';
 import {
-  archiveMatrix, archiveRows, brandSearchTrend, brandSerpCheck, dataNowMs, evaluateEvents, intentExposure, nextWeeklyReport, pipelineCounts,
+  archiveMatrix, archiveRows, brandSearchTrend, brandSerpCheck, dataNowMs, evaluateEvents, fmtDelta, intentExposure, nextWeeklyReport, pipelineCounts,
   resolveWatchConfig, seasonCalendar, trackingOverview, weeklyBrief, type ProgressMap, type WatchConfig,
 } from './engine';
 import { MEDIA_TRACKING } from './data';
@@ -46,7 +46,7 @@ export function changesBrief(s: WatchSnapshot): Brief {
       ...(urgent[0] ? [`진단 기한이 가장 가까운 건은 ${mediaName(urgent[0].media)} · ${urgent[0].title} (${urgent[0].due.label}).`] : []),
     ],
     patterns: [
-      ...s.tracking.filter((t) => t.open > 1).map((t) => `${t.name}: 진행 중 ${t.open}건 (공지 ${t.notices} · 데이터 감지 ${t.signals}) — 7일 ROAS ${fmt.roas(t.roas)} (${fmt.delta(t.roasDelta)}).`),
+      ...s.tracking.filter((t) => t.open > 1).map((t) => `${t.name}에서 진행 중 변동이 반복 감지된다: ${t.open}건 (공지 ${t.notices} · 데이터 감지 ${t.signals}), 같은 기간 7일 ROAS ${fmt.roas(t.roas)} (직전 7일 대비 ${fmtDelta(t.roasDelta)}).`),
     ],
     interpretation: [
       '규칙 기반 해석: 매체 공지와 데이터 변화가 같은 시기에 겹쳐도 공지가 원인이라는 근거는 아니다. 원인 후보는 경쟁 입찰 · 매체 로직 · 집계 지연으로 나눠 보고, 소액 테스트로 분리 측정한 결과로만 확대한다.',
@@ -59,23 +59,35 @@ export function changesBrief(s: WatchSnapshot): Brief {
     actions: [
       ...urgent.slice(0, 3).map((e) => `${mediaName(e.media)} · ${e.title}: 영향 진단 완료 처리 (${e.due.label}) — 담당 AE.`),
       ...wrap.slice(0, 2).map((e) => `${mediaName(e.media)} · ${e.title}: 랩업 기록 (${e.judge.label}) — PM.`),
-      `실행안은 ${s.report.label}에 반영하고, 테스트는 Lab 등록 요청(승인 PM)으로 넘긴다.`,
+      `실행안은 ${s.report.label}에 반영하고, 테스트는 Lab 등록 요청으로 넘긴다. 승인 주체는 p.15 위임 범위 기준 (일 예산 ${Math.round(s.cfg.testBudgetShare * 100)}% · 신규 광고그룹 ON → PM, 30% 초과 · 신규 캠페인 → 수면밀도 승인).`,
     ],
   };
 }
 
 /** 경쟁사 아카이브 · 브랜드 지면 브리프 */
 export function competitorsBrief(s: WatchSnapshot): Brief {
-  const high = s.archive.filter((r) => r.impact.level === 'high' && r.date >= s.matrix.from);
+  const win = s.archive.filter((r) => r.date >= s.matrix.from);
+  const high = win.filter((r) => r.impact.level === 'high');
   const above = s.serp.filter((x) => x.verdict === 'above');
+  // 반복 관측 패턴: 같은 유형의 변경이 2개사 이상에서 관측될 때만 패턴으로 쓴다 (단건은 확정 팩트)
+  const priceCuts = win.filter((r) => r.item === 'price' && r.price && r.price.prevEffective > 0 && (r.price.prevEffective - r.price.effective) / r.price.prevEffective >= 0.05);
+  const cutBy = [...new Set(priceCuts.map((r) => r.competitor).filter((c): c is string => !!c))];
+  const overlapPromos = win.filter((r) => r.item === 'creative' && r.promo && r.promo.discountRate > 0 && r.impact.facts.some((f) => f.includes('기간 중복') && !f.includes('없음')));
+  const overlapBy = [...new Set(overlapPromos.map((r) => r.competitor).filter((c): c is string => !!c))];
+  const serpComp = [...new Set(above.flatMap((x) => x.competitorsAbove))];
+  const patterns: string[] = [];
+  if (cutBy.length >= 2) patterns.push(`실판매가 5% 이상 인하가 ${cutBy.length}개사(${cutBy.join(' · ')})에서 ${priceCuts.length}건 관측됐다 (최근 ${s.matrix.days}일 · 퀸 사이즈 스냅샷 기준).`);
+  if (overlapBy.length >= 2) patterns.push(`자사 기획전 기간과 겹치는 할인 프로모션이 ${overlapBy.length}개사(${overlapBy.join(' · ')})에서 ${overlapPromos.length}건 관측됐다.`);
+  if (above.length >= 2) patterns.push(`브랜드 키워드 ${above.length}개에서 경쟁사 광고가 자사보다 위에 반복 노출된다 (${serpComp.join(' · ')}, 07:00 스냅샷 기준).`);
   return {
     title: 'MILDO Watch · 경쟁 6개사 아카이브',
     facts: [
-      `최근 ${s.matrix.days}일(${fmtDate(s.matrix.from)}~${fmtDate(s.matrix.to)}) 아카이브 변경 ${s.archive.filter((r) => r.date >= s.matrix.from).length}건, 영향도 높음 ${high.length}건 (시연용 가상 스냅샷).`,
+      `최근 ${s.matrix.days}일(${fmtDate(s.matrix.from)}~${fmtDate(s.matrix.to)}) 아카이브 변경 ${win.length}건, 영향도 높음 ${high.length}건 (시연용 가상 스냅샷).`,
+      ...high.slice(0, 4).map((r) => `${fmtDate(r.date)} ${r.competitor ?? '공통'} ${r.itemLabel}: ${r.title} — ${r.impact.label} · ${r.impact.basis}.`),
       ...s.matrix.byCompetitor.filter((c) => c.count).map((c) => `${c.competitor}: 변경 ${c.count}건 · 높음 ${c.high}건${c.latest ? ` · 최근 ${fmtDate(c.latest.date)} ${c.latest.title}` : ''}.`),
       `브랜드 키워드 ${s.serp.length}개 중 ${above.length}개에서 경쟁사 광고가 자사보다 위 (자사 순위는 키워드 평균 순위 TEST DATA 기준).`,
     ],
-    patterns: high.slice(0, 4).map((r) => `${fmtDate(r.date)} ${r.competitor ?? '공통'} ${r.itemLabel}: ${r.title} — ${r.impact.basis}.`),
+    patterns,
     interpretation: [
       '규칙 기반 해석: 경쟁사 가격 인하 · 기획전은 일반 제품 · 비교 검토 키워드의 CVR · CPC에 먼저 나타난다. 할인율을 맞추는 대응은 CAC를 올리므로, CPA 상한을 지키는 입찰 유지와 혜택 · 배송 메시지 보완을 우선 검토한다.',
     ],
@@ -83,7 +95,7 @@ export function competitorsBrief(s: WatchSnapshot): Brief {
     counter: ['스냅샷은 하루 1회 기준이라 장중 변경은 다음 날 반영된다. 일시 쿠폰이면 영향이 1~2일에 그칠 수 있다.'],
     actions: [
       ...high.filter((r) => r.alertable).slice(0, 2).map((r) => `${r.competitor} ${r.itemLabel} 변경: MILDO Alert P3 등록 · 24시간 내 영향 분석 (p.44) — SA Lead AE.`),
-      ...(above.length ? [`브랜드 키워드 ${above.map((x) => `'${x.keyword}'`).join(' · ')}: 방어 입찰 검토 → AD Pilot (브랜드 목표 ROAS ${s.cfg.brandTargetRoas}% · 순위 방어 우선) — PM 승인.`] : []),
+      ...(above.length ? [`브랜드 키워드 ${above.map((x) => `'${x.keyword}'`).join(' · ')}: 방어 입찰 검토 → AD Pilot (브랜드 목표 ROAS ${s.cfg.brandTargetRoas}% 초기값 · 점유 방어와 효율을 함께 판단, p.14) — PM 승인.`] : []),
     ],
   };
 }
@@ -97,8 +109,8 @@ export function seasonBrief(s: WatchSnapshot): Brief {
   return {
     title: 'MILDO Watch · 외부 변수 · 시즌 캘린더',
     facts: [
-      ...(y ? [`브랜드 검색량 ${fmtDate(y.date)} ${fmt.int(y.volume)} — 최근 4주 동요일 평균 ${fmt.int(y.base)} 대비 ${fmt.delta(y.deltaPct)} (기준 ±${s.cfg.searchShiftPct}%, TEST DATA).`] : ['브랜드 검색량 데이터 없음.']),
-      ...(life ? [`생활 상황 키워드 노출 최근 14일 ${fmt.int(life.last)} (직전 ${fmt.delta(life.delta)})${life.newKeywords.length ? ` · 신규 노출 ${life.newKeywords.join(' · ')}` : ''}.`] : []),
+      ...(y ? [`브랜드 검색량 ${fmtDate(y.date)} ${fmt.int(y.volume)} — 최근 4주 동요일 평균 ${fmt.int(y.base)} 대비 ${fmtDelta(y.deltaPct)} (기준 ±${s.cfg.searchShiftPct}%, TEST DATA).`] : ['브랜드 검색량 데이터 없음.']),
+      ...(life ? [`생활 상황 키워드 노출 최근 14일 ${fmt.int(life.last)} (직전 ${fmtDelta(life.delta)})${life.newKeywords.length ? ` · 신규 노출 ${life.newKeywords.join(' · ')}` : ''}.`] : []),
       ...active.map((c) => `진행 중: ${c.label} (${c.kindLabel}, ${fmtDate(c.start, false)}~${fmtDate(c.end, false)}, ${c.basis}).`),
     ],
     patterns: [],

@@ -1,7 +1,7 @@
 /** ops 화면 공용 훅 — 로컬 입력값 + 전역 TF 상태를 엮어 요약을 한 번만 계산한다. */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '@/core/store';
-import { MODULES } from '../registry';
+import { isStubModule, MODULES } from '../registry';
 import { defaultOpsLocal, loadOpsLocal, saveOpsLocal, type OpsLocal } from './local';
 import { opsSummary, type OpsInputs } from './engine';
 
@@ -18,8 +18,11 @@ export function useOpsLocal() {
   return { local, patch, reset };
 }
 
+let liveIds: string[] | null = null;
+/** 동작하는 모듈 id — 레지스트리 등록 모듈 중 '준비 중'(엔진 · 도구 · 브리프 없음)이 아닌 것. 레지스트리는 정적이라 1회 계산 */
 export function moduleIds(): string[] {
-  return MODULES.map((m) => m.id);
+  if (!liveIds) liveIds = MODULES.filter((m) => !isStubModule(m)).map((m) => m.id);
+  return liveIds;
 }
 export function moduleTitle(id: string): string {
   return MODULES.find((m) => m.id === id)?.title ?? id;

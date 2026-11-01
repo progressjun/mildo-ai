@@ -60,6 +60,18 @@ describe('ops agentKit', () => {
     const d = (await tool('ops_onboarding').execute({ kickoff: 'x' })) as Record<string, any>;
     expect(d.Kickoff).toBe('2026-12-01');
   });
+  it('ops_rfp 브리프는 도구와 같은 커버리지 집계 (레지스트리 읽은 뒤)', async () => {
+    const r = (await tool('ops_rfp_coverage').execute({})) as Record<string, any>;
+    const brief = agentKit.briefs!.find((x) => x.id === 'ops_rfp')!.build(ctx());
+    expect(brief.facts[1]).toContain(`${r.집계.전체}개 중 ${r.집계.구현됨}개`);
+  });
+  it('ops_tf 당번표는 MILDO Alert 당번 순번과 같다', async () => {
+    const { offBlocks, onDutyFor } = await import('../alert/engine');
+    const r = (await tool('ops_tf').execute({})) as Record<string, any>;
+    const blocks = offBlocks(DEMO.today, 42).slice(0, 6);
+    expect(r.당번.map((x: any) => x.기간)).toEqual(blocks.map((b) => `${b.start}~${b.end}`));
+    expect(r.당번.map((x: any) => x.당번)).toEqual(blocks.map((b) => [...new Set(b.dates.map((d) => onDutyFor(d)!.role))].join(' · ')));
+  });
   it('오프라인 브리프 4개 · 질문 매칭', () => {
     const b = agentKit.briefs!;
     expect(b.length).toBeGreaterThanOrEqual(2);

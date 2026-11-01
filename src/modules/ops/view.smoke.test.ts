@@ -58,6 +58,18 @@ describe('전담 TF · 온보딩 · 계약 화면 렌더', () => {
     expect(html).not.toContain('Infinity');
     expect(err).not.toHaveBeenCalled();
   });
+  it('입력 칸은 id를 가진 제어 컴포넌트 · 온보딩 마일스톤 실제 주차 표시', async () => {
+    const tf = await renderTab('TfTab');
+    for (const id of ['ops-tf-pm-name', 'ops-tf-dev-years', 'ops-tf-sa_ae-alloc', 'ops-tf-pm-backup', 'ops-leave-sa_ae', 'ops-leave-start']) expect(tf, id).toContain(`id="${id}"`);
+    const ids = [...tf.matchAll(/ id="([^"]+)"/g)].map((m) => m[1]);
+    expect(new Set(ids).size).toBe(ids.length);
+    const ob = (await renderTab('OnboardingTab')).replace(/<!-- -->/g, '');
+    expect(ob).toContain('장표 W4 · 실제 W5');
+    expect(ob).toContain('W12 종료 후');
+    const ct = await renderTab('ContractTab');
+    expect(ct).toContain('id="ops-fee-0-rate"');
+    expect(ct).toContain('SA 43% · GFA 18%');
+  });
   it('계정 구조 탭: 데모 시나리오(GFA 결제 · Google 비실명 · 오늘의집 검수) 표시', async () => {
     const html = await renderTab('StructureTab');
     expect(html).toContain('agency-shared@');
@@ -85,5 +97,7 @@ describe('전담 TF · 온보딩 · 계약 화면 렌더', () => {
     expect(tf).toMatch(/백업 공백 (<!-- -->)?1/);
     const ob = await renderTab('OnboardingTab', seed);
     expect(ob).toContain('현재 W2');
+    const ct = (await renderTab('ContractTab', seed)).replace(/<!-- -->/g, '');
+    expect(ct).toContain('미입력 2 · 오입력 1');
   });
 });

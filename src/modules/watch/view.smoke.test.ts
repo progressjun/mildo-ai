@@ -9,7 +9,13 @@ import { archiveRows, buildEvents, competitorIncident } from './engine';
 
 beforeAll(() => {
   const inc = competitorIncident(archiveRows(DEMO).find((r) => r.id === 'ar12')!, DEMO);
-  const mem: Record<string, string> = { 'mildo-os/v1': JSON.stringify({ incidents: [inc], changes: [], role: 'PM' }) };
+  // MILDO Alert가 같은 데이터에서 만드는 이슈 형태 (연결 이슈 표시 확인용)
+  const tracking = {
+    id: `tracking_break:카카오:${DEMO.today}`, ruleId: 'tracking_break', severity: 'P1', title: '카카오 전환 추적 단절 의심 · 13시 이후 전환 0', media: 'kakao', target: '카카오',
+    detectedAt: `${DEMO.today}T15:30:00+09:00`, occurredAt: `${DEMO.today}T13:00:00+09:00`, detectPath: 'MILDO Alert', causeCandidates: [], impact: {},
+    assignee: 'DA AE', status: 'open', timeline: [], isTest: false, autoActions: [],
+  };
+  const mem: Record<string, string> = { 'mildo-os/v1': JSON.stringify({ incidents: [inc, tracking], changes: [], role: 'PM' }) };
   (globalThis as unknown as { localStorage: Storage }).localStorage = {
     getItem: (k: string) => mem[k] ?? null,
     setItem: (k: string, v: string) => { mem[k] = v; },
@@ -61,6 +67,21 @@ describe('MILDO Watch 화면 렌더', () => {
     for (const c of ['베스트슬립', '웰퍼니처', '퀵슬립', '올라인매트리스', '지누스', '휴도']) expect(html).toContain(c);
     expect(html).toContain('Alert P3 생성됨');
     expect(html).toContain('변경 즉시 알림');
+  });
+
+  it('감지 이벤트 피드 · 상세 — 같은 대상의 MILDO Alert 이슈를 연결해 보여준다', async () => {
+    const row = (await renderTab('TrackingTab')).replace(/<!-- -->/g, '');
+    expect(row).toContain('MILDO Alert 연결 1건');
+    const drawer = await renderTab('EventDrawer', { id: 'ev_kakao_bizboard' });
+    expect(drawer).toContain('MILDO Alert 연결 이슈');
+    expect(drawer).toContain('카카오 전환 추적 단절 의심');
+    clean(drawer);
+  });
+
+  it('주간 브리프 — 담당 AE 코멘트 입력 · 반영 버튼', async () => {
+    const html = await renderTab('BriefTab');
+    expect(html).toContain('담당 AE 해석 · 다음 액션');
+    expect(html).toContain('브리프에 반영');
   });
 
   it.each(buildEvents(DEMO).map((e) => e.id))('이벤트 상세 드로어 %s', async (id) => {

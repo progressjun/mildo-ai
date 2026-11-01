@@ -4,7 +4,7 @@ import { MEDIA } from '@/data/constants';
 import type { MediaId } from '@/core/types';
 import { Icon } from '@/ui/Icon';
 import { Pill, Swatch } from '@/ui/primitives';
-import { IMPACT_META, PIPELINE, STAGE_INDEX, TEST_VERDICT_META, VERDICT_META, type Diagnosis, type ImpactLevel, type Level, type StageDue, type StageId, type TestJudgement, type WatchEvidence } from './engine';
+import { fmtDelta, IMPACT_META, PIPELINE, STAGE_INDEX, TEST_VERDICT_META, VERDICT_META, type Diagnosis, type ImpactLevel, type Level, type StageDue, type StageId, type TestJudgement, type WatchEvidence } from './engine';
 import { MEDIA_TRACKING } from './data';
 
 export const mediaLabel = (m: MediaId) => MEDIA_TRACKING.find((t) => t.media === m)?.name ?? MEDIA[m]?.name ?? m;
@@ -19,17 +19,18 @@ export function VerdictBadge({ diag, compact }: { diag: Diagnosis; compact?: boo
   return (
     <span className="watch-verdict">
       <Pill tone={m.tone} icon={m.icon}>{m.label}</Pill>
-      <span className={compact ? 'xs muted watch-clip' : 'xs ink2'}>{diag.basis}</span>
+      <span className={compact ? 'xs muted watch-clip' : 'xs ink2'} title={compact ? diag.basis : undefined}>{diag.basis}</span>
     </span>
   );
 }
 
-export function TestBadge({ judge }: { judge: TestJudgement }) {
+export function TestBadge({ judge, compact, prefix }: { judge: TestJudgement; compact?: boolean; prefix?: ReactNode }) {
   const m = TEST_VERDICT_META[judge.verdict];
   return (
     <span className="watch-verdict">
+      {prefix ? <span className="xs muted">{prefix}</span> : null}
       <Pill tone={m.tone} icon={m.icon}>{judge.label}</Pill>
-      <span className="xs ink2">{judge.basis}</span>
+      <span className={compact ? 'xs muted watch-clip' : 'xs ink2'} title={compact ? judge.basis : undefined}>{judge.basis}</span>
     </span>
   );
 }
@@ -97,7 +98,7 @@ export function EvidenceTable({ evidence }: { evidence: WatchEvidence[] }) {
               <td><span className="small">{e.label}</span>{e.note ? <div className="xs muted">{e.note}</div> : null}</td>
               <td className="r num">{e.value}</td>
               <td className="xs ink2">{e.base ?? '—'}</td>
-              <td className="r num">{Number.isFinite(e.delta) ? `${(e.delta as number) > 0 ? '+' : ''}${(e.delta as number).toFixed(0)}%` : '—'}</td>
+              <td className="r num">{Number.isFinite(e.delta) ? fmtDelta(e.delta as number, 0) : '—'}</td>
               <td className="xs muted">{e.threshold ?? '—'}</td>
               <td><LevelPill level={e.level} /></td>
             </tr>

@@ -25,13 +25,14 @@
 .reports-doc-title { font-size: var(--fs-2xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.2; }
 .reports-doc-meta { font-size: var(--fs-sm); color: var(--ink-2); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .reports-zone { display: flex; flex-direction: column; gap: 14px; border-left: 3px solid var(--line-strong); padding-left: 14px; }
-.reports-zone.fact { border-color: var(--good); }
+/* 확정 팩트 영역은 상태색(good)을 쓰지 않는다 — 녹색이 '좋음' 판정으로 읽히지 않도록 */
+.reports-zone.fact { border-color: var(--ink-2); }
 .reports-zone.pattern { border-color: var(--series-1); }
 .reports-zone.ai { border-color: var(--series-7); }
 .reports-zone.action { border-color: var(--ink); }
 .reports-zone.ae { border-color: var(--ink); }
 .reports-zone-label { font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.06em; display: flex; align-items: center; gap: 6px; }
-.reports-zone.fact .reports-zone-label { color: var(--good-ink); }
+.reports-zone.fact .reports-zone-label { color: var(--ink-2); }
 .reports-zone.pattern .reports-zone-label { color: var(--series-1); }
 .reports-zone.ai .reports-zone-label { color: var(--series-7); }
 .reports-zone.action .reports-zone-label { color: var(--ink); }

@@ -3,8 +3,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { DEMO } from '@/data/demo';
-import type { Dataset, Incident, Keyword } from '@/core/types';
-import { SA_AUTOMATION_SCOPE, ONBOARDING_PHASES, KEYWORD_TEST_RULES, AD_PILOT } from '@/data/constants';
+import type { ChangeRequest, Dataset, Incident, Keyword } from '@/core/types';
+import { SA_AUTOMATION_SCOPE, ONBOARDING_PHASES, KEYWORD_TEST_RULES, AD_PILOT, ANOMALY_THRESHOLDS, DATA_TIMETABLE, REPORT_CADENCE } from '@/data/constants';
 import { campaignPacing, rangeOf, mediaRows, totalsOf } from '@/core/selectors';
 import { detectIncidents } from '@/modules/alert/engine';
 import {
@@ -14,10 +14,13 @@ import {
   sortIssues, termCandidates, bidCandidates, kst, clockOf, blockToMarkdown, upcomingOffBlocks, measuredVerdict, type Report,
   automationRollout, cadenceStatus, daysBetween, mediaDayShifts, merOf,
   adPilotSummary, aeTarget, commentTarget, offDayOf, scopeOf, spikeCause, weekdayPattern, won,
+  isBusinessDay, keywordTests, reportRules, sendSchedule, DEFAULT_TEST_CRITERIA,
 } from './engine';
 import { generateBidProposals } from '@/modules/adpilot/engine';
-import { addDays } from '@/core/util';
-import { REPORT_TYPES as REPORT_TYPES_ALL } from './data';
+import { buildPipeline } from '@/modules/lab/engine';
+import { LAB_DEFAULT_CRITERIA } from '@/modules/lab/data';
+import { addDays, isOffDay, KR_HOLIDAYS } from '@/core/util';
+import { REPORT_META, REPORT_TYPES as REPORT_TYPES_ALL, TIMETABLE_META } from './data';
 
 const INCIDENTS = detectIncidents(DEMO);
 
@@ -250,7 +253,7 @@ describe('리포트용 탐지 · 점검 (데모 시나리오)', () => {
 function kw(p: Partial<Keyword> & { last14: Keyword['last14'] }, days = 14): Keyword {
   const base = DEMO.keywords[0];
   const daily = Array.from({ length: 14 }, (_, i) => ({ impressions: i >= 14 - days ? 10 : 0, clicks: 1, cost: 1, conversions: 0, revenue: 0 }));
-  return { ...base, id: 'kw_t', text: '테스트', status: 'test', daily, prev14: { impressions: 0, clicks: 0, cost: 0, conversions: 0, revenue: 0 }, ...p };
+  return { ...base, id: 'kw_t', text: '테스트', isBrand: false, status: 'test', daily, prev14: { impressions: 0, clicks: 0, cost: 0, conversions: 0, revenue: 0 }, ...p };
 }
 
 describe('키워드 테스트 판정 (p.26)', () => {
@@ -267,25 +270,60 @@ describe('키워드 테스트 판정 (p.26)', () => {
     expect(judgeKeywordTest(mk(target)).basis).toContain(`목표 ROAS ${target}% 대비 100%`);
   });
 
-  it('표본 부족: 14일 미만 & 클릭 100 미만 → 판정 보류, 클릭 100 도달 시 판정', () => {
+  it('14일 미만 & 클릭 100 미만 → 집행 중, 클릭 100 도달 시 판정 (14일 또는 최소 클릭 수)', () => {
     const short = judgeKeywordTest(kw({ last14: { impressions: 100, clicks: 30, cost: 10_000, conversions: 1, revenue: 900_000 } }, 7));
-    expect(short.verdict).toBe('hold');
-    expect(short.basis).toContain('표본 부족');
+    expect(short.verdict).toBe('running');
+    expect(short.basis).toContain('판정 기준 14일 또는 클릭 100 도달 전');
     const enough = judgeKeywordTest(kw({ last14: { impressions: 100, clicks: KEYWORD_TEST_RULES.minClicks, cost: 10_000, conversions: 1, revenue: 900_000 } }, 7));
     expect(enough.verdict).toBe('expand');
   });
 
-  it('광고비 0 → ROAS NaN이어도 예외 없이 판정', () => {
+  it('광고비 0 → ROAS NaN이어도 예외 없이 판정 · 14일이 지나도 클릭 30 미만이면 판정 보류(표본 부족)', () => {
     const z = judgeKeywordTest(kw({ last14: { impressions: 0, clicks: 0, cost: 0, conversions: 0, revenue: 0 } }));
-    expect(z.verdict).toBe('exclude');
+    expect(z.verdict).toBe('hold');
     expect(Number.isNaN(z.roas)).toBe(true);
+    expect(z.action).toContain('볼륨 한계');
+    const at30 = judgeKeywordTest(kw({ last14: { impressions: 1000, clicks: 30, cost: 30_000, conversions: 0, revenue: 0 } }));
+    expect(at30.verdict).toBe('exclude');
+    expect(at30.basis).toContain('전환 없음');
   });
 
-  it('데모 테스트 키워드: 첫 독립 매트리스는 전환 없음 → 제외, 나머지는 데이터로 판정', () => {
+  it('브랜드 키워드는 브랜드 목표 ROAS(800%) 기준 · 직전 14일 노출이 있으면 28일 누적으로 판정', () => {
+    const brand = judgeKeywordTest(kw({ isBrand: true, last14: { impressions: 1000, clicks: 120, cost: 100_000, conversions: 2, revenue: 600_000 } }));
+    expect(brand.target).toBe(AD_PILOT.brandTargetRoas);
+    expect(brand.verdict).toBe('keep'); // 600% ÷ 800% = 75%
+    const cum = judgeKeywordTest(kw({ prev14: { impressions: 50, clicks: 20, cost: 20_000, conversions: 0, revenue: 0 }, last14: { impressions: 50, clicks: 20, cost: 20_000, conversions: 1, revenue: 1_000_000 } }));
+    expect(cum.days).toBe(28);
+    expect(cum.stats.clicks).toBe(40);
+  });
+
+  it('데모 테스트 키워드 4개는 28일 집행에도 클릭 30 미만 → 모두 판정 보류 (볼륨 한계, 데이터로 판정)', () => {
     const tests = DEMO.keywords.filter((k) => k.status === 'test').map((k) => judgeKeywordTest(k));
     expect(tests.length).toBe(4);
-    expect(tests.find((t) => t.keyword.text === '첫 독립 매트리스')!.verdict).toBe('exclude');
-    for (const t of tests) expect(t.lowVolume).toBe(t.stats.clicks < KEYWORD_TEST_RULES.minClicks);
+    for (const t of tests) {
+      expect(t.stats.clicks, t.keyword.text).toBeLessThan(DEFAULT_TEST_CRITERIA.minJudgeClicks);
+      expect(t.verdict, t.keyword.text).toBe('hold');
+      expect(t.lowVolume).toBe(t.stats.clicks < KEYWORD_TEST_RULES.minClicks);
+    }
+  });
+
+  it('주간 리포트 판정은 MILDO Lab 파이프라인과 같다 (같은 기준 · 같은 집행 기간) — 대체 규칙도 같은 결과', () => {
+    expect(DEFAULT_TEST_CRITERIA).toEqual(LAB_DEFAULT_CRITERIA);
+    const lab = buildPipeline(DEMO, []);
+    const ts = keywordTests(DEMO, []);
+    expect(ts.source).toBe('lab');
+    const map: Record<string, string> = { running: 'running', insufficient: 'hold', expand: 'expand', keep: 'keep', exclude: 'exclude' };
+    expect(ts.rows.map((r) => [r.phrase, r.verdict])).toEqual(lab.map((i) => [i.phrase, map[i.judgement.verdict]]));
+    // 규칙 엔진 대체 판정(테스트 그룹 키워드)도 Lab과 같은 판정
+    for (const k of DEMO.keywords.filter((x) => x.status === 'test')) {
+      const li = lab.find((i) => i.keywordId === k.id)!;
+      expect(judgeKeywordTest(k).verdict, k.text).toBe(map[li.judgement.verdict]);
+      expect(judgeKeywordTest(k).days, k.text).toBe(li.days);
+    }
+    // Lab 판정 기준을 바꾸면 리포트 판정도 바뀐다 (판정 최소 클릭 10 → 20클릭 이상 키워드는 판정)
+    const loose = keywordTests(DEMO, [], { minJudgeClicks: 10 });
+    expect(loose.rows.find((r) => r.phrase === '신혼집 매트리스 사이즈')!.verdict).not.toBe('hold');
+    expect(loose.criteria.minJudgeClicks).toBe(10);
   });
 });
 
@@ -338,12 +376,22 @@ describe('주간 리포트', () => {
     const md = reportToMarkdown(r);
     expect(r.sections.map((s) => s.id)).toEqual(['summary', 'tests', 'candidates', 'intent', 'patterns', 'improve']);
     expect(md).toContain('첫 독립 매트리스');
-    expect(md).toContain('판정 기준 (p.26, 목표 ROAS 400% 대비)');
+    expect(md).toContain('판정 기준 (MILDO Lab과 같은 판정): 목표 ROAS 400% 대비 확장 100% 이상');
+    expect(md).toContain('클릭 30 미만은 판정 보류');
+    const ts = keywordTests(DEMO);
+    expect(r.sections.find((s) => s.id === 'tests')!.title).toBe(`키워드 테스트 결과 · 확장 ${ts.counts.expand} · 유지 ${ts.counts.keep} · 제외 ${ts.counts.exclude} · 판정 보류 ${ts.counts.hold} · 집행 중 ${ts.counts.running}`);
+    expect(ts.counts.hold).toBeGreaterThanOrEqual(4);
     const improve = r.sections.find((s) => s.id === 'improve')!.blocks.flatMap((b) => (b.kind === 'items' ? b.items : []));
     expect(improve.some((i) => i.title.includes("'매트리스 추천' 자동 조정 보류"))).toBe(true);
     expect(improve.some((i) => i.title.includes('일 예산 조기 소진 예상 2건'))).toBe(true);
     expect(improve.some((i) => i.title.includes('테스트 그룹 등록 후보'))).toBe(true);
+    expect(improve.some((i) => i.title.startsWith(`판정 보류 ${ts.counts.hold}건`))).toBe(true);
+    // 판정 보류 키워드를 '확장 → 본 그룹 이관'으로 제안하지 않는다
+    const expandItem = improve.find((i) => i.title.startsWith('확장 판정'));
+    for (const t of ts.rows.filter((x) => x.verdict === 'hold')) expect(expandItem?.text ?? '').not.toContain(`'${t.phrase}'`);
     for (const i of improve) expect(i.basis, i.title).toBeTruthy();
+    // 미리보기(토요일 생성)는 최근 7일, 발송분은 전주 월~일로 재생성된다고 표기
+    expect(r.sections.find((s) => s.id === 'summary')!.note).toContain('전주 월~일(10/26–11/1)');
     expect(r.nextSend).toContain('11/2(월) 10:00');
     expect(r.zoneLabels?.action).toBe('개선 제안 · 다음 액션');
   });
@@ -393,8 +441,24 @@ describe('이슈 알림 리포트', () => {
     expect(allText(r)).not.toMatch(/NaN|undefined|Infinity/);
     expect(r.messenger).toContain('[테스트]');
   });
-  it('이슈 없음 · 정렬(열린 P1 → P2 → 해결)', () => {
+  it('Alert 이슈 목록이 비어도 기준 이내라고 단정하지 않는다 — MILDO Alert 탐지를 다시 돌려 데모 시나리오를 잡는다', () => {
     const r = buildIssueReport(DEMO, []);
+    expect(r.title).toContain('Alert 미등록 · P1');
+    const md = reportToMarkdown(r);
+    expect(md).toContain('카카오 전환 추적 단절');
+    expect(md).toContain('Meta 데이터 급변');
+    expect(md).toContain('MILDO Alert 미등록 · 리포트 생성 시 재탐지 결과');
+    // 재탐지 이슈 id는 Alert 등록 후와 같다 (섹션 코멘트 범위가 유지됨)
+    expect(scopeOf(r)).toBe(`issue-${sortIssues(INCIDENTS.filter((i) => i.status !== 'resolved'))[0].id}`);
+    expect(md).toContain('네이버 GFA');
+    expect(md).toContain("'킹 매트리스'");
+    expect(md).toContain("'매트리스 추천'");
+    expect(md).not.toContain('기준 모두 이내');
+    expect(r.messenger).toContain('재스캔');
+    expect(allText(r)).not.toMatch(/NaN|undefined|Infinity/);
+  });
+  it('이슈 없음 · 정렬(열린 P1 → P2 → 해결)', () => {
+    const r = buildIssueReport(emptyData(), []);
     expect(r.title).toContain('열린 이슈 없음');
     const sorted = sortIssues([{ ...INCIDENTS[0], id: 'a', status: 'resolved' }, ...INCIDENTS.slice(2, 3), INCIDENTS[1]]);
     expect(sorted[0].severity).toBe('P1');
@@ -507,8 +571,12 @@ describe('리포트 발송 현황 (p.17)', () => {
   it('08:00 이전이면 전일 발송분 · 이슈 없음 · 빈 데이터', () => {
     const early = cadenceStatus({ ...DEMO, generatedAt: '2026-10-31T07:30:00+09:00', currentHour: 7 }, []);
     expect(early[0].stateLabel).toBe('10/30(금) 08:00 발송 완료');
-    expect(early[3].stateLabel).toBe('열린 이슈 0건');
+    // 이슈 스토어가 비면 '0건'으로 단정하지 않고 Alert 재탐지 결과를 'Alert 미등록'으로 표기
+    expect(early[3].stateLabel).toContain('(Alert 미등록)');
+    expect(early[3].detail).toContain('재스캔');
+    expect(cadenceStatus(DEMO, [{ ...INCIDENTS[0], status: 'resolved' }])[3].stateLabel).toBe('열린 이슈 0건');
     const e = cadenceStatus(emptyData(), []);
+    expect(e[3].stateLabel).toBe('열린 이슈 0건');
     expect(e[0].state).toBe('scheduled');
     expect(JSON.stringify(e)).not.toMatch(/NaN|undefined|Infinity/);
   });
@@ -615,8 +683,21 @@ describe('p.47 지표별 기준선 (일 단위 · 11:00 점검)', () => {
   });
 });
 
-describe('2026 공휴일 보완 (월간 발송일 · 다음 달 영업일)', () => {
-  it('10월 3영업일은 개천절 대체공휴일(10/5)을 건너뛴 10/6', () => {
+describe('영업일 · 공휴일은 공용 KR_HOLIDAYS · isOffDay를 그대로 쓴다 (월간 발송일 · 다음 달 영업일)', () => {
+  it('모듈 로컬 공휴일 표 없음 — 2026-07 ~ 2027-12 전 날짜에서 isOffDay와 같은 판정', () => {
+    for (let x = '2026-07-01'; x <= '2027-12-31'; x = addDays(x, 1)) {
+      expect(offDayOf(x), x).toEqual(isOffDay(x));
+      expect(isBusinessDay(x), x).toBe(!isOffDay(x).off);
+    }
+    // 익월 3영업일은 공용 달력에서 직접 센 값과 같다
+    for (const m of ['2026-08', '2026-09', '2026-10', '2026-11', '2027-02', '2027-10']) {
+      const days: string[] = [];
+      for (let x = `${m}-01`; days.length < 3; x = addDays(x, 1)) if (!isOffDay(x).off) days.push(x);
+      expect(nthBusinessDay(m, 3), m).toBe(days[2]);
+    }
+  });
+  it('10월 3영업일은 개천절 대체공휴일(10/5)을 건너뛴 10/6 (KR_HOLIDAYS 2026 반영)', () => {
+    expect(KR_HOLIDAYS['2026-10-05']).toBeTruthy();
     expect(offDayOf('2026-10-05').off).toBe(true);
     expect(offDayOf('2026-10-09').label).toBe('한글날');
     expect(nthBusinessDay('2026-10', 3)).toBe('2026-10-06');
@@ -691,5 +772,121 @@ describe('데이터 기반 문구 (하드코딩 없음)', () => {
     const s = adPilotSummary(DEMO);
     expect(t.items.find((i) => i.time === '16:30')!.output).toContain(`입찰 상향 ${s.up.length} · 하향 ${s.down.length} · 예산 재배분 ${s.shift.length} · 보류 ${s.hold.length}`);
     expect(t.items.find((i) => i.time === '08:00')!.outputLevel).toBe('info');
+  });
+});
+
+/* ---------------- 독립 리뷰 보강: 제안서 기준값 · 휴무 발송 · Alert 기준 공유 · 문구 ---------------- */
+
+describe('제안서 기준값과 constants 일치 (p.17 · p.18)', () => {
+  it('리포트 4종 이름 · 주기 · 채널 · 내용은 REPORT_CADENCE 그대로 · 리드타임은 p.18 하단 표기', () => {
+    for (const c of REPORT_CADENCE) {
+      const m = REPORT_META[c.id as keyof typeof REPORT_META];
+      expect(m, c.id).toMatchObject({ name: c.name, when: c.when, channel: c.channel, content: c.content });
+    }
+    expect(REPORT_META.daily.lead).toBe('D+1 08:00');
+    expect(REPORT_META.monthly.lead).toBe('익월 3영업일');
+  });
+  it('데이터 제공 시간표 7개 항목 모두 메타(범위 · 리드타임 · 주말 규칙)를 갖고, 제안서 시각 · 채널을 그대로 쓴다', () => {
+    expect(DATA_TIMETABLE.map((t) => t.time)).toEqual(['07:00', '08:00', '09:30', '11:00', '14:00', '16:30', '17:00']);
+    for (const t of DATA_TIMETABLE) expect(TIMETABLE_META[t.time], t.time).toBeTruthy();
+    const tt = buildTimetable(DEMO);
+    expect(tt.items.map((i) => [i.time, i.title, i.channel])).toEqual(DATA_TIMETABLE.map((t) => [t.time, t.title, t.channel]));
+    expect(tt.band).toEqual({ from: 8 * 60, to: 17 * 60 });
+    // 제안서에 없는 리드타임은 운영 가정으로 표기
+    expect(TIMETABLE_META['16:30'].lead).toContain('운영 가정');
+  });
+});
+
+describe('휴무로 밀린 주간 · 월간 발송 (최근 발송 · 다음 발송이 같은 규칙)', () => {
+  const at = (date: string, hhmm: string): Dataset => ({ ...DEMO, today: date, generatedAt: `${date}T${hhmm}:00+09:00`, currentHour: Number(hhmm.slice(0, 2)) });
+  it('월요일이 대체공휴일(2027-10-04)이면 주간 발송은 화요일 10:00 — 휴무 월요일에는 아직 미발송', () => {
+    const mon = sendSchedule(at('2027-10-04', '11:00'));
+    expect(isBusinessDay('2027-10-04')).toBe(false);
+    expect(mon.weeklyNext).toBe('2027-10-05');
+    expect(mon.weeklyLast).toBe('2027-09-27');
+    expect(nextSends(at('2027-10-04', '11:00')).weekly.date).toBe('2027-10-05');
+    expect(cadenceStatus(at('2027-10-04', '11:00'), [])[1].last).toBe('9/27(월) 10:00');
+    const tue = sendSchedule(at('2027-10-05', '10:30'));
+    expect(tue.weeklyLast).toBe('2027-10-05');
+    // 다음 주 월요일 10/11도 한글날 대체공휴일(KR_HOLIDAYS) → 10/12(화)
+    expect(KR_HOLIDAYS['2027-10-11']).toBeTruthy();
+    expect(tue.weeklyNext).toBe('2027-10-12');
+    // 화요일 10:00 이전이면 그날이 다음 발송
+    expect(sendSchedule(at('2027-10-05', '09:00')).weeklyNext).toBe('2027-10-05');
+  });
+  it('월간 미팅(익월 3영업일 10:00 가정): 당일 10시 전에는 다음 발송, 이후에는 최근 발송', () => {
+    const before = sendSchedule(at('2026-11-04', '09:00'));
+    expect(before.monthlyNext).toBe('2026-11-04');
+    expect(before.monthlyLast).toBe('2026-10-06');
+    const after = sendSchedule(at('2026-11-04', '11:00'));
+    expect(after.monthlyLast).toBe('2026-11-04');
+    expect(after.monthlyNext).toBe(nthBusinessDay('2026-12', 3));
+  });
+});
+
+describe('탐지 기준은 MILDO Alert 현재 기준을 공유 (반영된 alert_rule 변경)', () => {
+  const rule = (key: string, after: string, status: ChangeRequest['status'] = 'applied'): ChangeRequest => ({
+    id: `chg_${key}`, createdAt: '2026-10-31T05:00:00.000Z', module: 'alert', kind: 'alert_rule', target: key, targetId: `alert_rule:${key}`,
+    before: '', after, reason: '오탐 정리', requestedBy: 'PM', approver: 'PM', status, history: [],
+  });
+  it('기본값은 p.47 초기값 · 반영(applied)된 변경만 적용', () => {
+    const base = reportRules([]);
+    for (const t of ANOMALY_THRESHOLDS) expect(base.thresholds[t.metric as 'cost'], t.metric).toEqual({ warn: t.warnPct, danger: t.dangerPct });
+    expect(base.budgetLostShare).toBe(0.2);
+    expect(reportRules([rule('cost', '주의 40% · 위험 70%', 'pending')]).thresholds.cost).toEqual({ warn: 30, danger: 50 });
+    expect(reportRules([rule('cost', '주의 40% · 위험 70%')]).thresholds.cost).toEqual({ warn: 40, danger: 70 });
+  });
+  it('일간 리포트 · 시간표 문구와 판정이 바뀐 기준을 따른다', () => {
+    const changes = [rule('conversions', '주의 45% · 위험 60%'), rule('cost', '주의 40% · 위험 70%')];
+    const date = '2026-10-30';
+    const conv = (rs: ReturnType<typeof reportRules>) => mediaDayShifts(DEMO, date, rs).find((s) => s.media === 'naver_gfa' && s.metric === 'conversions')!;
+    // GFA 전환 −41%: 기본(주의 −30%)에서는 주의, 변경(주의 −45%)에서는 정상
+    expect(conv(reportRules([])).level).toBe('warn');
+    expect(conv(reportRules(changes)).level).toBe('ok');
+    expect(conv(reportRules(changes)).threshold).toBe('주의 −45% · 위험 −60%');
+    const daily = buildDailyReport(DEMO, { incidents: INCIDENTS, changes });
+    const media = daily.sections.find((s) => s.id === 'media')!.blocks[0];
+    expect(media.kind === 'table' ? media.columns.map((c) => c.label).join('|') : '').toContain('광고비 동요일 대비 (주의 ±40%)');
+    const items = daily.sections.find((s) => s.id === 'changes')!.blocks.flatMap((b) => (b.kind === 'items' ? b.items : []));
+    expect(items.find((i) => i.title.startsWith('네이버 GFA 전환'))).toBeUndefined();
+    const tt = buildTimetable(DEMO, { changes });
+    expect(tt.items.find((i) => i.time === '11:00')!.output).toContain('광고비 동요일 · 동시간 ±40%, 전환 최근 7일 동시간 −45%');
+  });
+});
+
+describe('리뷰 보강: 판정 색 · 프로모션 표기 · 문구', () => {
+  it('광고비 증감은 좋고 나쁨 색을 붙이지 않는다 (MILDO Board와 같은 표기) · CPA는 하락이 개선', () => {
+    const r = buildDailyReport(DEMO);
+    const kpi = r.sections.find((s) => s.id === 'kpi')!;
+    const stats = kpi.blocks.find((b) => b.kind === 'stats');
+    expect(stats && stats.kind === 'stats' ? stats.items.find((x) => x.label === '광고비')!.neutral : false).toBe(true);
+    const table = kpi.blocks.find((b) => b.kind === 'table');
+    if (table?.kind !== 'table') throw new Error('kpi table');
+    const costRow = table.rows.find((row) => row[0] === '광고비')!;
+    for (const c of costRow.slice(2)) expect(typeof c === 'string' ? 'neutral' : c.tone).toBe('neutral');
+    const cpaRow = table.rows.find((row) => row[0] === 'CPA')!;
+    const cpaCell = cpaRow[2];
+    const cpaDelta = Number(String(typeof cpaCell === 'string' ? cpaCell : cpaCell.text).replace('%', ''));
+    if (typeof cpaCell !== 'string' && Number.isFinite(cpaDelta) && Math.abs(cpaDelta) >= 0.05) expect(cpaCell.tone).toBe(cpaDelta < 0 ? 'good' : 'critical');
+  });
+  it('월간 다음 달 계획의 프로모션 상태는 대상 월 기준으로 계산한다 (9월 리포트의 10월 계획에 "월 초 종료"를 쓰지 않음)', () => {
+    const plan = (m: string) => buildMonthlyReport(DEMO, { month: m }).sections.find((s) => s.id === 'plan')!.blocks.flatMap((b) => (b.kind === 'items' ? b.items : []));
+    const sepPlan = plan('2026-09');
+    const fall = sepPlan.find((i) => i.title.startsWith('가을 이사'))!;
+    expect(fall.text).toContain('10/20(화) 시작 · 익월까지');
+    expect(fall.text).not.toContain('월 초 종료');
+    const octPlan = plan('2026-10');
+    expect(octPlan.find((i) => i.title.startsWith('가을 이사'))!.text).toContain('11/3(화) 종료 (전월부터 진행)');
+    expect(octPlan.find((i) => i.title.startsWith('11월 연말'))!.text).toContain('11월 중 시작 · 종료');
+    // 지난 달 리포트의 테스트 판정은 데이터 기준일 현재 판정임을 표기
+    expect(sepPlan.find((i) => i.title.startsWith('키워드 테스트'))!.title).toContain('10/31(토) 현재 판정');
+  });
+  it('4주 연속 목표 미달 매체가 모두 ROAS 외 판단 지표 매체면 "이 중"을 쓰지 않는다', () => {
+    const p = buildDailyReport(DEMO).sections.find((s) => s.id === 'patterns')!.blocks.map((b) => (b.kind === 'p' ? b.text : '')).join('\n');
+    const line = p.split('\n').find((x) => x.includes('4주 연속'));
+    if (line && !line.includes('네이버 SA') && !line.includes('버티컬')) {
+      expect(line).not.toContain('이 중');
+      expect(line).toContain('모두 판단 지표가 ROAS가 아니므로');
+    }
   });
 });

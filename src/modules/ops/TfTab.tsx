@@ -6,7 +6,7 @@ import { addDays, fmt } from '@/core/util';
 import { toCsv } from '@/core/download';
 import { Button, Callout, Card, CopyButton, DataTable, DownloadButton, Field, NumberInput, Pill, Src, type Column } from '@/ui/primitives';
 import { LEAVE_ASSUMPTIONS, TF_PLACEHOLDER } from './data';
-import { LEAVE_PRESETS, roleLabel, shortDate, simulateLeave, tfMarkdown, type TfRow } from './engine';
+import { ddayLabel, LEAVE_PRESETS, roleLabel, shortDate, simulateLeave, tfMarkdown, type TfRow } from './engine';
 import type { OpsLocal } from './local';
 import type { OpsModel } from './useOps';
 import { BackupGraphSvg, LevelPill } from './parts';
@@ -39,17 +39,17 @@ export function TfTab({ model, local, patch }: { model: OpsModel; local: OpsLoca
 
   const cols: Column<TfRow>[] = [
     { key: 'role', label: '역할', render: (r) => <div><strong className="small">{r.role}</strong><div className="xs muted">{r.domain}</div></div> },
-    { key: 'name', label: '성명', render: (r) => <input aria-label={`${r.role} 성명`} className={`${cls(r.missing.name, r.invalid.name)} ops-name`} placeholder={TF_PLACEHOLDER.name} value={raw(r.id).name} onChange={(e) => setTf(r.id, { name: e.target.value })} /> },
+    { key: 'name', label: '성명', render: (r) => <input id={`ops-tf-${r.id}-name`} aria-label={`${r.role} 성명`} className={`${cls(r.missing.name, r.invalid.name)} ops-name`} placeholder={TF_PLACEHOLDER.name} value={raw(r.id).name} onChange={(e) => setTf(r.id, { name: e.target.value })} /> },
     { key: 'years', label: '연차', render: (r) => (
-      <div className="ops-cell-wrap"><input aria-label={`${r.role} 연차`} inputMode="numeric" className={cls(r.missing.years, r.invalid.years)} placeholder="[n]" value={raw(r.id).years} onChange={(e) => setTf(r.id, { years: e.target.value })} /><span className="xs muted">년</span></div>
+      <div className="ops-cell-wrap"><input id={`ops-tf-${r.id}-years`} aria-label={`${r.role} 연차`} inputMode="numeric" className={cls(r.missing.years, r.invalid.years)} placeholder="[n]" value={raw(r.id).years} onChange={(e) => setTf(r.id, { years: e.target.value })} /><span className="xs muted">년</span></div>
     ) },
     { key: 'scope', label: '담당', render: (r) => <span className="small">{r.scope}</span> },
     { key: 'alloc', label: '투입률', render: (r) => (
-      <div className="ops-cell-wrap"><input aria-label={`${r.role} 투입률`} inputMode="numeric" className={cls(r.missing.allocation, r.invalid.allocation)} placeholder="[n]" value={raw(r.id).allocation} onChange={(e) => setTf(r.id, { allocation: e.target.value })} /><span className="xs muted">%</span></div>
+      <div className="ops-cell-wrap"><input id={`ops-tf-${r.id}-alloc`} aria-label={`${r.role} 투입률`} inputMode="numeric" className={cls(r.missing.allocation, r.invalid.allocation)} placeholder="[n]" value={raw(r.id).allocation} onChange={(e) => setTf(r.id, { allocation: e.target.value })} /><span className="xs muted">%</span></div>
     ) },
     { key: 'backup', label: '백업 (1:1)', render: (r) => (
       <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
-        <select aria-label={`${r.role} 백업`} className="select ops-select" value={r.backupId} onChange={(e) => setBackup(r.id, e.target.value)}>
+        <select id={`ops-tf-${r.id}-backup`} aria-label={`${r.role} 백업`} className="select ops-select" value={r.backupId} onChange={(e) => setBackup(r.id, e.target.value)}>
           <option value="">미지정</option>
           {TF_ROLES.map((x) => <option key={x.id} value={x.id}>{x.role}{x.id === r.defaultBackupId ? ' (제안서)' : ''}</option>)}
         </select>
@@ -63,7 +63,12 @@ export function TfTab({ model, local, patch }: { model: OpsModel; local: OpsLoca
     } },
   ];
 
-  const csv = () => toCsv(rows.map((r) => ({ 역할: r.role, 성명: r.name || TF_PLACEHOLDER.name, 연차: r.years ?? TF_PLACEHOLDER.years, 담당: r.scope, 투입률: r.allocation ?? TF_PLACEHOLDER.allocation, 백업: r.backupRole })));
+  // 오입력 값은 제출 양식에 내보내지 않고 장표 빈칸 표기로 남긴다 (tfMarkdown과 같은 규칙)
+  const csv = () => toCsv(rows.map((r) => ({
+    역할: r.role, 성명: r.name && !r.invalid.name ? r.name : TF_PLACEHOLDER.name,
+    연차: r.years !== null && !r.invalid.years ? `${r.years}년` : TF_PLACEHOLDER.years, 담당: r.scope,
+    투입률: r.allocation !== null && !r.invalid.allocation ? `${r.allocation}%` : TF_PLACEHOLDER.allocation, 백업: r.backupRole,
+  })));
   const toggle = (id: string) => setAbsent((a) => (a.includes(id) ? a.filter((x) => x !== id) : [...a, id]));
   const presetId = LEAVE_PRESETS.find((p) => p.absent.length === absent.length && p.absent.every((x) => absent.includes(x)))?.id;
 
@@ -72,10 +77,10 @@ export function TfTab({ model, local, patch }: { model: OpsModel; local: OpsLoca
       <Card title="전담 7인 TF 명단" sub="매체별 전담자와 지정 백업을 1:1로 연결 · 성명 · 연차 · 투입률은 제출 전 입력 (제안서 p.52 빈칸 그대로)"
         actions={<><Src kind="PROPOSAL" page="p.52" /><Src kind="RFP" title="RFP 필수 제출물 4) TF 명단 (실명 · 연차 · 투입률 · 백업)" /><CopyButton text={() => tfMarkdown(rows)} label="표 복사" /><DownloadButton filename="mildo-tf-명단.csv" data={csv} mime="text/csv;charset=utf-8" label="CSV" /></>}>
         {m.complete ? (
-          <Callout tone="good" title="TF 명단 입력 완료">7명 · 21칸 입력 · 입력 투입률 합계 {fmt.dec1(m.fte)} FTE. RFP 필수 제출물 4) 요건(실명 · 연차 · 투입률 · 백업)을 충족합니다.</Callout>
+          <Callout tone="good" title="TF 명단 입력 완료">{rows.length}명 · {m.cells}칸 입력 · 입력 투입률 합계 {fmt.dec1(m.fte)} FTE. RFP 필수 제출물 4) 요건(실명 · 연차 · 투입률 · 백업)을 충족합니다.</Callout>
         ) : (
           <Callout tone="warning" title={`RFP 필수 제출물 4) TF 명단 · 미입력 ${m.total}칸 / ${m.cells}칸${m.invalid ? ` · 오입력 ${m.invalid}명` : ''}`}>
-            성명 {m.name} · 연차 {m.years} · 투입률 {m.allocation}칸이 비어 있습니다. 제출 마감 {shortDate(dl.date)} {dl.hour}시 ({dl.days >= 0 ? `D-${dl.days}` : '마감 지남'}) · 내부 확정 목표 {shortDate(dl.freeze)}. 미입력 칸은 노란색으로 표시됩니다.
+            성명 {m.name} · 연차 {m.years} · 투입률 {m.allocation}칸이 비어 있습니다. 제출 마감 {shortDate(dl.date)} {dl.hour}시 ({dl.passed ? '마감 지남' : ddayLabel(dl.days)}) · 내부 확정 목표 {shortDate(dl.freeze)}. 미입력 칸은 노란 테두리와 '입력 상태' 열의 항목명으로 표시됩니다.
           </Callout>
         )}
         <DataTable rows={rows} columns={cols} rowKey={(r) => r.id} />
@@ -85,7 +90,7 @@ export function TfTab({ model, local, patch }: { model: OpsModel; local: OpsLoca
             <span className="xs muted">RFP 기준: 매체별 전담자(SA · DA · 총괄)</span>
           </div>
           <div className="row" style={{ gap: 8 }}>
-            <span className="small">입력 투입률 합계 <strong className="num">{fmt.dec1(m.fte)} FTE</strong> <span className="muted">({m.fteEntered}/7명 입력)</span></span>
+            <span className="small">입력 투입률 합계 <strong className="num">{fmt.dec1(m.fte)} FTE</strong> <span className="muted">({m.fteEntered}/{rows.length}명 입력)</span></span>
             {Object.keys(local.backupOverrides).length ? <Button size="sm" icon="rollback" onClick={() => patch({ backupOverrides: {} })}>백업 제안서 기준으로</Button> : null}
           </div>
         </div>
@@ -93,12 +98,12 @@ export function TfTab({ model, local, patch }: { model: OpsModel; local: OpsLoca
 
       <div className="grid g-2">
         <Card title="1:1 백업 그래프" sub={`상호 백업 ${g.mutualPairs.length}쌍 · 단방향 ${g.oneWay} · 백업 집중 ${g.concentration} · 공백 ${g.gaps} — 휴가 시뮬레이션 결과를 함께 표시`}
-          actions={<><Src kind="PROPOSAL" page="p.52" />{g.gaps ? <Pill tone="critical" icon="x">백업 공백 {g.gaps} · 기준 0</Pill> : <Pill tone="good" icon="check">백업 공백 0 · 7/7 지정</Pill>}</>}>
+          actions={<><Src kind="PROPOSAL" page="p.52" />{g.gaps ? <Pill tone="critical" icon="x">백업 공백 {g.gaps} · 기준 0</Pill> : <Pill tone="good" icon="check">백업 공백 0 · {g.covered}/{rows.length} 지정</Pill>}</>}>
           <BackupGraphSvg rows={rows} graph={g} sim={sim} />
           <ul className="ops-issues">
             {g.issues.length === 0 ? <li><LevelPill level="pass" /> 모든 인원이 상호 백업으로 연결되어 있습니다.</li> : null}
-            {g.issues.map((i, k) => (
-              <li key={k}><LevelPill level={i.level === 'gap' ? 'fail' : i.level === 'warn' ? 'warn' : 'info'}>{i.level === 'gap' ? '공백' : i.level === 'warn' ? '주의' : '참고'}</LevelPill><span>{i.text}</span></li>
+            {g.issues.map((i) => (
+              <li key={`${i.code}-${i.memberId}`}><LevelPill level={i.level === 'gap' ? 'fail' : i.level === 'warn' ? 'warn' : 'info'}>{i.level === 'gap' ? '공백' : i.level === 'warn' ? '주의' : '참고'}</LevelPill><span>{i.text}</span></li>
             ))}
           </ul>
         </Card>
@@ -111,7 +116,7 @@ export function TfTab({ model, local, patch }: { model: OpsModel; local: OpsLoca
           </div>
           <div className="row" style={{ gap: 12 }}>
             {rows.map((r) => (
-              <label key={r.id} className="ops-check"><input type="checkbox" checked={absent.includes(r.id)} onChange={() => toggle(r.id)} />{r.role}</label>
+              <label key={r.id} className="ops-check" htmlFor={`ops-leave-${r.id}`}><input id={`ops-leave-${r.id}`} type="checkbox" checked={absent.includes(r.id)} onChange={() => toggle(r.id)} />{r.role}</label>
             ))}
           </div>
           <div className="grid g-4" style={{ gap: 10 }}>

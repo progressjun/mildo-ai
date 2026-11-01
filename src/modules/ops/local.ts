@@ -4,7 +4,7 @@
  * localStorage가 없는 환경(테스트 · 일부 아티팩트)에서는 기본값으로 동작한다. React 없음 — 에이전트 도구도 같은 값을 읽는다.
  */
 import { RFP } from '@/data/constants';
-import type { ContractInput, FeeInput, RefInputs } from './engine';
+import { isDateStr, type ContractInput, type FeeInput, type RefInputs } from './engine';
 import { DEFAULT_KICKOFF } from './data';
 
 export interface OpsLocal {
@@ -33,7 +33,7 @@ export function mergeOpsLocal(raw: unknown): OpsLocal {
   const base = defaultOpsLocal();
   if (!isObj(raw)) return base;
   return {
-    kickoff: typeof raw.kickoff === 'string' && raw.kickoff ? raw.kickoff : base.kickoff,
+    kickoff: isDateStr(raw.kickoff) ? raw.kickoff : base.kickoff,
     refs: isObj(raw.refs) ? (raw.refs as RefInputs) : base.refs,
     fees: isObj(raw.fees) ? (raw.fees as Record<string, FeeInput>) : base.fees,
     annualBudget: typeof raw.annualBudget === 'number' && Number.isFinite(raw.annualBudget) && raw.annualBudget > 0 ? raw.annualBudget : base.annualBudget,

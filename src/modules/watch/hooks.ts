@@ -31,6 +31,9 @@ export interface WatchCtx extends WatchSnapshot {
   state: ReturnType<typeof useStore>['state'];
   actions: ReturnType<typeof useActions>;
   alerts: string[];
+  /** 이번 주 브리프 담당 AE 코멘트 */
+  aeNote: { text: string; by: string; at: string } | null;
+  setAeNote: (text: string) => void;
   advance: (ev: EvaluatedEvent, action: StepAction, note?: string) => void;
   close: (ev: EvaluatedEvent, note?: string) => void;
   createAlert: (row: ArchiveRow) => void;
@@ -55,11 +58,12 @@ export function useWatch(): WatchCtx {
   const at = () => kstIso(nowMs);
 
   const advance = (ev: EvaluatedEvent, action: StepAction, note?: string) => {
+    // 버튼이 비활성인 단계(보류 · 진행 중 테스트)는 어떤 경로로 호출돼도 진행하지 않는다
+    if (ev.next.disabled || ev.next.action !== action) {
+      actions.toast({ tone: 'warning', title: `${ev.next.label} 보류`, body: ev.next.disabled ?? '현재 단계에서 진행할 수 없는 작업입니다.' });
+      return;
+    }
     if (action === 'test') {
-      if (ev.next.disabled) {
-        actions.toast({ tone: 'warning', title: 'Lab 테스트 등록 보류', body: ev.next.disabled });
-        return;
-      }
       const ch = actions.addChange(testChangePayload(ev, by));
       setWatchStore((s) => ({ ...s, progress: advanceProgress(s.progress, ev, 'test', by, at(), { testStart: state.data.today, note: note ?? `${ch.id} · 승인 ${ev.design.approverLabel} 대기`, changes: state.changes }) }));
       actions.toast({ tone: 'info', title: 'MILDO Lab 테스트 등록 요청', body: `${ev.design.arms} · 일 ${Math.round(ev.design.perDay / 10_000)}만원 × ${ev.design.days}일 · 승인 ${ev.design.approverLabel} (MILDO Flow)`, route: 'flow' });
@@ -85,7 +89,8 @@ export function useWatch(): WatchCtx {
       actions.toast({ tone: 'info', title: '이미 MILDO Alert에 등록된 이슈입니다', route: 'alert' });
       return;
     }
-    const inc = competitorIncident(row, state.data, snap.cfg);
+    // 감지 시각 = 데이터 기준 시계 (MILDO Alert SLA 타이머와 같은 시계) — 생성 버튼을 누른 시점부터 SLA가 흐른다
+    const inc = competitorIncident(row, state.data, snap.cfg, nowMs);
     actions.addIncident(inc);
     setWatchStore((s) => ({ ...s, alerts: [...new Set([...s.alerts, inc.id])] }));
     actions.toast({ tone: 'warning', title: 'MILDO Alert P3 이슈 생성', body: `${inc.title} · 24시간 내 영향 분석 (p.44)`, route: 'alert' });
@@ -96,6 +101,11 @@ export function useWatch(): WatchCtx {
     state,
     actions,
     alerts: store.alerts,
+    aeNote: store.aeNotes?.[snap.brief.period.from] ?? null,
+    setAeNote: (text: string) => {
+      const key = snap.brief.period.from;
+      setWatchStore((s) => ({ ...s, aeNotes: { ...(s.aeNotes ?? {}), [key]: { text, by, at: fmtKst(nowMs) } } }));
+    },
     advance,
     close,
     createAlert,

@@ -8,7 +8,8 @@ import { DEMAND_HYPOTHESIS } from './data';
 import type { WatchCtx } from './hooks';
 import { LevelPill } from './parts';
 
-const KIND_TONE: Record<CalendarItem['kind'], 'neutral' | 'accent' | 'dark' | 'outline'> = { move: 'neutral', wedding: 'neutral', shopping: 'outline', holiday: 'dark', promo: 'accent' };
+const KIND_TONE: Record<CalendarItem['kind'], 'neutral' | 'dark' | 'outline'> = { move: 'neutral', wedding: 'neutral', shopping: 'outline', holiday: 'dark', promo: 'outline' };
+const KIND_ICON: Record<CalendarItem['kind'], string | undefined> = { move: undefined, wedding: undefined, shopping: 'trend', holiday: 'clock', promo: 'zap' };
 
 export function ExternalTab({ w }: { w: WatchCtx }) {
   const d = w.state.data;
@@ -17,7 +18,7 @@ export function ExternalTab({ w }: { w: WatchCtx }) {
   const life = w.exposure.find((e) => e.intent === 'life');
   const nextEv = w.calendar.find((c) => c.dday > 0);
   const columns: Column<CalendarItem>[] = [
-    { key: 'kind', label: '구분', render: (c) => <Pill tone={KIND_TONE[c.kind]}>{c.kindLabel}</Pill> },
+    { key: 'kind', label: '구분', render: (c) => <Pill tone={KIND_TONE[c.kind]} icon={KIND_ICON[c.kind]}>{c.kindLabel}</Pill> },
     { key: 'label', label: '일정', render: (c) => <strong className="small">{c.label}</strong> },
     { key: 'period', label: '기간', render: (c) => <span className="xs num">{fmtDate(c.start)}{c.end !== c.start ? ` ~ ${fmtDate(c.end)}` : ''}</span> },
     { key: 'dday', label: 'D-day', align: 'right', sort: (c) => c.dday, render: (c) => (c.active ? <Pill tone="good" icon="check">진행 중</Pill> : <strong className="num">D-{c.dday}</strong>) },
@@ -26,7 +27,8 @@ export function ExternalTab({ w }: { w: WatchCtx }) {
   ];
   const brandSeries = [
     { id: 'v', label: '브랜드 검색량', colorVar: '--series-1', points: w.trend.points.map((p) => ({ x: p.date, y: p.volume })) },
-    { id: 'ma', label: '7일 이동평균', colorVar: '--series-7', dashed: true, points: w.trend.points.map((p) => ({ x: p.date, y: p.ma7 })) },
+    // 같은 지표(브랜드 검색량)라 같은 색 · 점선으로 구분 (색은 엔티티에 고정)
+    { id: 'ma', label: '7일 이동평균', colorVar: '--series-1', dashed: true, points: w.trend.points.map((p) => ({ x: p.date, y: p.ma7 })) },
   ];
   const months = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'];
   const demandSeries = DEMAND_HYPOTHESIS.map((h) => ({ id: h.id, label: h.label, colorVar: h.colorVar, points: h.index.map((v, i) => ({ x: months[i], y: v })) }));
@@ -36,7 +38,7 @@ export function ExternalTab({ w }: { w: WatchCtx }) {
       <div className="grid g-4">
         <Card>
           <Stat label="브랜드 검색량 · 전일" src={<Src kind="DEMO" />} value={y ? fmt.int(y.volume) : '—'} delta={y?.deltaPct}
-            foot={y ? <span className="row" style={{ gap: 6 }}><span>최근 4주 동요일 {fmt.int(y.base)} 대비 · 기준 ±{w.cfg.searchShiftPct}%</span><LevelPill level={y.level} /></span> : <span>데이터 없음</span>} />
+            foot={y ? <span className="row" style={{ gap: 6 }}><span>최근 4주 동요일 {fmt.int(y.base)} 대비 · 기준 ±{w.cfg.searchShiftPct / 2}% 주의 · ±{w.cfg.searchShiftPct}% 급변</span><LevelPill level={y.level} /></span> : <span>데이터 없음</span>} />
         </Card>
         <Card><Stat label="최근 7일 평균 vs 직전 28일" src={<Src kind="DEMO" />} value={fmt.int(w.trend.last7)} delta={w.trend.last7Delta} foot={<span>GFA 집행과 1~2일 시차 동행 (DA→SA, 매출 성장 화면)</span>} /></Card>
         <Card><Stat label="생활 상황 키워드 노출 · 14일" src={<Src kind="DEMO" />} value={life ? fmt.int(life.last) : '—'} delta={life?.delta} foot={<span>{life?.newKeywords.length ? `신규 노출 ${life.newKeywords.join(' · ')}` : '신규 노출 없음'}</span>} /></Card>
@@ -76,7 +78,7 @@ export function ExternalTab({ w }: { w: WatchCtx }) {
       <div className="grid g-2">
         <Card title="브랜드 검색량 추이 · 최근 56일" sub="수면밀도 · 밀도 매트리스 합산 일별 검색량 (전일까지)" actions={<Src kind="DEMO" />}>
           <LineChart series={brandSeries} height={220} yFormat={(v) => fmt.int(v)} xFormat={(x) => fmtDate(x, false)} zeroBased={false} ariaLabel="브랜드 검색량 추이" />
-          {y ? <div className="xs muted">전일 {fmtDate(y.date)} {fmt.int(y.volume)} · 최근 4주 동요일 평균 {fmt.int(y.base)} · <Delta pct={y.deltaPct} /> · 급변 기준 ±{w.cfg.searchShiftPct}% (MILDO Alert 외부 환경과 동일)</div> : null}
+          {y ? <div className="xs muted">전일 {fmtDate(y.date)} {fmt.int(y.volume)} · 최근 4주 동요일 평균 {fmt.int(y.base)} · <Delta pct={y.deltaPct} /> · 주의 ±{w.cfg.searchShiftPct / 2}%(운영 가정) · 급변 ±{w.cfg.searchShiftPct}% (MILDO Alert 외부 환경과 동일)</div> : null}
         </Card>
         <Card title="월별 수요 가설 지수" sub="100 = 연평균. 검색 트렌드 연동 전 가설값이며 실측이 아닙니다. 연동 후 전년 동기 실측으로 교체합니다." actions={<><Pill tone="outline">가설</Pill><Src kind="DEMO" /></>}>
           <LineChart series={demandSeries} height={220} yFormat={(v) => String(Math.round(v))} zeroBased={false} refLine={{ y: 100, label: '연평균 100' }} ariaLabel="월별 수요 가설 지수" />
