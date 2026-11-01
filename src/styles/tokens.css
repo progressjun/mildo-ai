@@ -1,0 +1,145 @@
+/*
+ * MILDO OS 디자인 토큰 — 제안서(2027 v3) 시각 체계를 따른다:
+ * 웜 오프화이트 지면 · 잉크 블랙 패널 · 핫핑크 포인트 · 단정한 산세리프.
+ * 레이아웃: 좌측 고정 내비 + 상단 상태바 + 스캔용 카드 그리드.
+ */
+:root {
+  color-scheme: light;
+  --paper: #f4f0ea;
+  --surface: #fbf9f6;
+  --surface-2: #efe9e1;
+  --surface-3: #e7e0d6;
+  --ink: #1b1a19;
+  --ink-2: #4f4a44;
+  --muted: #847c72;
+  --line: #e2dad0;
+  --line-strong: #cfc5b8;
+  --accent: #ff2e93;
+  --accent-ink: #c8106d; /* 밝은 지면 위 소형 텍스트용 */
+  --accent-soft: #ffe1ef;
+  --panel: #1d1c1b; /* 블랙 패널 */
+  --panel-ink: #f4f0ea;
+  --panel-muted: #a39c92;
+
+  /* 상태색 (dataviz 상태 팔레트 고정, 아이콘+라벨과 함께만 사용) */
+  --good: #0ca30c;
+  --good-ink: #006300;
+  --good-soft: #e3f3e0;
+  --warning: #fab219;
+  --warning-ink: #8a5a00;
+  --warning-soft: #fdf0d2;
+  --serious: #ec835a;
+  --serious-ink: #a8481f;
+  --serious-soft: #fbe6dc;
+  --critical: #d03b3b;
+  --critical-ink: #b02a2a;
+  --critical-soft: #f9e0de;
+
+  /* 차트 카테고리 (dataviz 기본 팔레트, 슬롯 순서 고정) */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --grid: #e5ded4;
+  --axis: #c3bbb0;
+
+  --font-body: 'Pretendard', 'Noto Sans KR', system-ui, -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+  --font-display: 'Pretendard', 'Noto Sans KR', system-ui, -apple-system, 'Apple SD Gothic Neo', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --shadow: 0 1px 2px rgba(27, 26, 25, 0.06), 0 4px 16px rgba(27, 26, 25, 0.05);
+  --focus: 0 0 0 3px rgba(255, 46, 147, 0.35);
+
+  /* 타입 스케일 */
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 32px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --paper: #121110;
+    --surface: #1b1a19;
+    --surface-2: #242220;
+    --surface-3: #2e2b28;
+    --ink: #f1ece5;
+    --ink-2: #c9c1b6;
+    --muted: #958c81;
+    --line: #34302c;
+    --line-strong: #49443e;
+    --accent: #ff4fa3;
+    --accent-ink: #ff7ab9;
+    --accent-soft: #3a1828;
+    --panel: #0a0a09;
+    --panel-ink: #f1ece5;
+    --panel-muted: #958c81;
+    --good-ink: #3fcf3f;
+    --good-soft: #15301a;
+    --warning-ink: #f7c55a;
+    --warning-soft: #352a12;
+    --serious-ink: #f2a07f;
+    --serious-soft: #3a2219;
+    --critical-ink: #f07a7a;
+    --critical-soft: #3a1a1a;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --grid: #2c2a27;
+    --axis: #45403a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --paper: #121110;
+  --surface: #1b1a19;
+  --surface-2: #242220;
+  --surface-3: #2e2b28;
+  --ink: #f1ece5;
+  --ink-2: #c9c1b6;
+  --muted: #958c81;
+  --line: #34302c;
+  --line-strong: #49443e;
+  --accent: #ff4fa3;
+  --accent-ink: #ff7ab9;
+  --accent-soft: #3a1828;
+  --panel: #0a0a09;
+  --panel-ink: #f1ece5;
+  --panel-muted: #958c81;
+  --good-ink: #3fcf3f;
+  --good-soft: #15301a;
+  --warning-ink: #f7c55a;
+  --warning-soft: #352a12;
+  --serious-ink: #f2a07f;
+  --serious-soft: #3a2219;
+  --critical-ink: #f07a7a;
+  --critical-soft: #3a1a1a;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --grid: #2c2a27;
+  --axis: #45403a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
