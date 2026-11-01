@@ -85,6 +85,14 @@ npm test
 
 테스트는 모듈별 엔진(규칙 · 판정 · 시드 시나리오 탐지, 데이터를 바꾸면 결과가 바뀌는지 확인), 에이전트 도구 계약(이름 · 32KB 이하 결과 · 브리프 구조), 화면 렌더 스모크로 구성됩니다. `src/modules/registry.test.ts`는 전 모듈 도구 · 브리프 계약과 '준비 중' 모듈이 없는지를 검사합니다.
 
+### 브라우저 기능 점검 (E2E)
+
+```bash
+npm run e2e
+```
+
+단일 파일 빌드를 만든 뒤 `qa/e2e/`의 6개 점검 묶음(공통 · 커맨드 센터 · Agent / Board · 리포트 / AD Pilot · Flow / Alert · TF / Lab · Watch / GEO · 매출 성장)을 실제 Chromium에서 실행합니다. 모든 버튼 · 입력 · 탭 · 다운로드 · 복사, 모듈 간 흐름(요청 → Flow 승인 · 반영 · 롤백 → 원래 화면 반영), 새로고침 후 유지와 초기화를 확인합니다. claude.ai 런타임(`sample` · `downloads`)은 `qa/e2e/harness.cjs`의 모의 런타임으로 대체해 정상 응답 · 동의 거부 · 사용량 제한 · 응답 중단 · 중지 · 다운로드 거절을 재현합니다(계약 요약 `qa/e2e/CONTRACT.md`). 특정 묶음만: `npm run e2e -- adpilot-flow`. 로그는 `qa/logs/`에 남습니다. 외부 API(네이버 검색광고 실호출 · Slack 발송 · Anthropic API 키 모드)는 키가 필요해 점검 범위에서 제외되며, 키가 없을 때 외부 요청이 나가지 않는지만 확인합니다.
+
 ## 구조
 
 ```
@@ -95,7 +103,8 @@ src/
   ui/        공용 컴포넌트 · SVG 차트 · 마크다운 · AI 해석 패널
   app/       셸 · 라이브 데모 바 · 설정 · 알림
   modules/   화면별 모듈 (View · engine · engine.test · agent 도구)
-scripts/     센티널 CLI · 키워드 CLI · 네이버 검색광고 API 커넥터
+scripts/     센티널 CLI · 키워드 CLI · 네이버 검색광고 API 커넥터 · 단일 파일 빌드 후처리
+qa/          브라우저 기능 점검(E2E) 6개 묶음 · claude.ai 모의 런타임 하네스
 docs/SPEC.md 모듈별 구현 명세 (제안서 장표 ↔ 기능)
 ```
 

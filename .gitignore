@@ -5,3 +5,4 @@ dist-single
 .env.*
 *.local
 .DS_Store
+qa/logs/

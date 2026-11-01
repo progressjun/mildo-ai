@@ -1,0 +1,13 @@
+const { open } = require(require('path').join(__dirname, 'harness.cjs'));
+const store = (p) => p.evaluate(() => JSON.parse(localStorage.getItem('mildo-os/v1') || '{}'));
+const opsLocal = (p) => p.evaluate(() => JSON.parse(localStorage.getItem('mildo-os/ops-v1') || '{}'));
+const tab = async (p, label) => { await p.click(`[role=tab]:has-text("${label}")`); await p.waitForTimeout(250); };
+const seg = async (p, group, label) => { await p.click(`.seg[aria-label="${group}"] button:has-text("${label}")`); await p.waitForTimeout(200); };
+const queueRows = (p) => p.$$eval('.alert-queue tbody tr', (trs) => trs.map((tr) => tr.innerText.replace(/\s+/g, ' ').trim()));
+const toasts = (p) => p.$$eval('.toast', (els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()));
+const drawer = (p) => p.$('.drawer');
+const drawerText = (p) => p.$eval('.drawer', (e) => e.innerText);
+const btn = (scope, text) => scope.locator(`button:has-text("${text}")`);
+const go = async (p, route) => { await p.evaluate((r) => { location.hash = r; }, route); await p.waitForTimeout(500); };
+module.exports = { open, store, opsLocal, tab, seg, queueRows, toasts, drawer, drawerText, btn, go };
+module.exports.closeToasts = async (p) => { for (let k = 0; k < 6; k++) { const b = p.locator('.toast button[aria-label="알림 닫기"]').first(); if (!(await b.count())) break; await b.click().catch(() => {}); } };
