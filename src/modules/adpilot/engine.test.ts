@@ -469,6 +469,30 @@ describe('GFA Control v1 요청 · 실행', () => {
     const mall = views.find((v) => v.account.id === 'gfa_mall')!.campaigns[0];
     expect(validateGfaExecution(views, change({ ...base, targetId: `gfa:budget:${mall.campaign.id}`, before: 420_000, after: 460_000 })).ok).toBe(true);
   });
+  it('충전 요청이 반영되면 유효 잔액이 늘고 증액 실행 보류가 풀린다 (자동충전 실패여도)', () => {
+    const acc = views.find((v) => v.account.id === 'acc_gfa')!;
+    const base = { module: 'gfa', kind: 'budget' as const, targetId: `gfa:budget:${pros.campaign.id}`, status: 'approved' as const, before: 1_200_000, after: 1_260_000 };
+    const topup = (status: ChangeRequest['status'], targetId = 'alert:account:acc_gfa:topup') =>
+      change({ module: 'alert', kind: 'setting', target: `${acc.account.name} 충전`, targetId, before: acc.account.balance, after: acc.account.balance + 6_000_000, status });
+    // 승인만 되고 반영 전이면 여전히 보류
+    const pendingViews = gfaOverview(demo, [topup('approved')]);
+    expect(pendingViews.find((v) => v.account.id === 'acc_gfa')!.toppedUp).toBe(0);
+    expect(validateGfaExecution(pendingViews, change(base)).ok).toBe(false);
+    // 반영 후: 잔액 +600만, 1일치 이상 → 실행 가능, 자동충전 실패는 경고로 낮아짐
+    const applied = gfaOverview(demo, [topup('applied')]);
+    const a = applied.find((v) => v.account.id === 'acc_gfa')!;
+    expect(a.toppedUp).toBe(6_000_000);
+    expect(a.account.balance).toBe(acc.account.balance + 6_000_000);
+    expect(a.runwayDays).toBeGreaterThan(1);
+    expect(a.issues.find((i) => i.text.startsWith('자동충전 실패'))?.level).toBe('warn');
+    expect(validateGfaExecution(applied, change(base)).ok).toBe(true);
+    // 이슈 단위 이전 형식(alert:<이슈>:topup)도 계정명으로 매칭
+    const legacy = gfaOverview(demo, [topup('applied', 'alert:account_payment:x:topup')]);
+    expect(legacy.find((v) => v.account.id === 'acc_gfa')!.toppedUp).toBe(6_000_000);
+    // 다른 계정 충전은 영향 없음
+    const other = gfaOverview(demo, [change({ module: 'alert', kind: 'setting', target: '다른 계정 충전', targetId: 'alert:account:gfa_mall:topup', before: 0, after: 1_000_000, status: 'applied' })]);
+    expect(other.find((v) => v.account.id === 'acc_gfa')!.toppedUp).toBe(0);
+  });
   it('반영된 GFA 일 예산 · 광고그룹 · 신규 캠페인이 점검 화면에 반영', () => {
     const ag = pros.adGroups[0];
     const v2 = gfaOverview(demo, [

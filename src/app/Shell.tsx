@@ -8,6 +8,7 @@ import { Button, Pill, Src } from '@/ui/primitives';
 import { useAi } from '@/ai/useAi';
 import { BACKEND_LABEL } from '@/ai/claude';
 import { activeConfig, detectBulkChange, detectIncidents } from '@/modules/alert/engine';
+import { seedChanges } from '@/modules/flow/engine';
 import { SettingsDialog } from './SettingsDialog';
 import { DemoBar } from './DemoBar';
 import { Toasts } from './Toasts';
@@ -26,18 +27,22 @@ export function Shell() {
   const mod: ModuleDef = MODULE_BY_ID[route] ?? MODULE_BY_ID.home;
   const contentRef = useRef<HTMLDivElement>(null);
 
-  // 앱 시작 시 MILDO Alert 1회 스캔 → 이슈 적재 (테스트 데이터 기반)
+  // 앱 시작 시(그리고 '시연 상태 초기화' 직후) MILDO Alert 스캔 → 이슈 적재 + MILDO Flow 시연 이력 적재 (테스트 데이터 기반)
   const scanned = useRef(false);
+  const emptyState = state.incidents.length === 0 && state.changes.length === 0;
   useEffect(() => {
-    if (scanned.current) return;
+    if (scanned.current && !emptyState) return;
     scanned.current = true;
     const found = detectIncidents(state.data);
     const fresh = found.filter((f) => !state.incidents.some((i) => i.id === f.id));
     fresh.forEach((i) => actions.addIncident(i));
     const p1 = fresh.filter((i) => i.severity === 'P1' && i.status !== 'resolved');
     if (p1.length) actions.toast({ tone: 'critical', title: `P1 이슈 ${p1.length}건 감지`, body: p1.map((i) => i.title).slice(0, 2).join(' · '), route: 'alert' });
+    // MILDO Flow 시연 이력(TEST DATA, 10/28~10/31) — 커맨드 센터 · Agent · Alert의 승인 대기 수가 Flow와 같아진다
+    const seeds = seedChanges(state.data).filter((c) => !state.changes.some((x) => x.id === c.id));
+    [...seeds].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).forEach((change) => dispatch({ type: 'change/add', change }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [emptyState]);
 
   // 대량 변경 실수 감지 (p.45) — 어느 화면에서 변경을 요청 · 반영해도 MILDO Alert 이슈로 적재
   const seenBulk = useRef(new Set<string>());

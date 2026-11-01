@@ -47,6 +47,10 @@ describe('module registry · agent kits', () => {
     for (const reserved of ['settings', 'sidebar', 'customize', 'upgrade', 'downloads']) expect(ids).not.toContain(reserved);
   });
 
+  it('has no stub modules left (every module ships an engine-backed agent kit)', () => {
+    expect(MODULES.filter(isStubModule).map((m) => m.id)).toEqual([]);
+  });
+
   it('tool names are unique, valid and have descriptions', () => {
     const { ctx } = makeCtx();
     const names: string[] = [];

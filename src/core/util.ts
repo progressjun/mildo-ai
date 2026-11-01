@@ -157,7 +157,9 @@ export function weekday(s: string): number {
 }
 export const WEEKDAY_KO = ['일', '월', '화', '수', '목', '금', '토'];
 export function fmtDate(s: string, withWeekday = true): string {
+  if (!s) return '—';
   const d = parseDate(s);
+  if (Number.isNaN(d.getTime())) return '—';
   return `${d.getMonth() + 1}/${d.getDate()}${withWeekday ? `(${WEEKDAY_KO[d.getDay()]})` : ''}`;
 }
 export function daysInMonth(s: string): number {

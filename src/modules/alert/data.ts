@@ -29,6 +29,7 @@ export const RULES: Record<string, { typeId: string; label: string; severity: Se
   keyword_spike: { typeId: 'data_spike', label: '키워드 성과 급변', severity: 'P2', page: 'p.14 · p.44', basis: '성과 급변 ±50% (p.14) · 최근 3일 CPC · 전환 vs 직전 11일 평균 (비교 구간은 운영 가정)' },
   media_delay: { typeId: 'external', label: '매체 장애 · 집계 지연', severity: 'P3', page: 'p.44', basis: '현재 시각 시간별 데이터 미수신 · 다른 매체는 수신 · 최근 7일 같은 시간 수신 이력 있음 (판정 방식은 운영 가정)' },
   search_volume: { typeId: 'external', label: '검색량 급변', severity: 'P3', page: 'p.44', basis: '브랜드 검색량 전일 vs 최근 4주 동요일 평균 ±30% (수치는 운영 가정)' },
+  watch_competitor: { typeId: 'external', label: '경쟁사 가격 · 프로모션 변경', severity: 'P3', page: 'p.25 · p.44', basis: 'MILDO Watch 경쟁 6개사 아카이브에서 가격 · 프로모션 변경 감지 → 주간 브리프 · 다음 영업일 공유' },
   bulk_change: { typeId: 'bulk_change', label: '대량 변경 실수', severity: 'P1', page: 'p.45', basis: '10분 내 동일 요청자 10건 이상(운영 가정) · 입찰 일 조정 폭 상한 20% 초과(p.14) · 30% 초과 예산 변경의 수면밀도 승인 누락(p.15)' },
 };
 

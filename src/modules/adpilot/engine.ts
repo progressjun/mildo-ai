@@ -1535,8 +1535,11 @@ export interface GfaCampaignView {
   level: CheckLevel;
 }
 export interface GfaAccountView {
+  /** 반영된 충전 요청을 더한 유효 잔액 기준 계정 */
   account: AdAccount;
   demo: boolean;
+  /** 반영된 충전 금액 합계 (MILDO Alert 충전 요청 → 수면밀도 승인 → 반영) */
+  toppedUp: number;
   runwayDays: number;
   exhaustAt: { date: string; hour: number } | null;
   remainingToday: number;
@@ -1584,6 +1587,19 @@ export function gfaNewCampaigns(data: Dataset, changes: readonly ChangeRequest[]
 }
 
 /** GFA 다계정 예산 · 상태 점검 */
+/** 반영된 충전 요청 합계 — targetId 'alert:account:<계정 id>:topup' (이전 형식 'alert:<이슈 id>:topup'은 계정명으로 매칭) */
+export function appliedTopup(changes: readonly ChangeRequest[], account: AdAccount): number {
+  let total = 0;
+  for (const c of changes ?? []) {
+    if (c.status !== 'applied' || !c.targetId || !/:topup$/.test(c.targetId)) continue;
+    const forAccount = c.targetId === `alert:account:${account.id}:topup` || (!c.targetId.startsWith('alert:account:') && String(c.target ?? '').includes(account.name));
+    if (!forAccount) continue;
+    const add = Number(c.after) - Number(c.before);
+    if (Number.isFinite(add) && add > 0) total += add;
+  }
+  return total;
+}
+
 export function gfaOverview(data: Dataset, changes: readonly ChangeRequest[] = [], cfgIn?: Partial<AdPilotConfig>): GfaAccountView[] {
   if (!data) return [];
   const cfg = resolveConfig(cfgIn);
@@ -1595,7 +1611,9 @@ export function gfaOverview(data: Dataset, changes: readonly ChangeRequest[] = [
   const guard = mediaGuards(data, cfg).naver_gfa;
   const cum = hourlyCostCurve(data, 'naver_gfa');
   const H = clamp(Math.round(safeNum(data.currentHour)), 0, 23);
-  return gfaAccountsBase(data).map(({ account, demo: isDemo }) => {
+  return gfaAccountsBase(data).map(({ account: baseAccount, demo: isDemo }) => {
+    const toppedUp = appliedTopup(changes, baseAccount);
+    const account: AdAccount = toppedUp > 0 && baseAccount.balance >= 0 ? { ...baseAccount, balance: baseAccount.balance + toppedUp } : baseAccount;
     const cs = all.filter((c) => accountOf(c.id) === account.id);
     const campaigns: GfaCampaignView[] = cs.map((c) => {
       const pace = paces[all.indexOf(c)];
@@ -1636,12 +1654,16 @@ export function gfaOverview(data: Dataset, changes: readonly ChangeRequest[] = [
     const issues: CheckIssue[] = [];
     if (account.balance >= 0 && runwayDays < 1) issues.push({ level: 'critical', text: `잔액 ${runwayDays.toFixed(2)}일치`, basis: `잔액 ${fmt.krw(account.balance)} < 일 평균 소진 ${fmt.krw(account.avgDailySpend)} · 기준 1일치 미만 (p.44)` });
     else if (account.balance >= 0 && runwayDays < 3 && Number.isFinite(runwayDays)) issues.push({ level: 'warn', text: `잔액 ${runwayDays.toFixed(1)}일치`, basis: '3일치 미만 — 충전 일정 확인' });
-    if (account.autoCharge === 'failed') issues.push({ level: 'critical', text: '자동충전 실패', basis: account.paymentMethod });
+    if (account.autoCharge === 'failed') {
+      issues.push(toppedUp > 0
+        ? { level: 'warn', text: '자동충전 실패 · 수동 충전 반영', basis: `충전 ${fmt.krw(toppedUp)}원 반영 · 결제 수단 복구 필요 (${account.paymentMethod})` }
+        : { level: 'critical', text: '자동충전 실패', basis: account.paymentMethod });
+    }
     if (account.status !== 'active') issues.push({ level: account.status === 'restricted' ? 'critical' : 'warn', text: account.status === 'review' ? '계정 검수 · 확인 필요' : '계정 제재', basis: `계정 상태 '${ACCOUNT_STATUS_LABEL[account.status]}' (p.44 계정 제재 · 검수)` });
     const unnamed = account.permissions.filter((p) => !p.realName);
     if (unnamed.length) issues.push({ level: 'warn', text: `비실명 권한 ${unnamed.length}개`, basis: unnamed.map((p) => `${p.user}(${p.role})`).join(', ') });
     if (account.owner !== '수면밀도') issues.push({ level: 'warn', text: '소유 주체 확인', basis: `소유 ${account.owner} · 기준 수면밀도 소유 (p.50)` });
-    return { account, demo: isDemo, runwayDays, exhaustAt, remainingToday, campaigns, issues, level: worst([...issues, ...campaigns.flatMap((c) => c.issues)]) };
+    return { account, demo: isDemo, toppedUp, runwayDays, exhaustAt, remainingToday, campaigns, issues, level: worst([...issues, ...campaigns.flatMap((c) => c.issues)]) };
   });
 }
 
@@ -1678,7 +1700,7 @@ export function planGfaRequest(views: GfaAccountView[], d: GfaRequestDraft): Gfa
   const acc = views.find((v) => v.account.id === d.accountId);
   if (!acc) errors.push('계정을 선택하세요');
   const cv = acc?.campaigns.find((c) => c.campaign.id === d.campaignId);
-  const lowBalance = !!acc && (acc.runwayDays < 1 || acc.account.autoCharge === 'failed');
+  const lowBalance = !!acc && (acc.runwayDays < 1 || (acc.account.autoCharge === 'failed' && !(acc.toppedUp > 0)));
   if (d.type === 'budget') {
     const pct = Number(d.pct);
     const route = routeGfaChange('budget', pct);
@@ -1738,7 +1760,8 @@ export function validateGfaExecution(views: GfaAccountView[], c: ChangeRequest):
   const acc = views.find((v) => v.account.id === accountId);
   if (!acc) return { ok: false, reason: '실행 오류: 계정을 찾을 수 없습니다' };
   if (acc.account.status === 'restricted') return { ok: false, reason: '계정 제재 상태 — 실행 보류 · 보고' };
-  if (increases && (acc.runwayDays < 1 || acc.account.autoCharge === 'failed')) {
+  // 자동충전 실패라도 수동 충전이 반영되어 잔액이 1일치 이상이면 실행 (블록 문구의 '충전 확인 후 재실행')
+  if (increases && (acc.runwayDays < 1 || (acc.account.autoCharge === 'failed' && !(acc.toppedUp > 0)))) {
     return { ok: false, reason: `잔액 ${Number.isFinite(acc.runwayDays) ? acc.runwayDays.toFixed(2) : '—'}일치 · 자동충전 '${AUTO_CHARGE_LABEL[acc.account.autoCharge]}' — 증액 · ON 실행 보류 · 보고 (충전 확인 후 재실행)` };
   }
   return { ok: true, reason: '지원 API 범위 내 실행 (데모: 로컬 상태 반영)' };

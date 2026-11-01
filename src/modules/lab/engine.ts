@@ -19,6 +19,9 @@ import {
 /* 공통                                                                */
 /* ================================================================== */
 
+
+/** 다른 모듈에서 들어온 요청의 출처 표기 */
+const SOURCE_MODULE_LABEL: Record<string, string> = { adpilot: 'AD Pilot', watch: 'MILDO Watch', geo: 'SearchTuneOS', growth: '매출 성장', flow: 'MILDO Flow', alert: 'MILDO Alert', board: 'MILDO Board', reports: '리포트' };
 export const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const n0 = (v: unknown): number => (finite(v) ? v : 0);
 /** JSON 출력용 반올림 — 유한하지 않으면 null */
@@ -252,7 +255,8 @@ export const TIER_META: Record<Candidate['tier'], { label: string; tone: 'accent
 export function isRegistration(c: ChangeRequest): boolean {
   if (!c) return false;
   if (c.kind === 'keyword_add' && c.module === 'lab') return !String(c.targetId ?? '').startsWith('labdec:');
-  if (c.kind === 'keyword_add' && c.module === 'adpilot') return /_TEST/.test(String(c.after));
+  // AD Pilot · SearchTuneOS(GEO)는 같은 형식(targetId 'term:…', after '<INTENT>_TEST …')으로 등록 요청을 보낸다
+  if (c.kind === 'keyword_add' && (c.module === 'adpilot' || c.module === 'geo')) return /_TEST/.test(String(c.after));
   return false;
 }
 
@@ -704,7 +708,7 @@ export function buildPipeline(data: Dataset, changes: readonly ChangeRequest[] =
     const approved = c.status === 'approved' || c.status === 'applied';
     const j = judgeKeywordTest(EMPTY_STATS, 0, crit);
     items.push({
-      id: `req:${c.id}`, phrase: c.target, source: 'request', sourceLabel: c.module === 'lab' ? 'Lab 등록 요청' : c.module === 'adpilot' ? 'AD Pilot 후보' : `${c.module} 테스트 요청`,
+      id: `req:${c.id}`, phrase: c.target, source: 'request', sourceLabel: c.module === 'lab' ? 'Lab 등록 요청' : `${SOURCE_MODULE_LABEL[c.module] ?? c.module} ${c.module === 'adpilot' ? '후보' : '테스트 요청'}`,
       intent: ci.intent, adgroup: `${ci.intent.toUpperCase()}_TEST`, step: approved ? 2 : 1, start: null, days: approved ? 0 : null, isNew: true, overdue: false,
       judgement: approved ? { ...j, badge: '집행 대기 · Day 0 · 데이터 수집 전', basis: `${c.status === 'applied' ? '테스트 그룹 반영' : '승인 완료 · 반영 대기'} — 익일 07:00 수집부터 집계` } : { ...j, badge: `STEP 1 · ${APPROVER_LABEL[c.approver]} 승인 대기`, basis: c.reason },
       registration: c, landing: landingFor(data, c.target, ci.intent).url, notes: [String(c.after), ...soldNotes(c.target)],

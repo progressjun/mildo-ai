@@ -186,7 +186,8 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
             const daily = Number.isFinite(inc.baseline) && (inc.baseline as number) > 0 ? (inc.baseline as number) : acc.avgDailySpend;
             const days = cfg.runwayWarnDays;
             const topup = Math.max(0, Math.ceil((daily * days - balance) / 100000) * 100000);
-            const tid = `alert:${inc.id}:topup`;
+            // 계정 단위 targetId — 계정 · 결제 탭 충전 요청과 같은 형식이라 중복 요청이 막히고 AD Pilot · Flow 잔액 계산에 반영된다
+            const tid = `alert:account:${acc.id}:topup`;
             return (
               <Button size="sm" icon="wallet" disabled={topup <= 0 || linked.some((c) => c.targetId === tid)} title={topup <= 0 ? `잔액이 이미 ${days}일치 이상` : undefined}
                 onClick={() => requestChange({ kind: 'setting', target: `${acc.name} 비즈머니 충전`, targetId: tid, before: balance, after: balance + topup, changePct: balance > 0 ? (topup / balance) * 100 : undefined, reason: `잔액 ${fmt.krw(balance)}원 < 일 평균 소진 ${fmt.krw(daily)}원 · 자동충전 ${acc.autoCharge === 'failed' || inc.title.includes('자동충전 실패') ? '실패' : acc.autoCharge} → 주말 · 연휴 대비 ${days}일치까지 ${fmt.krw(topup)}원 충전 요청 (p.50 결제 수단 수면밀도 · ${days}일치는 운영 가정)`, approver: 'CLIENT' }, '충전 요청을 만들었습니다')}>
