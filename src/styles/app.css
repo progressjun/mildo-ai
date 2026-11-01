@@ -47,7 +47,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .nav-item:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
 .nav-item[aria-current='page'] { background: var(--accent); color: #fff; font-weight: 700; }
 .nav-item .nav-badge { margin-left: auto; font-size: 11px; background: var(--critical); color: #fff; border-radius: 999px; padding: 0 7px; line-height: 18px; }
-.nav-item .nav-soon { margin-left: auto; font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; line-height: 16px; }
+.nav-item .nav-soon { margin-left: auto; flex: none; white-space: nowrap; font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; line-height: 16px; }
 .nav-item[aria-current='page'] .nav-badge { background: #fff; color: var(--accent-ink); }
 .sidebar-foot { margin-top: auto; font-size: var(--fs-xs); color: var(--panel-muted); padding: 8px 10px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
 
