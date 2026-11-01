@@ -1,0 +1,43 @@
+/* AD Pilot · GFA Control 전용 — 색은 토큰 변수만 사용 */
+.adpilot-rules { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.adpilot-rule {
+  border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-md); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 3px; cursor: pointer; text-align: left; font: inherit; color: inherit; min-width: 0;
+}
+.adpilot-rule:hover { border-color: var(--ink-2); }
+.adpilot-rule[aria-pressed='true'] { border-color: var(--ink); box-shadow: inset 0 -3px 0 var(--accent); }
+.adpilot-rule .adpilot-cnt { font-size: var(--fs-xl); font-weight: 900; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.adpilot-rule .adpilot-cond { font-size: var(--fs-sm); font-weight: 700; }
+.adpilot-rule .adpilot-auto { font-size: var(--fs-xs); color: var(--ink-2); }
+.adpilot-rule .adpilot-th { font-size: var(--fs-xs); color: var(--muted); }
+
+.adpilot-safety .adpilot-sec { border-top: 1px solid color-mix(in srgb, var(--panel-ink) 14%, transparent); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.adpilot-safety .adpilot-sec-title { font-weight: 700; display: flex; align-items: center; gap: 6px; font-size: var(--fs-md); }
+.adpilot-safety .input { background: color-mix(in srgb, var(--panel-ink) 8%, transparent); color: var(--panel-ink); border-color: color-mix(in srgb, var(--panel-ink) 22%, transparent); padding: 4px 8px; max-width: 96px; }
+.adpilot-safety .adpilot-kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: center; font-size: var(--fs-sm); }
+.adpilot-safety .adpilot-log { display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-xs); }
+.adpilot-safety .adpilot-log-row { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
+.adpilot-safety .adpilot-dim { color: var(--panel-muted); }
+
+.adpilot-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.adpilot-step { background: var(--surface-2); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; position: relative; min-width: 0; }
+.adpilot-step .adpilot-no { font-size: var(--fs-xs); color: var(--accent-ink); font-weight: 700; letter-spacing: 0.08em; }
+.adpilot-step .adpilot-cnt { font-size: var(--fs-xl); font-weight: 900; font-variant-numeric: tabular-nums; }
+
+.adpilot-arrow { color: var(--muted); padding: 0 4px; }
+.adpilot-basis { font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.45; max-width: 340px; }
+.adpilot-wrap { white-space: normal; min-width: 180px; }
+.adpilot-row-actions { display: inline-flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.adpilot-check { width: 16px; height: 16px; accent-color: var(--ink); cursor: pointer; }
+.adpilot-route-row td { background: var(--accent-soft); }
+.adpilot-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; font-size: var(--fs-sm); }
+.adpilot-dl dt { color: var(--muted); }
+.adpilot-dl dd { margin: 0; }
+
+@media (max-width: 1180px) {
+  .adpilot-rules { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .adpilot-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .adpilot-rules, .adpilot-steps { grid-template-columns: 1fr; }
+}
