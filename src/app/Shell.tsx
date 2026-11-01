@@ -93,7 +93,7 @@ export function Shell() {
           AI 엔진 · Pro-board · AD Pilot · GFA Control v1 · VisualTune OS · SearchTuneOS
         </div>
       </nav>
-      <div className="main">
+      <div className="app-main">
         {state.demo.running ? <DemoBar /> : null}
         <header className="topbar">
           <div className="row" style={{ gap: 8 }}>

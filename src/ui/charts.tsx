@@ -65,7 +65,10 @@ export function LineChart({
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
   const xs = series[0]?.points.map((p) => p.x) ?? [];
-  const pad = { l: 56, r: series.length <= 4 && series.length > 1 ? 70 : 16, t: 12, b: 26 };
+  // 2~4개 계열은 선 끝에 이름을 직접 표기 — 오른쪽 여백은 가장 긴 이름 폭에 맞춘다 (한글 11px · 영숫자 6.5px 추정, 최대 150px)
+  const endLabelled = series.length > 1 && series.length <= 4;
+  const labelWidth = (t: string) => [...t].reduce((w, ch) => w + (/[\u0000-\u00ff]/.test(ch) ? 6.5 : 11), 0);
+  const pad = { l: 56, r: endLabelled ? Math.min(150, Math.max(70, 14 + Math.max(...series.map((s) => labelWidth(s.label))))) : 16, t: 12, b: 26 };
   const W = Math.max(200, width);
   const H = height;
   const all = series.flatMap((s) => s.points.map((p) => p.y)).filter(Number.isFinite);
@@ -106,7 +109,7 @@ export function LineChart({
           {refLine ? (
             <g>
               <line x1={pad.l} x2={W - pad.r} y1={y(refLine.y)} y2={y(refLine.y)} stroke="var(--ink-2)" strokeDasharray="4 4" strokeWidth={1} />
-              <text x={W - pad.r} y={y(refLine.y) - 4} textAnchor="end" style={{ fill: 'var(--ink-2)' }}>{refLine.label}</text>
+              <text x={W - pad.r} y={y(refLine.y) - 4} textAnchor="end" style={{ fill: 'var(--ink-2)', stroke: 'var(--surface)', strokeWidth: 3, paintOrder: 'stroke' }}>{refLine.label}</text>
             </g>
           ) : null}
           {series.map((s) => (
@@ -121,12 +124,36 @@ export function LineChart({
                 return Number.isFinite(lv) ? (
                   <g>
                     <circle cx={x(li)} cy={y(lv)} r={4} fill={`var(${s.colorVar})`} stroke="var(--surface)" strokeWidth={2} />
-                    {series.length > 1 && series.length <= 4 ? <text x={x(li) + 8} y={y(lv) + 4} style={{ fill: 'var(--ink-2)', fontSize: 11 }}>{s.label}</text> : null}
                   </g>
                 ) : null;
               })() : null}
             </g>
           ))}
+          {endLabelled ? (() => {
+            // 끝 라벨 겹침 방지: 위에서부터 최소 13px 간격으로 밀고, 아래 경계를 넘으면 위로 되민다. 3px 이상 움직이면 짧은 지시선을 긋는다.
+            const items = series.flatMap((s) => {
+              const li = s.points.length - 1;
+              const lv = li >= 0 ? s.points[li].y : NaN;
+              return Number.isFinite(lv) ? [{ id: s.id, label: s.label, cx: x(li), cy: y(lv), ty: y(lv) + 4 }] : [];
+            }).sort((a, b) => a.ty - b.ty);
+            const GAP = 13;
+            for (let i = 1; i < items.length; i++) if (items[i].ty - items[i - 1].ty < GAP) items[i].ty = items[i - 1].ty + GAP;
+            const bottom = H - pad.b + 4;
+            for (let i = items.length - 1; i >= 0; i--) {
+              const limit = i === items.length - 1 ? bottom : items[i + 1].ty - GAP;
+              if (items[i].ty > limit) items[i].ty = limit;
+            }
+            return (
+              <g>
+                {items.map((it) => (
+                  <g key={`lbl-${it.id}`}>
+                    {Math.abs(it.ty - (it.cy + 4)) > 3 ? <line x1={it.cx + 5} y1={it.cy} x2={it.cx + 9} y2={it.ty - 4} stroke="var(--ink-2)" strokeWidth={1} opacity={0.6} /> : null}
+                    <text x={it.cx + 10} y={it.ty} style={{ fill: 'var(--ink-2)', fontSize: 11 }}>{it.label}</text>
+                  </g>
+                ))}
+              </g>
+            );
+          })() : null}
           {hover !== null ? (
             <g>
               <line x1={x(hover)} x2={x(hover)} y1={pad.t} y2={H - pad.b} stroke="var(--ink-2)" strokeWidth={1} opacity={0.5} />
@@ -161,12 +188,12 @@ export function HBarChart({ data, format = (v) => String(Math.round(v)), refValu
     <div className="stack-sm" role="img" aria-label={data.map((d) => `${d.label} ${format(d.value)}`).join(', ')}>
       {data.map((d, i) => (
         <div key={d.label + i} className="row" style={{ flexWrap: 'nowrap', gap: 10 }} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} title={d.note}>
-          <div className="small" style={{ width: 132, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.label}</div>
+          <div className="small" style={{ width: 'clamp(72px, 34%, 132px)', flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={d.label}>{d.label}</div>
           <div style={{ flex: 1, position: 'relative', height: 18 }}>
             <div style={{ position: 'absolute', inset: '3px auto 3px 0', width: `${Math.max(0.5, (Math.max(0, d.value) / max) * 100)}%`, background: `var(${d.colorVar ?? '--series-1'})`, borderRadius: '0 4px 4px 0', opacity: hover === null || hover === i ? 1 : 0.55 }} />
             {refValue !== undefined ? <div title={refLabel} style={{ position: 'absolute', top: 0, bottom: 0, left: `${(refValue / max) * 100}%`, width: 2, background: 'var(--ink-2)' }} /> : null}
           </div>
-          <div className="small num" style={{ width: 84, textAlign: 'right', flex: 'none' }}>{format(d.value)}</div>
+          <div className="small num" style={{ width: 'clamp(48px, 20%, 84px)', textAlign: 'right', flex: 'none', whiteSpace: 'nowrap' }}>{format(d.value)}</div>
         </div>
       ))}
       {refValue !== undefined && refLabel ? <div className="xs muted">세로선: {refLabel}</div> : null}
@@ -215,7 +242,7 @@ export function BarChart({ data, height = 200, format = (v) => String(Math.round
         {refValue !== undefined ? (
           <g>
             <line x1={pad.l} x2={W - pad.r} y1={y(refValue)} y2={y(refValue)} stroke="var(--ink-2)" strokeDasharray="4 4" />
-            {refLabel ? <text x={W - pad.r} y={y(refValue) - 4} textAnchor="end" style={{ fill: 'var(--ink-2)' }}>{refLabel}</text> : null}
+            {refLabel ? <text x={W - pad.r} y={y(refValue) - 4} textAnchor="end" style={{ fill: 'var(--ink-2)', stroke: 'var(--surface)', strokeWidth: 3, paintOrder: 'stroke' }}>{refLabel}</text> : null}
           </g>
         ) : null}
       </svg>
