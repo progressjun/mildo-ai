@@ -132,17 +132,20 @@ describe('MILDO Flow 화면 렌더', () => {
 });
 
 describe('기능 점검 회귀 — 더블 클릭 방지 잠금', () => {
-  it('settled: 첫 클릭 직후 SETTLE_MS 동안 다른 처리 클릭(다른 행으로 밀려 온 버튼 포함)은 무시', async () => {
-    const { settled, SETTLE_MS } = await import('./parts');
-    let now = 1_000_000;
-    const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  it('settled: 더블 클릭의 두 번째 클릭(detail 2)은 무시하고, 따로 누른 처리 클릭은 바로 처리 ([승인] 직후 [반영])', async () => {
+    const { settled } = await import('./parts');
     const hits: string[] = [];
-    const a = settled(() => hits.push('a'));
-    const b = settled(() => hits.push('b'));
-    a(); now += 80; b(); now += 80; a();
-    expect(hits).toEqual(['a']);
-    now += SETTLE_MS; b();
-    expect(hits).toEqual(['a', 'b']);
-    spy.mockRestore();
+    const approve = settled((_e?: unknown) => hits.push('approve'));
+    const apply = settled((_e?: unknown) => hits.push('apply'));
+    // 더블 클릭으로 [승인] → 같은 자리 [반영]이 한 번에 통과되지 않는다
+    approve({ detail: 1 }); apply({ detail: 2 });
+    expect(hits).toEqual(['approve']);
+    // 발표자가 따로 누르면 바로 반영된다 (이전 0.6초 화면 전체 잠금 제거)
+    apply({ detail: 1 });
+    expect(hits).toEqual(['approve', 'apply']);
+    // 액션 값을 인자로 받는 호출(상세 창 run(action))은 이벤트가 아니므로 막지 않는다
+    const run = settled((a: string) => hits.push(a));
+    run('reject');
+    expect(hits).toEqual(['approve', 'apply', 'reject']);
   });
 });

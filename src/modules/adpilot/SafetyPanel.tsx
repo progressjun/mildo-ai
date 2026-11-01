@@ -1,11 +1,10 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { hhmm } from '@/core/util';
 import { Button, Card, Pill, Src } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
 import { CONFIG_FIELDS, type NumericConfigKey, resolveConfig } from './engine';
 import { SAFETY_ITEMS } from './data';
 import type { AdPilotCtx } from './useAdPilot';
-import { SETTLE_MS } from './parts';
 
 /** 입력 중에는 문자열로 두고 blur · Enter 에서 확정 (확정 시 범위 보정) */
 function CommitNumber({ id, value, step, min, max, suffix, onCommit }: { id: string; value: number; step: number; min: number; max: number; suffix: string; onCommit: (v: number) => void }) {
@@ -44,7 +43,6 @@ function CfgInput({ ap, k, pct = false }: { ap: AdPilotCtx; k: NumericConfigKey;
 /** SAFETY 패널 (p.14) — 일 조정 폭 상한 · 브랜드 별도 기준 · 변경 이력 · 즉시 롤백 + 판정 기준 편집 */
 export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () => void }) {
   const [confirmRb, setConfirmRb] = useState(false);
-  const armedAt = useRef(0);
   const applied = ap.changes.filter((c) => c.status === 'applied' && c.kind !== 'setting');
   const rb = ap.rollbackPlan;
   const log = useMemo(() => ap.changes
@@ -117,11 +115,11 @@ export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () =
           {rb.skipped.length ? <div className="xs adpilot-dim">현재 역할({ap.state.role}) 승인 범위 밖 {rb.skipped.length}건은 일괄 롤백에서 제외됩니다.</div> : null}
           {confirmRb && rb.list.length ? (
             <div className="row" style={{ gap: 6 }}>
-              <Button size="sm" variant="danger" icon="rollback" onClick={() => { if (Date.now() - armedAt.current < SETTLE_MS) return; ap.rollbackAll(); setConfirmRb(false); }}>{rb.list.length}건 모두 복원 확정</Button>
+              <Button size="sm" variant="danger" icon="rollback" onClick={(e) => { if (e.detail > 1) return; ap.rollbackAll(); setConfirmRb(false); }}>{rb.list.length}건 모두 복원 확정</Button>
               <Button size="sm" onClick={() => setConfirmRb(false)}>취소</Button>
             </div>
           ) : (
-            <Button size="sm" icon="rollback" disabled={!rb.list.length} onClick={() => { armedAt.current = Date.now(); setConfirmRb(true); }}>반영분 전체 롤백</Button>
+            <Button size="sm" icon="rollback" disabled={!rb.list.length} onClick={() => setConfirmRb(true)}>반영분 전체 롤백</Button>
           )}
         </div>
       </div>

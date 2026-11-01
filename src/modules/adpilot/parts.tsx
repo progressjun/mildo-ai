@@ -1,5 +1,5 @@
 /* AD Pilot 화면 공용 조각 — 배지 · 값 표기 · 후보 상세 */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { ApprovalLevel, ChangeRequest } from '@/core/types';
 import { MEDIA, SA_CAMPAIGNS } from '@/data/constants';
 import { fmt, hhmm } from '@/core/util';
@@ -14,13 +14,13 @@ import { STATUS_LABEL, STATUS_TONE } from './useAdPilot';
  */
 export const SETTLE_MS = 600;
 export const SETTLE_STYLE = { opacity: 0.55, cursor: 'wait' } as const;
-/** 화면 전체 처리 클릭 잠금 — 이력 표처럼 처리 직후 행이 밀리면 다른 요청의 버튼이 같은 자리로 오므로 */
-let lockUntil = 0;
-export function settledClick(fn: () => void): () => void {
-  return () => {
-    const now = Date.now();
-    if (now < lockUntil) return;
-    lockUntil = now + SETTLE_MS;
+/**
+ * 더블 클릭 방지 — 더블 클릭의 두 번째 클릭(event.detail > 1)만 무시한다.
+ * 따로 누른 클릭은 바로 처리되므로 [승인] 직후 [반영]을 빠르게 눌러도 반응이 끊기지 않는다(이전: 화면 전체 0.6초 잠금, 표시 없음).
+ */
+export function settledClick(fn: () => void): (e?: { detail?: number }) => void {
+  return (e) => {
+    if (e && typeof e.detail === 'number' && e.detail > 1) return;
     fn();
   };
 }
@@ -98,9 +98,8 @@ export function Dl({ items }: { items: [ReactNode, ReactNode][] }) {
 
 /** 후보 상세 드로어 — 근거 · SAFETY · 원인 후보 · 시뮬레이션 · 변경 이력 */
 export function ProposalDrawer({ p, change, onClose: close, actions }: { p: AdPilotProposal; change?: ChangeRequest; onClose: () => void; actions?: ReactNode }) {
-  // 행 더블 클릭의 두 번째 클릭이 막 열린 상세 창 바깥(오버레이)을 눌러 바로 닫지 않게, 열린 직후 잠깐은 닫기를 무시
-  const openedAt = useRef(Date.now());
-  const onClose = () => { if (Date.now() - openedAt.current < SETTLE_MS) return; close(); };
+  // 행 더블 클릭의 두 번째 클릭으로 바로 닫히는 것은 공용 Drawer 오버레이가 막는다(event.detail < 2)
+  const onClose = close;
   return (
     <Drawer title={<span className="row" style={{ gap: 8 }}><ActionPill p={p} />{p.keyword}</span>} onClose={onClose}>
       <div className="row" style={{ gap: 6 }}>

@@ -116,17 +116,16 @@ describe('AD Pilot 화면 렌더', () => {
 });
 
 describe('기능 점검 회귀 — 더블 클릭 방지 잠금', () => {
-  it('settledClick: 처리 직후 같은 자리 버튼의 두 번째 클릭은 무시 (승인 요청 → 반려 오작동 방지)', async () => {
-    const { settledClick, SETTLE_MS } = await import('./parts');
-    let now = 2_000_000;
-    const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  it('settledClick: 더블 클릭의 두 번째 클릭(detail 2)은 무시하고, 따로 누른 클릭은 바로 처리 (승인 요청 → 반려 오작동 방지)', async () => {
+    const { settledClick } = await import('./parts');
     const hits: string[] = [];
     const request = settledClick(() => hits.push('request'));
     const reject = settledClick(() => hits.push('reject'));
-    request(); now += 120; reject();
+    // 더블 클릭: 첫 클릭(detail 1)은 요청, 같은 자리에 나타난 [반려]에 떨어진 두 번째 클릭(detail 2)은 무시
+    request({ detail: 1 }); reject({ detail: 2 });
     expect(hits).toEqual(['request']);
-    now += SETTLE_MS; reject();
-    expect(hits).toEqual(['request', 'reject']);
-    spy.mockRestore();
+    // 따로 누른 클릭(detail 1) · 키보드 실행(detail 0) · 이벤트 없는 호출은 바로 처리 — 시간 잠금 없음
+    reject({ detail: 1 }); reject({ detail: 0 }); reject();
+    expect(hits).toEqual(['request', 'reject', 'reject', 'reject']);
   });
 });

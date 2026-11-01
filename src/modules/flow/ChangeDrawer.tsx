@@ -1,5 +1,5 @@
 /* 변경 요청 상세 — 누가 · 언제 · 왜, 승인 근거, 실행 점검, 액션 (권한 체크 · 2단계 확인) */
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { DECISION_MATRIX, GFA_DELEGATION } from '@/data/constants';
 import { Callout, Drawer, Field, Pill, Src } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
@@ -8,7 +8,7 @@ import {
   ACTION_META, APPROVER_LABEL, availableActions, canAct, decisionOf, delegationIndexByPct, executionCheck, fmtStamp, isSeed, leadState,
   linkedChanges, mediaName, mediaOfChange, moduleLabel, roleScopeLabel, type FlowAction,
 } from './engine';
-import { ApproverBadge, ChangeValue, ConfirmButton, KV, LeadBadge, ModuleTag, SETTLE_MS, SeedTag, StatusPill, settled } from './parts';
+import { ApproverBadge, ChangeValue, ConfirmButton, KV, LeadBadge, ModuleTag, SeedTag, StatusPill, settled } from './parts';
 import type { FlowCtx } from './useFlow';
 import { Button } from '@/ui/primitives';
 
@@ -16,9 +16,8 @@ export function ChangeDrawer({ ctx, id, onClose: close }: { ctx: FlowCtx; id: st
   const { changes, state, data, incidents, clock, act, bulkAlerts } = ctx;
   const c = changes.find((x) => x.id === id);
   const [note, setNote] = useState('');
-  // [승인 요청 생성] 더블 클릭의 두 번째 클릭이 막 열린 상세 창의 바깥(오버레이)을 눌러 바로 닫지 않게, 열린 직후 잠깐은 닫기를 무시
-  const openedAt = useRef(Date.now());
-  const onClose = () => { if (Date.now() - openedAt.current < SETTLE_MS) return; close(); };
+  // 더블 클릭의 두 번째 클릭으로 막 열린 창이 닫히는 것은 공용 Drawer 오버레이가 막는다(event.detail < 2)
+  const onClose = close;
   if (!c) return <Drawer title="요청 없음" onClose={onClose}><div className="small muted">요청을 찾지 못했습니다 (초기화되었을 수 있음).</div></Drawer>;
   const lead = leadState(c, clock.nowMs, clock.toMs);
   const dec = decisionOf(c);
@@ -90,7 +89,7 @@ export function ChangeDrawer({ ctx, id, onClose: close }: { ctx: FlowCtx; id: st
               const title = !a.ok ? a.reason : m.needsNote && !note.trim() ? '사유를 입력하세요' : a.reason;
               return m.confirm
                 ? <ConfirmButton key={a.action} label={m.label} icon={m.icon} variant={m.variant} disabled={disabled} title={title} onConfirm={() => run(a.action)} />
-                : <Button key={a.action} size="sm" icon={m.icon} variant={m.variant === 'danger' ? 'danger' : m.variant} disabled={disabled} title={title} onClick={() => run(a.action)}>{m.label}</Button>;
+                : <Button key={a.action} size="sm" icon={m.icon} variant={m.variant === 'danger' ? 'danger' : m.variant} disabled={disabled} title={title} onClick={(e) => { if (e.detail > 1) return; run(a.action); }}>{m.label}</Button>;
             })}
           </div>
           {avail.some((a) => !a.ok) ? <div className="xs muted">{avail.find((a) => !a.ok)?.reason}</div> : null}
