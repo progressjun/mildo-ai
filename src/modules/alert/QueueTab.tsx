@@ -4,7 +4,7 @@ import { MEDIA } from '@/data/constants';
 import { fmt, sum } from '@/core/util';
 import { AiInsight } from '@/ui/AiInsight';
 import { Card, DataTable, Pill, Segmented, Src, Stat, Toggle, type Column } from '@/ui/primitives';
-import { fmtRemain, fmtStamp, heldMedia, nextAction, primaryEvidence, sevCounts, slaState, type AlertIncident } from './engine';
+import { fmtRemain, fmtStamp, heldMedia, nextAction, primaryEvidence, sevCounts, slaState, typeOf, type AlertIncident } from './engine';
 import { TYPE_LABEL } from './data';
 import { issuesBrief } from './briefs';
 import { krwOrDash, MediaTag, SevLabel, SlaTimer, StatusPill } from './parts';
@@ -47,7 +47,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
         <div style={{ minWidth: 220 }}>
           <div className="alert-title">{i.title}</div>
           <div className="alert-sub">
-            <span>{TYPE_LABEL[i.typeId] ?? i.ruleId}</span>
+            <span>{TYPE_LABEL[typeOf(i)] ?? i.ruleId}</span>
             {i.page ? <Src kind="PROPOSAL" page={i.page} /> : null}
             {i.isTest ? <Pill tone="dark">테스트 주입</Pill> : null}
             {i.recurrence?.count ? <Pill tone="warning" title={i.recurrence.dates.join(', ')}>30일 내 재발 {i.recurrence.count}회</Pill> : null}
@@ -73,7 +73,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
         <Card><Stat label="열린 이슈" src={<Src kind="DEMO" />} value={counts.open} foot={<span>P1 {counts.P1} · P2 {counts.P2} · P3 {counts.P3}</span>} /></Card>
         <Card><Stat label="SLA 임박 · 초과" src={<Src kind="DEMO" />} value={<span>{urgent.length}<span className="small muted"> / 초과 {overdue.length}</span></span>} foot={<span>임박 = 단계 목표 10분 이내 (p.49)</span>} /></Card>
         <Card><Stat label="자동 조정 보류" src={<Src kind="DEMO" />} value={held.length} foot={<span>{held.length ? held.map((m) => MEDIA[m].short).join(' · ') : '없음'}</span>} /></Card>
-        <Card><Stat label="추정 매출 영향" src={<Src kind="DEMO" />} value={`${fmt.krw(revenue)}원`} foot={<span>열린 이슈 합계 · 추세 지속 가정 (상세에 산출식)</span>} /></Card>
+        <Card><Stat label="추정 매출 영향" src={<Src kind="DEMO" />} value={`${fmt.krw(revenue)}원`} foot={<span>열린 이슈 단순 합계 · 같은 매체 이슈 간 중복 포함 상한 · 추세 지속 가정 (상세에 산출식)</span>} /></Card>
         <Card><Stat label="위험 노출 광고비" src={<Src kind="DEMO" />} value={`${fmt.krw(spend)}원`} foot={<span>잘못된 신호 · 초과 집행 · 중단 위험</span>} /></Card>
         <Card tone={regime.off ? 'dark' : undefined}>
           <Stat label="운영 체계" value={<span style={{ fontSize: 'var(--fs-xl)' }}>{regime.off ? '주말 · 공휴일' : '평일'}</span>}
@@ -123,7 +123,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
           cta="AI 분석 생성"
           buildPrompt={() => {
             const list = open.slice(0, 12).map((i) => ({
-              id: i.id, severity: i.severity, title: i.title, type: TYPE_LABEL[i.typeId] ?? i.ruleId, media: i.media,
+              id: i.id, severity: i.severity, title: i.title, type: TYPE_LABEL[typeOf(i)] ?? i.ruleId, media: i.media,
               evidence: (i.evidence ?? []).slice(0, 6).map((e) => ({ label: e.label, observed: Number.isFinite(e.observed) ? Math.round(e.observed * 10) / 10 : null, baseline: e.baseline !== undefined && Number.isFinite(e.baseline) ? Math.round(e.baseline * 10) / 10 : null, deltaPct: e.deltaPct !== undefined && Number.isFinite(e.deltaPct) ? Math.round(e.deltaPct) : null, threshold: e.threshold, note: e.note })),
               basis: i.basis, causes: (i.causes ?? []).slice(0, 3), impact: i.impact, impactNote: i.impactNote, autoActions: i.autoActions, recurrence: i.recurrence,
               sla: slaState(i, nowMs, toMs, state.offHoursMode).stageLabel,
@@ -133,7 +133,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
 데이터(JSON, 시연용 TEST DATA):
 ${JSON.stringify(list)}`;
           }}
-          fallback={() => issuesBrief(data, incidents, nowMs, toMs)}
+          fallback={() => issuesBrief(data, incidents, nowMs, toMs, state.offHoursMode)}
         />
       </div>
     </div>

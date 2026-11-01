@@ -34,6 +34,24 @@ describe('MILDO Alert agentKit', () => {
     const p1 = (await run('alert_scan', { severity: 'P1' })) as { incidents: { severity: string }[] };
     expect(p1.incidents.every((i) => i.severity === 'P1')).toBe(true);
   });
+  it('alert_scan 등급 필터를 걸어도 전체 열린 이슈 등급 분포는 그대로', async () => {
+    const all = (await run('alert_scan')) as { counts: { open: number; P1: number; P2: number; P3: number } };
+    const p1 = (await run('alert_scan', { severity: 'P1' })) as { counts: { open: number; P1: number; P2: number; matched: number } };
+    expect(p1.counts.P2).toBe(all.counts.P2);
+    expect(p1.counts.open).toBe(all.counts.P1 + all.counts.P2 + all.counts.P3);
+    expect(p1.counts.matched).toBe(all.counts.P1);
+  });
+  it('다른 모듈이 실제 시각(Z)으로 남긴 이슈도 SLA 경과가 데이터 기준으로 계산된다', async () => {
+    const foreign = { id: 'adpilot_hold:x:2026-10-31', ruleId: 'data_spike', severity: 'P2' as const, title: 'AD Pilot 자동 조정 보류 · x', media: 'naver_sa' as const, target: 'x',
+      detectedAt: '2026-11-01T02:00:00.000Z', occurredAt: DEMO.generatedAt, detectPath: 'AD Pilot', causeCandidates: [], impact: {}, status: 'open' as const,
+      timeline: [{ at: '2026-11-01T02:00:00.000Z', by: 'AD Pilot', action: '감지' }], isTest: true, autoActions: [] };
+    const c2 = { ...ctx, state: { ...state, incidents: [foreign] } } as ToolContext;
+    const scan = (await agentKit.tools(c2).find((t) => t.name === 'alert_scan')!.execute({})) as { incidents: { id: string; type: string; sla: { remainingMin: number } }[] };
+    const f = scan.incidents.find((i) => i.id === foreign.id)!;
+    expect(f.type).toBe('데이터 급변');
+    expect(f.sla.remainingMin).toBeLessThanOrEqual(60);
+    expect(f.sla.remainingMin).toBeGreaterThan(0);
+  });
   it('alert_incident_report → p.49 양식 마크다운, 없는 id는 오류 + 후보', async () => {
     const id = state.incidents[0].id;
     const r = (await run('alert_incident_report', { id })) as { markdown: string };

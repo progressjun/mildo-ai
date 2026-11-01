@@ -3,7 +3,7 @@ import type { ChangeRequest } from '@/core/types';
 import { CRITICAL_ISSUE_TYPES, DECISION_MATRIX, EXTRA_DETECTORS } from '@/data/constants';
 import { Button, Callout, Card, DataTable, Field, NumberInput, Pill, Sev, Src, type Column } from '@/ui/primitives';
 import {
-  activeConfig, CONFIG_FIELDS, detectIncidents, encodeThreshold, falsePositiveByMetric, fmtStamp, historyRecords, type AlertConfig, type MetricKey, type Threshold,
+  activeConfig, CONFIG_FIELDS, detectIncidents, encodeThreshold, falsePositiveByMetric, fmtStamp, historyRecords, typeOf, type AlertConfig, type MetricKey, type Threshold,
 } from './engine';
 import { DEMO_CREATIVES, RULES, TYPE_LABEL } from './data';
 import { ChangeStatusPill, LevelPill } from './parts';
@@ -21,7 +21,7 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
   const [draft, setDraft] = useState<Draft>(() => draftOf(cfg));
   const [reason, setReason] = useState('');
   const open = incidents.filter((i) => i.status !== 'resolved');
-  const countType = (t: string) => open.filter((i) => i.typeId === t).length;
+  const countType = (t: string) => open.filter((i) => typeOf(i) === t).length;
   const fp = useMemo(() => falsePositiveByMetric(historyRecords()), []);
 
   const draftCfg: AlertConfig = useMemo(() => {
@@ -102,7 +102,7 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
     account_payment: `계정 ${data.accounts.length}개`, account_permission: `권한 ${data.accounts.reduce((a, x) => a + x.permissions.length, 0)}건`, account_status: `계정 ${data.accounts.length}개`,
     creative_rejected: `소재 ${DEMO_CREATIVES.length}개`, creative_pending: `소재 ${DEMO_CREATIVES.length}개`, landing_error: `랜딩 ${DEMO_CREATIVES.length}개`,
     media_no_impression: '매체 6개 × 시간', data_spike: '매체 6개 × 5지표', anomaly_warn: '매체 6개 × 5지표', tracking_break: '매체 6개 × 시간', invalid_traffic: '매체 6개',
-    search_volume: '브랜드 검색량 일별', bulk_change: `변경 이력 ${state.changes.length}건`,
+    search_volume: '브랜드 검색량 일별', media_delay: '매체 6개 × 현재 시각 수신', bulk_change: `변경 이력 ${state.changes.length}건`,
   };
   const registry = Object.entries(RULES).map(([id, r]) => ({ id, ...r, count: open.filter((i) => i.ruleId === id).length }));
 

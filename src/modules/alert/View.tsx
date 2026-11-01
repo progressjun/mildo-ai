@@ -74,7 +74,7 @@ export default function View() {
       {tab === 'holiday' ? <HolidayTab ctx={ctx} onOpen={setOpenId} /> : null}
       {tab === 'accounts' ? <AccountsTab ctx={ctx} onOpen={setOpenId} /> : null}
       {tab === 'sla' ? <SlaTab ctx={ctx} /> : null}
-      {openId ? <IncidentDrawer ctx={ctx} id={openId} onClose={() => setOpenId(null)} /> : null}
+      {openId ? <IncidentDrawer key={openId} ctx={ctx} id={openId} onClose={() => setOpenId(null)} /> : null}
     </div>
   );
 }

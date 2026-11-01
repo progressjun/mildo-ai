@@ -10,25 +10,26 @@ import type { MediaId, SalesChannelId, Severity } from '@/core/types';
 export const RULES: Record<string, { typeId: string; label: string; severity: Severity; page: string; basis: string }> = {
   campaign_off: { typeId: 'ad_off', label: '캠페인 중지', severity: 'P1', page: 'p.44', basis: '캠페인 상태 OFF · 제한' },
   budget_exhausted: { typeId: 'ad_off', label: '예산 소진 중지', severity: 'P1', page: 'p.44', basis: '오늘 소진액 ≥ 일 예산' },
-  budget_forecast: { typeId: 'ad_off', label: '예산 소진 중지 예상', severity: 'P2', page: 'p.44', basis: '동요일 시간대 소진 곡선 기준 예상 마감 시각 · 미노출 구간 평소 매출 비중 ≥ 20%' },
-  keyword_no_impression: { typeId: 'ad_off', label: '핵심 키워드 노출 0', severity: 'P1', page: 'p.44', basis: '최근일 노출 0 · 직전 평균 노출 ≥ 10' },
+  budget_forecast: { typeId: 'ad_off', label: '예산 소진 중지 예상', severity: 'P2', page: 'p.44', basis: '최근 28일 시간대 소진 곡선 기준 예상 마감 시각(MILDO Board · AD Pilot 동일 기준) · 미노출 구간 평소 매출 비중 ≥ 20% (비중 기준은 운영 가정)' },
+  keyword_no_impression: { typeId: 'ad_off', label: '핵심 키워드 노출 0', severity: 'P1', page: 'p.44', basis: '최근일 노출 0 · 직전 평균 노출 ≥ 10 (핵심 = 브랜드 또는 월 검색 5,000 이상, 운영 가정)' },
   media_no_impression: { typeId: 'ad_off', label: '매체 미노출', severity: 'P1', page: 'p.44', basis: '최근 감지 구간 노출 0 · 동요일 동시간 평균 노출 > 0' },
   account_payment: { typeId: 'account_payment', label: '잔액 · 자동충전', severity: 'P1', page: 'p.44', basis: '선결제 잔액 < 일 평균 소진(1일치) · 자동충전 실패' },
-  account_permission: { typeId: 'account_payment', label: '권한 정책 위반', severity: 'P2', page: 'p.50', basis: '담당자 실명 계정 · 최소 권한 원칙 (비실명 · 미사용 권한)' },
+  account_permission: { typeId: 'account_payment', label: '권한 정책 위반', severity: 'P2', page: 'p.50', basis: '담당자 실명 계정 · 최소 권한 원칙 위반 상태 (비실명 · 30일 미사용 권한). 권한 변경 이벤트는 p.44 P1 — 권한 변경 이력 연동 전' },
   account_status: { typeId: 'account_payment', label: '계정 제재 · 검수', severity: 'P2', page: 'p.44', basis: '계정 상태 restricted → P1, review → P2' },
   creative_rejected: { typeId: 'creative_landing', label: '소재 반려', severity: 'P2', page: 'p.44', basis: '매체 검수 결과 반려' },
   creative_pending: { typeId: 'creative_landing', label: '검수 보류', severity: 'P2', page: 'p.44', basis: '검수 대기 24시간 초과 (운영 가정)' },
   landing_error: { typeId: 'creative_landing', label: 'URL 오류', severity: 'P2', page: 'p.44', basis: '랜딩 응답 코드 4xx · 5xx' },
   soldout_landing: { typeId: 'soldout_landing', label: '품절 · 옵션 품절 랜딩', severity: 'P2', page: 'p.45', basis: '키워드가 지정한 옵션이 품절인 상세 페이지로 랜딩' },
   price_mismatch: { typeId: 'price_mismatch', label: '가격 · 프로모션 불일치', severity: 'P2', page: 'p.45', basis: '소재 표기가 ≠ 판매가 × (1 − 할인율), 허용 오차 ±1%' },
-  brand_intrusion: { typeId: 'brand_intrusion', label: '브랜드 키워드 침투', severity: 'P2', page: 'p.45', basis: '브랜드 키워드 평균 순위 ≥ 2.0 또는 노출 기회 손실 ≥ 20% (SERP 스냅샷 연동 전 추정)' },
-  invalid_traffic: { typeId: 'invalid_traffic', label: '무효 트래픽 급증', severity: 'P2', page: 'p.45', basis: '클릭 동요일 · 동시간 대비 +80% 이상 · CVR −60% 이하' },
-  tracking_break: { typeId: 'tracking_break', label: '전환 추적 단절', severity: 'P1', page: 'p.45', basis: '연속 3시간 전환 0 · 클릭 정상(기준 50% 이상) · 최근 7일 동시간 0 기록 비율 10% 이하' },
+  brand_intrusion: { typeId: 'brand_intrusion', label: '브랜드 키워드 침투', severity: 'P2', page: 'p.45', basis: '브랜드 키워드 평균 순위 ≥ 2.0 또는 노출 기회 손실 ≥ 20% (SERP 스냅샷 연동 전 추정 · 수치는 운영 가정)' },
+  invalid_traffic: { typeId: 'invalid_traffic', label: '무효 트래픽 급증', severity: 'P2', page: 'p.45', basis: '클릭 동요일 · 동시간 대비 +80% 이상 · CVR −60% 이하 (수치는 운영 가정, 전환 추적 단절 매체 제외)' },
+  tracking_break: { typeId: 'tracking_break', label: '전환 추적 단절', severity: 'P1', page: 'p.45', basis: '연속 3시간 전환 0 · 클릭 정상(기준 50% 이상) · 최근 7일 동시간 0 기록 비율 10% 이하 (p.45 전환 0 패턴의 수치화, 운영 가정)' },
   data_spike: { typeId: 'data_spike', label: '데이터 급변', severity: 'P2', page: 'p.44 · p.47', basis: '광고비 · 클릭 동요일 · 동시간 ±50%, 전환 최근 7일 동시간 −50%, CPA +50%, ROAS −35%' },
   anomaly_warn: { typeId: 'data_spike', label: '성과 이상 징후 · 주의', severity: 'P3', page: 'p.47', basis: '주의 기준(광고비 · 클릭 ±30%, 전환 −30%, CPA +30%, ROAS −20%) 도달' },
-  keyword_spike: { typeId: 'data_spike', label: '키워드 성과 급변', severity: 'P2', page: 'p.14 · p.44', basis: '최근 3일 CPC · 전환 ±50% (직전 11일 평균 대비)' },
-  search_volume: { typeId: 'external', label: '검색량 급변', severity: 'P3', page: 'p.44', basis: '브랜드 검색량 전일 vs 최근 4주 동요일 평균 ±30%' },
-  bulk_change: { typeId: 'bulk_change', label: '대량 변경 실수', severity: 'P1', page: 'p.45', basis: '10분 내 동일 요청자 10건 이상 · 입찰 변경 폭 상한 초과 · 승인 라우팅 불일치' },
+  keyword_spike: { typeId: 'data_spike', label: '키워드 성과 급변', severity: 'P2', page: 'p.14 · p.44', basis: '성과 급변 ±50% (p.14) · 최근 3일 CPC · 전환 vs 직전 11일 평균 (비교 구간은 운영 가정)' },
+  media_delay: { typeId: 'external', label: '매체 장애 · 집계 지연', severity: 'P3', page: 'p.44', basis: '현재 시각 시간별 데이터 미수신 · 다른 매체는 수신 · 최근 7일 같은 시간 수신 이력 있음 (판정 방식은 운영 가정)' },
+  search_volume: { typeId: 'external', label: '검색량 급변', severity: 'P3', page: 'p.44', basis: '브랜드 검색량 전일 vs 최근 4주 동요일 평균 ±30% (수치는 운영 가정)' },
+  bulk_change: { typeId: 'bulk_change', label: '대량 변경 실수', severity: 'P1', page: 'p.45', basis: '10분 내 동일 요청자 10건 이상(운영 가정) · 입찰 일 조정 폭 상한 20% 초과(p.14) · 30% 초과 예산 변경의 수면밀도 승인 누락(p.15)' },
 };
 
 /** 이슈 유형 라벨 (p.44 6유형 + p.45 추가 6종) */
@@ -97,6 +98,13 @@ export const WEEKEND_TIERS = [
 /** p.44 주말 · 공휴일 행: 30분 내 확인 · 다음 영업일 09:30 브리핑 */
 export const WEEKEND_ACK_MIN = 30;
 export const NEXT_BRIEFING = '09:30';
+
+/**
+ * 시간대 소진 곡선 기간 — 최근 28일(오늘 제외) 매체별 시간대 광고비 · 매출 비중.
+ * MILDO Board(board/data.ts curveDays) · AD Pilot(hourlyCostCurve 28일)과 같은 기준이라
+ * 세 화면의 캠페인 예상 마감 시각이 같게 나온다 (운영 가정 · 온보딩 중 요일별 곡선 검토).
+ */
+export const PACE_CURVE_DAYS = 28;
 
 /** 탐지 보조 기준 (운영 가정 · 온보딩 중 조정) */
 export const DETECT_DEFAULTS = {

@@ -8,6 +8,7 @@ import {
   budgetForecasts, buildHourIndex, evaluateMedia, fmtHour, hourlySeries, keywordShifts, mediaCauses, type BudgetForecast, type KeywordShift, type MetricEval,
 } from './engine';
 import { CauseList, LevelPill, MediaTag } from './parts';
+import { PACE_CURVE_DAYS } from './data';
 import type { AlertCtx } from './hooks';
 
 const METRICS = ['cost', 'clicks', 'conversions', 'cpa', 'roas'] as const;
@@ -44,7 +45,7 @@ export function AnomalyTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string
     { key: 'kw', label: '키워드', render: (k) => <div><strong className="small">{k.keyword.text}</strong><div className="xs muted">{SA_CAMPAIGNS[k.keyword.intent].name} · {k.keyword.status === 'test' ? '테스트 그룹' : '본 그룹'}</div></div> },
     { key: 'cpc', label: 'CPC 최근 3일 · 직전', align: 'right', render: (k) => <span className="num">{fmt.won(k.cpcRecent)} · {fmt.won(k.cpcBase)}</span> },
     { key: 'cpcD', label: 'CPC 변화', align: 'right', render: (k) => <span className="num">{fmt.delta(k.cpcD, 0)}</span>, sort: (k) => Math.abs(k.cpcD) },
-    { key: 'conv', label: '일 전환 변화', align: 'right', render: (k) => <span className="num">{Number.isFinite(k.convD) ? fmt.delta(k.convD, 0) : <span className="muted" title={`직전 전환 ${cfg.keywordMinConv}건 미만`}>표본 부족</span>}</span>, sort: (k) => (Number.isFinite(k.convD) ? Math.abs(k.convD) : -1) },
+    { key: 'conv', label: '일 전환 변화', align: 'right', render: (k) => (Number.isFinite(k.convD) ? <span className="num">{fmt.delta(k.convD, 0)}{k.convSampleOk ? null : <span className="xs muted" title={`직전 ${k.baseDays}일 전환 ${cfg.keywordMinConv}건 미만 — 판정 제외`}> · 표본 부족 참고</span>}</span> : <span className="muted">—</span>), sort: (k) => (Number.isFinite(k.convD) ? Math.abs(k.convD) : -1) },
     { key: 'roas', label: 'ROAS 최근 · 직전', align: 'right', render: (k) => <span className="num">{fmt.roas(k.roasRecent)} · {fmt.roas(k.roasBase)}</span> },
     { key: 'judge', label: `판정 (±${cfg.keywordSpikePct}%, p.14)`, render: (k) => (k.hit ? <span className="row" style={{ gap: 4 }}><LevelPill level="danger" label="급변 · 자동 조정 보류" /></span> : <LevelPill level="ok" />) },
   ];
@@ -152,10 +153,10 @@ export function AnomalyTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string
         <div className="xs muted">의도별 캠페인: {INTENT_IDS.map((i) => SA_CAMPAIGNS[i].name).join(' · ')} (p.35)</div>
       </Card>
 
-      <Card title="일 예산 소진 예측 · 예산 소진 중지 선제 감지" sub={`동요일 시간대 소진 곡선 기준 · 예상 마감 이후 구간의 평소 매출 비중이 ${Math.round(cfg.budgetLostShare * 100)}% 이상이면 P2 (p.44 광고 OFF · 미노출의 '예산 소진 중지' 선행 신호)`} actions={<><Src kind="PROPOSAL" page="p.44" /><Src kind="DEMO" /></>}>
+      <Card title="일 예산 소진 예측 · 예산 소진 중지 선제 감지" sub={`최근 ${PACE_CURVE_DAYS}일(오늘 제외) 매체 시간대 소진 곡선 기준 · 예상 마감 이후 구간의 평소 매출 비중이 ${Math.round(cfg.budgetLostShare * 100)}% 이상이면 P2 (p.44 광고 OFF · 미노출의 '예산 소진 중지' 선행 신호)`} actions={<><Src kind="PROPOSAL" page="p.14 · p.44" /><Src kind="DEMO" /></>}>
         <DataTable rows={forecasts} columns={fcCols} rowKey={(f) => f.campaign.id} initialSort={{ key: 'p', dir: 'desc' }} maxHeight={380}
           onRowClick={(f) => { const inc = incidents.find((i) => i.ruleId === 'budget_forecast' && i.target === f.campaign.name); if (inc) onOpen(inc.id); }} />
-        <div className="xs muted">페이스 = (오늘 소진 ÷ 일 예산) ÷ 같은 시각 평소 소진 비중. 선형 추정(campaignPacing)과 달리 저녁 피크 시간대 비중을 반영합니다. 현재 페이스 유지 가정이며 예측이 아닙니다.</div>
+        <div className="xs muted">페이스 = (오늘 소진 ÷ 일 예산) ÷ 같은 시각 평소 소진 비중. 시간대 곡선은 최근 {PACE_CURVE_DAYS}일 같은 매체의 시간대별 광고비 비중으로 MILDO Board 예산 소진 현황 · AD Pilot 조기 소진 판정과 같은 기준이라 예상 마감 시각이 세 화면에서 같습니다. 선형 추정(campaignPacing)과 달리 저녁 피크 시간대 비중을 반영하며, 현재 페이스 유지 가정이라 확정 예측이 아닙니다. 판정 기준(미노출 구간 매출 비중 {Math.round(cfg.budgetLostShare * 100)}%)은 운영 가정입니다.</div>
       </Card>
     </div>
   );

@@ -8,7 +8,7 @@ import { SLA } from '@/data/constants';
 import { fmt, sum } from '@/core/util';
 import {
   checkAccounts, fmtDateShort, fmtStamp, heldMedia, historyRecords, holidayPrecheck, nextAction, nextBusinessDay, offBlocks, onDutyFor,
-  primaryEvidence, regimeOf, sessionRecords, slaReport, slaState, type AlertConfig, type AlertIncident,
+  primaryEvidence, regimeOf, sessionRecords, slaReport, slaState, typeOf, type AlertConfig, type AlertIncident,
 } from './engine';
 import { TYPE_LABEL } from './data';
 import { MEDIA } from '@/data/constants';
@@ -43,10 +43,10 @@ function interpret(i: AlertIncident): string | null {
   }
 }
 
-export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs = Date.parse(data.generatedAt), toMs: (iso: string) => number = Date.parse): Brief {
+export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs = Date.parse(data.generatedAt), toMs: (iso: string) => number = Date.parse, offHours = false): Brief {
   const list = (incidents as AlertIncident[]).filter((i) => i.status !== 'resolved');
   const p = { P1: list.filter((i) => i.severity === 'P1'), P2: list.filter((i) => i.severity === 'P2'), P3: list.filter((i) => i.severity === 'P3') };
-  const regime = regimeOf(data.today);
+  const regime = regimeOf(data.today, offHours);
   const top = [...p.P1, ...p.P2].slice(0, 6);
   const facts = [
     `기준 ${fmtDateShort(data.today)} ${String(data.currentHour).padStart(2, '0')}:30 열린 이슈 ${list.length}건 (P1 ${p.P1.length} · P2 ${p.P2.length} · P3 ${p.P3.length}). 수치는 시연용 TEST DATA.`,
@@ -59,7 +59,7 @@ export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs
   for (const i of rec) patterns.push(`${i.title.replace(/^\[테스트\] /, '')}: 최근 30일 같은 유형 · 매체 ${i.recurrence!.count}회 (${i.recurrence!.dates.join(', ')}) — 재발 이슈로 재발 방지 항목 필요.`);
   const byMedia = new Map<string, AlertIncident[]>();
   for (const i of list) if (i.media) (byMedia.get(i.media) ?? byMedia.set(i.media, []).get(i.media)!).push(i);
-  for (const [m, l] of byMedia) if (l.length >= 2) patterns.push(`${mediaLabel(m)}에서 ${l.length}건이 동시에 열림 (${l.map((x) => x.ruleLabel ?? TYPE_LABEL[x.typeId] ?? x.ruleId).join(' / ')}) — 같은 원인에서 이어진 연쇄인지 먼저 확인.`);
+  for (const [m, l] of byMedia) if (l.length >= 2) patterns.push(`${mediaLabel(m)}에서 ${l.length}건이 동시에 열림 (${l.map((x) => x.ruleLabel ?? TYPE_LABEL[typeOf(x)] ?? x.ruleId).join(' / ')}) — 같은 원인에서 이어진 연쇄인지 먼저 확인.`);
   const PRIORITY = ['tracking_break', 'account_payment', 'data_spike', 'keyword_spike', 'budget_forecast', 'brand_intrusion', 'soldout_landing'];
   const interpretation = [...list].filter((i) => PRIORITY.includes(i.ruleId))
     .sort((a, b) => PRIORITY.indexOf(a.ruleId) - PRIORITY.indexOf(b.ruleId))
@@ -76,7 +76,7 @@ export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs
     '광고비 급증이 프로모션 · 소재 교체에 따른 의도된 증액이면 이상이 아니다. MILDO Flow 변경 이력으로 먼저 확인한다.',
   ];
   const actions = top.slice(0, 5).map((i) => {
-    const st = slaState(i, nowMs, toMs);
+    const st = slaState(i, nowMs, toMs, offHours);
     return `${i.assignee ?? '담당 AE'}${i.onDuty ? '(당번)' : ''} · ${st.deadlineMs ? `${fmtStamp(st.deadlineMs)}까지 ${st.stageLabel}` : st.stageLabel} — ${i.title.replace(/^\[테스트\] /, '')}: ${nextAction(i.ruleId)}.`;
   });
   return { title: 'MILDO Alert 이슈 브리프', facts, patterns, interpretation, conditions, counter, actions };

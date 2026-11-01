@@ -5,13 +5,13 @@ import { fmt } from '@/core/util';
 import { Markdown } from '@/ui/Markdown';
 import { Icon } from '@/ui/Icon';
 import { Button, Callout, CopyButton, DownloadButton, Drawer, Field, Pill, Src, Stat } from '@/ui/primitives';
-import { backupOf, fmtRemain, fmtStamp, incidentReport, nextAction, preventSuggestion, roleLabel, slaState, type AlertIncident } from './engine';
+import { backupOf, fmtRemain, fmtStamp, incidentReport, nextAction, preventSuggestion, roleLabel, slaState, typeOf, type AlertIncident } from './engine';
 import { TYPE_LABEL } from './data';
 import { CauseList, ChangeStatusPill, EvidenceTable, krwOrDash, MediaTag, mediaName, SevLabel, SlaTimer, StatusPill } from './parts';
 import { canApprove, type AlertCtx } from './hooks';
 
 export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string; onClose: () => void }) {
-  const { incidents, state, actions, nowMs, toMs, nameOf, clockIso, act, data } = ctx;
+  const { incidents, state, actions, nowMs, toMs, nameOf, clockIso, act, data, cfg } = ctx;
   const inc = incidents.find((i) => i.id === id);
   const [assignRole, setAssignRole] = useState<string>('');
   const [actionNote, setActionNote] = useState('');
@@ -24,7 +24,6 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
   }
   const st = slaState(inc, nowMs, toMs, state.offHoursMode);
   const sla = inc.sla ?? {};
-  const now = clockIso();
   const resolved = inc.status === 'resolved';
   const report = () => incidentReport(inc, { nowMs, toMs, nameOf });
   const linked = state.changes.filter((c) => c.targetId?.startsWith(`alert:${inc.id}`));
@@ -50,7 +49,7 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
       <div className="stack-sm">
         <h3 style={{ fontSize: 'var(--fs-xl)', lineHeight: 1.3 }}>{inc.title}</h3>
         <div className="alert-sub">
-          <span>{TYPE_LABEL[inc.typeId] ?? inc.ruleId}{inc.ruleLabel && inc.ruleLabel !== TYPE_LABEL[inc.typeId] ? ` · ${inc.ruleLabel}` : ''}</span>
+          <span>{TYPE_LABEL[typeOf(inc)] ?? inc.ruleId}{inc.ruleLabel && inc.ruleLabel !== TYPE_LABEL[typeOf(inc)] ? ` · ${inc.ruleLabel}` : ''}</span>
           {inc.page ? <Src kind="PROPOSAL" page={inc.page} /> : null}
           <Src kind="DEMO" />
           {inc.isTest ? <Pill tone="dark">테스트 주입</Pill> : null}
@@ -99,15 +98,15 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
           <div className="stack">
             <div className="row">
               <Button size="sm" variant={!sla.ackAt ? 'primary' : 'default'} icon="check" disabled={!!sla.ackAt}
-                onClick={() => act(inc, { status: inc.status === 'open' ? 'ack' : inc.status, sla: { ...sla, ackAt: now } }, '인지')}>인지</Button>
-              <select className="select" aria-label="배정할 TF 역할" style={{ width: 'auto' }} value={assignRole} onChange={(e) => setAssignRole(e.target.value)}>
+                onClick={() => act(inc, { status: inc.status === 'open' ? 'ack' : inc.status, sla: { ...sla, ackAt: clockIso() } }, '인지')}>인지</Button>
+              <select id={`assign-${inc.id}`} className="select" aria-label="배정할 TF 역할" style={{ width: 'auto' }} value={assignRole} onChange={(e) => setAssignRole(e.target.value)}>
                 <option value="">TF 역할 선택</option>
                 {TF_ROLES.map((r) => <option key={r.id} value={r.id}>{nameOf(r.role)}</option>)}
               </select>
               <Button size="sm" icon="users" disabled={!assignRole}
                 onClick={() => {
                   const b = backupOf(assignRole);
-                  act(inc, { assignee: roleLabel(assignRole), backup: roleLabel(b), assigneeRoleId: assignRole, backupRoleId: b, status: inc.status === 'open' ? 'ack' : inc.status, sla: { ...sla, ackAt: sla.ackAt ?? now, assignedAt: now } }, `배정 · ${roleLabel(assignRole)} (백업 ${roleLabel(b)})`);
+                  act(inc, { assignee: roleLabel(assignRole), backup: roleLabel(b), assigneeRoleId: assignRole, backupRoleId: b, status: inc.status === 'open' ? 'ack' : inc.status, sla: { ...sla, ackAt: sla.ackAt ?? clockIso(), assignedAt: clockIso() } }, `배정 · ${roleLabel(assignRole)} (백업 ${roleLabel(b)})`);
                   setAssignRole('');
                 }}>배정</Button>
             </div>
@@ -116,24 +115,24 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
             </Field>
             <div className="row">
               <Button size="sm" variant={sla.ackAt && !sla.actionAt ? 'primary' : 'default'} icon="zap" disabled={!actionNote.trim()}
-                onClick={() => { act(inc, { status: 'action', actionNote: actionNote.trim(), sla: { ...sla, ackAt: sla.ackAt ?? now, actionAt: sla.actionAt ?? now } }, `1차 조치 · ${actionNote.trim().slice(0, 60)}`); setActionNote(''); }}>1차 조치 기록</Button>
+                onClick={() => { act(inc, { status: 'action', actionNote: actionNote.trim(), sla: { ...sla, ackAt: sla.ackAt ?? clockIso(), actionAt: sla.actionAt ?? clockIso() } }, `1차 조치 · ${actionNote.trim().slice(0, 60)}`); setActionNote(''); }}>1차 조치 기록</Button>
               <Button size="sm" icon="report" disabled={!sla.actionAt && inc.severity !== 'P3'} title={!sla.actionAt && inc.severity !== 'P3' ? '1차 조치 기록 후 보고' : undefined}
-                onClick={() => { act(inc, { sla: { ...sla, reportAt: sla.reportAt ?? now } }, '결과 보고 · 이슈 보고서 발송 (p.49 양식)'); setShowReport(true); }}>결과 보고</Button>
+                onClick={() => { act(inc, { sla: { ...sla, reportAt: sla.reportAt ?? clockIso() } }, '결과 보고 · 이슈 보고서 발송 (p.49 양식)'); setShowReport(true); }}>결과 보고</Button>
               <span className="xs muted">{inc.actionNote ? `기록된 조치: ${inc.actionNote}` : ''}</span>
             </div>
             <Field id={`prev-${inc.id}`} label="재발 방지 (탐지 기준 · 체크리스트 업데이트)">
               <textarea id={`prev-${inc.id}`} className="textarea" rows={2} value={preventNote} onChange={(e) => setPreventNote(e.target.value)} placeholder={preventSuggestion(inc)} />
             </Field>
             <div className="row">
-              <Button size="sm" icon="shield" onClick={() => { const n = preventNote.trim() || preventSuggestion(inc); act(inc, { preventNote: n, sla: { ...sla, preventAt: now } }, '재발 방지 기록'); setPreventNote(''); }}>{preventNote.trim() ? '재발 방지 기록' : '권고안으로 기록'}</Button>
+              <Button size="sm" icon="shield" onClick={() => { const n = preventNote.trim() || preventSuggestion(inc); act(inc, { preventNote: n, sla: { ...sla, preventAt: clockIso() } }, '재발 방지 기록'); setPreventNote(''); }}>{preventNote.trim() ? '재발 방지 기록' : '권고안으로 기록'}</Button>
               <Button size="sm" variant="primary" icon="check" disabled={!sla.actionAt && inc.severity !== 'P3'} title={!sla.actionAt && inc.severity !== 'P3' ? '1차 조치 기록 후 해결 가능' : undefined}
-                onClick={() => { act(inc, { status: 'resolved', sla: { ...sla, resolvedAt: now } }, '해결'); actions.toast({ tone: 'good', title: '이슈 해결', body: inc.title }); }}>해결</Button>
+                onClick={() => { act(inc, { status: 'resolved', sla: { ...sla, resolvedAt: clockIso() } }, '해결'); actions.toast({ tone: 'good', title: '이슈 해결', body: inc.title }); }}>해결</Button>
               {!fpArmed ? (
                 <Button size="sm" variant="ghost" icon="x" onClick={() => setFpArmed(true)}>오탐으로 종료</Button>
               ) : (
                 <span className="row" style={{ gap: 6 }}>
-                  <input className="input" style={{ width: 200 }} value={fpReason} onChange={(e) => setFpReason(e.target.value)} placeholder="오탐 사유 (예: 집계 지연 정상화)" aria-label="오탐 사유" />
-                  <Button size="sm" variant="danger" disabled={!fpReason.trim()} onClick={() => { act(inc, { status: 'resolved', falsePositive: true, actionNote: `오탐 · ${fpReason.trim()}`, sla: { ...sla, ackAt: sla.ackAt ?? now, resolvedAt: now } }, `오탐으로 종료 · ${fpReason.trim()}`); setFpArmed(false); }}>확인</Button>
+                  <input id={`fp-${inc.id}`} className="input" style={{ width: 200 }} value={fpReason} onChange={(e) => setFpReason(e.target.value)} placeholder="오탐 사유 (예: 집계 지연 정상화)" aria-label="오탐 사유" />
+                  <Button size="sm" variant="danger" disabled={!fpReason.trim()} onClick={() => { act(inc, { status: 'resolved', falsePositive: true, actionNote: `오탐 · ${fpReason.trim()}`, sla: { ...sla, ackAt: sla.ackAt ?? clockIso(), resolvedAt: clockIso() } }, `오탐으로 종료 · ${fpReason.trim()}`); setFpArmed(false); }}>확인</Button>
                   <Button size="sm" variant="ghost" onClick={() => setFpArmed(false)}>취소</Button>
                 </span>
               )}
@@ -182,11 +181,16 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
             </Button>
           ) : null}
           {inc.ruleId === 'account_payment' && acc ? (() => {
-            const topup = Math.max(0, Math.ceil((acc.avgDailySpend * 3 - acc.balance) / 100000) * 100000);
+            // 감지 시점 잔액(테스트 주입 이슈는 주입 데이터 기준)을 쓴다
+            const balance = inc.metric === '잔액' && Number.isFinite(inc.observed) ? (inc.observed as number) : acc.balance;
+            const daily = Number.isFinite(inc.baseline) && (inc.baseline as number) > 0 ? (inc.baseline as number) : acc.avgDailySpend;
+            const days = cfg.runwayWarnDays;
+            const topup = Math.max(0, Math.ceil((daily * days - balance) / 100000) * 100000);
+            const tid = `alert:${inc.id}:topup`;
             return (
-              <Button size="sm" icon="wallet" disabled={linked.some((c) => c.targetId === `alert:${inc.id}:topup`)}
-                onClick={() => requestChange({ kind: 'setting', target: `${acc.name} 비즈머니 충전`, targetId: `alert:${inc.id}:topup`, before: acc.balance, after: acc.balance + topup, changePct: acc.balance > 0 ? (topup / acc.balance) * 100 : undefined, reason: `잔액 ${fmt.krw(acc.balance)}원 < 일 평균 소진 ${fmt.krw(acc.avgDailySpend)}원 · 자동충전 ${acc.autoCharge} → 3일치까지 ${fmt.krw(topup)}원 충전 요청 (p.50 결제 수단 수면밀도)`, approver: 'CLIENT' }, '충전 요청을 만들었습니다')}>
-                충전 요청 {fmt.krw(topup)}원 (수면밀도 승인)
+              <Button size="sm" icon="wallet" disabled={topup <= 0 || linked.some((c) => c.targetId === tid)} title={topup <= 0 ? `잔액이 이미 ${days}일치 이상` : undefined}
+                onClick={() => requestChange({ kind: 'setting', target: `${acc.name} 비즈머니 충전`, targetId: tid, before: balance, after: balance + topup, changePct: balance > 0 ? (topup / balance) * 100 : undefined, reason: `잔액 ${fmt.krw(balance)}원 < 일 평균 소진 ${fmt.krw(daily)}원 · 자동충전 ${acc.autoCharge === 'failed' || inc.title.includes('자동충전 실패') ? '실패' : acc.autoCharge} → 주말 · 연휴 대비 ${days}일치까지 ${fmt.krw(topup)}원 충전 요청 (p.50 결제 수단 수면밀도 · ${days}일치는 운영 가정)`, approver: 'CLIENT' }, '충전 요청을 만들었습니다')}>
+                충전 요청 {fmt.krw(topup)}원 · {days}일치 (수면밀도 승인)
               </Button>
             );
           })() : null}

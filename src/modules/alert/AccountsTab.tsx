@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { OWNERSHIP } from '@/data/constants';
+import { MEDIA_IDS, OWNERSHIP } from '@/data/constants';
 import { fmt, sum } from '@/core/util';
 import { Button, Card, DataTable, Pill, ProgressBar, Src, Stat, type Column } from '@/ui/primitives';
 import { checkAccounts, dayDiff, fmtStamp, type AccountCheck } from './engine';
@@ -33,13 +33,23 @@ export function AccountsTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: strin
     { key: 'ac', label: '자동충전', render: (c) => <Pill tone={c.account.autoCharge === 'failed' ? 'critical' : c.account.autoCharge === 'ok' ? 'good' : 'neutral'} icon={c.account.autoCharge === 'failed' ? 'alert' : undefined}>{{ ok: '정상', failed: '실패', off: '수동', postpaid: '후불' }[c.account.autoCharge]}</Pill> },
     { key: 'p', label: '권한', render: (c) => <span className="xs">실명 {c.account.permissions.filter((p) => p.realName).length}{c.nonRealName ? <strong style={{ color: 'var(--critical-ink)' }}> · 비실명 {c.nonRealName}</strong> : null}{c.stale ? ` · 미접속 ${c.stale}` : ''}</span> },
     { key: 's', label: '상태', render: (c) => <Pill tone={c.account.status === 'active' ? 'neutral' : c.account.status === 'review' ? 'warning' : 'critical'}>{{ active: '정상', review: '검수 · 확인', restricted: '제재' }[c.account.status]}</Pill> },
-    { key: 'w', label: '점검 결과', render: (c) => <LevelPill level={c.worst === 'fail' ? 'fail' : c.worst === 'warn' ? 'warn' : c.worst === 'info' ? 'info' : 'pass'} label={c.worst === 'fail' ? `실패 ${c.findings.filter((f) => f.level === 'fail').length}` : c.worst === 'warn' ? '주의' : c.worst === 'info' ? '확인 필요' : '정상'} /> },
+    {
+      key: 'w', label: '점검 결과 · 근거', render: (c) => {
+        const hit = c.findings.filter((f) => f.level === c.worst && c.worst !== 'ok');
+        return (
+          <div className="stack-sm" style={{ gap: 2 }}>
+            <LevelPill level={c.worst === 'fail' ? 'fail' : c.worst === 'warn' ? 'warn' : c.worst === 'info' ? 'info' : 'pass'} label={c.worst === 'fail' ? `실패 ${hit.length}` : c.worst === 'warn' ? '주의' : c.worst === 'info' ? '확인 필요' : '정상'} />
+            <span className="xs muted">{hit.length ? Array.from(new Set(hit.map((f) => f.label))).join(' · ') : '소유 · 잔액 · 충전 · 권한 · 상태 통과'}</span>
+          </div>
+        );
+      },
+    },
   ];
 
   return (
     <div className="stack-lg">
       <div className="grid g-5">
-        <Card><Stat label="광고 계정" src={<Src kind="DEMO" />} value={checks.length} foot={<span>매체 6 · 판매 채널 광고 포함</span>} /></Card>
+        <Card><Stat label="광고 계정" src={<Src kind="DEMO" />} value={checks.length} foot={<span>매체 계정 {checks.filter((c) => (MEDIA_IDS as string[]).includes(c.account.media)).length} · 판매 채널 광고 {checks.filter((c) => !(MEDIA_IDS as string[]).includes(c.account.media)).length}</span>} /></Card>
         <Card><Stat label="점검 실패 · 주의" src={<Src kind="DEMO" />} value={<span>{checks.filter((c) => c.worst === 'fail').length}<span className="small muted"> / 주의 {checks.filter((c) => c.worst === 'warn').length}</span></span>} foot={<span>잔액 1일치 · 자동충전 · 권한 · 상태 (p.44)</span>} /></Card>
         <Card><Stat label="선결제 잔액 합계" src={<Src kind="DEMO" />} value={`${fmt.krw(sum(prepaid, (c) => c.account.balance))}원`} foot={<span>선결제 {prepaid.length}개 계정</span>} /></Card>
         <Card><Stat label="최단 소진 예상" src={<Src kind="DEMO" />} value={minRun ? `${fmt.dec1(minRun.runwayDays)}일` : '—'} foot={<span>{minRun ? `${minRun.account.name.replace(/ \(수면밀도\)/, '')} · ${minRun.exhaustAtMs ? fmtStamp(minRun.exhaustAtMs) : ''}` : ''}</span>} /></Card>

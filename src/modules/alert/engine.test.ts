@@ -5,7 +5,7 @@ import { SLA } from '@/data/constants';
 import { addDays, weekday } from '@/core/util';
 import {
   activeConfig, budgetForecasts, checkAccounts, checkPromoPrices, defaultConfig, detectBulkChange, detectIncidents, detectTestIncidents,
-  encodeThreshold, evaluateMedia, falsePositiveByMetric, historyRecords, holidayPrecheck, incidentReport, injectScenario, notificationLog,
+  encodeThreshold, evaluateMedia, falsePositiveByMetric, fmtHour, historyRecords, holidayPrecheck, hourProfile, incidentReport, injectScenario, notificationLog,
   offBlocks, onDutyFor, parseThreshold, rankCauses, regimeOf, sessionRecords, slaReport, slaState, slaTargets, type AlertIncident,
 } from './engine';
 import { DEMO_CREATIVES } from './data';
@@ -412,5 +412,207 @@ describe('주말 모드 시뮬레이션 (state.offHoursMode)', () => {
     expect(forced.every((i) => i.onDuty)).toBe(true);
     const p1 = forced.find((i) => i.severity === 'P1');
     if (p1) expect(p1.autoActions.some((a) => a.includes('PM 에스컬레이션'))).toBe(true);
+  });
+});
+
+/* ---------- 리뷰 보강: 미검증 규칙 · 화면 간 일치 · 수정 사항 ---------- */
+
+/** MILDO Board · AD Pilot과 같은 산식의 독립 참조 구현 — 최근 28일(오늘 제외) 시간대 누적 광고비 비중 */
+function referenceExhaust(d: Dataset, c: Dataset['campaigns'][number]): number | null {
+  const from = addDays(d.today, -28);
+  const byH = new Array<number>(24).fill(0);
+  let tot = 0;
+  for (const r of d.mediaHourly) {
+    if (r.media !== c.media || r.date >= d.today || r.date < from) continue;
+    byH[r.hour] += r.cost;
+    tot += r.cost;
+  }
+  let acc = 0;
+  const cum = byH.map((v) => (acc += v) / tot);
+  const ratio = c.spentToday / (c.dailyBudget * cum[c.hourOfData]);
+  if (!(ratio > 1)) return null;
+  const need = 1 / ratio;
+  for (let h = 0; h < 24; h++) {
+    if (cum[h] >= need) {
+      const prev = h > 0 ? cum[h - 1] : 0;
+      return h + Math.min(1, Math.max(0, (need - prev) / (cum[h] - prev)));
+    }
+  }
+  return null;
+}
+
+describe('일 예산 소진 예측 · MILDO Board · AD Pilot과 같은 예상 마감 시각', () => {
+  const fcs = budgetForecasts(demo);
+  it('모든 캠페인의 예상 마감 시각이 28일 시간대 곡선 참조 구현과 일치', () => {
+    for (const f of fcs) {
+      const ref = referenceExhaust(demo, f.campaign);
+      if (ref === null) expect(f.exhaustHour).toBeNull();
+      else expect(f.exhaustHour!).toBeCloseTo(ref, 9);
+    }
+  });
+  it('SA_일반 제품 20:22 · Meta_넓은 타겟 18:06 (Board · AD Pilot 화면 값과 동일)', () => {
+    const at = (n: string) => fmtHour(fcs.find((f) => f.campaign.name === n)!.exhaustHour!);
+    expect(at('SA_일반 제품')).toBe('20:22');
+    expect(at('Meta_넓은 타겟')).toBe('18:06');
+    const inc = byRule('budget_forecast').find((i) => i.target === 'SA_일반 제품')!;
+    expect(inc.title).toContain('20:22');
+    expect(inc.impactNote).toContain('28일');
+  });
+  it('시간대 비중 합 = 1 · 오늘 데이터 제외 · 데이터 없으면 균등', () => {
+    const p = hourProfile(demo, 'meta');
+    expect(p.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
+    const d = generateDemoData();
+    d.mediaHourly = d.mediaHourly.map((r) => (r.date === d.today && r.media === 'meta' ? { ...r, cost: r.cost * 100 } : r));
+    expect(hourProfile(d, 'meta')).toEqual(p);
+    expect(hourProfile(emptyData(), 'meta')).toEqual(Array(24).fill(1 / 24));
+  });
+});
+
+describe('p.44 광고 OFF · 미노출 계열 (데이터를 바꿔 탐지)', () => {
+  it('캠페인 OFF → P1, limited → P2, 예산 소진 → P1 budget_exhausted', () => {
+    const d = generateDemoData();
+    d.campaigns = d.campaigns.map((c) => (c.name === 'SA_브랜드 방어' ? { ...c, status: 'off' as const } : c.name === 'Google_검색' ? { ...c, status: 'limited' as const } : c.name === '카카오_프로모션' ? { ...c, spentToday: c.dailyBudget } : c));
+    const r = detectIncidents(d);
+    expect(r.find((i) => i.ruleId === 'campaign_off' && i.target === 'SA_브랜드 방어')!.severity).toBe('P1');
+    expect(r.find((i) => i.ruleId === 'campaign_off' && i.target === 'Google_검색')!.severity).toBe('P2');
+    const ex = r.find((i) => i.ruleId === 'budget_exhausted')!;
+    expect(ex.target).toBe('카카오_프로모션');
+    expect(ex.severity).toBe('P1');
+    expect(r.some((i) => i.ruleId === 'budget_exhausted' && i.target !== '카카오_프로모션')).toBe(false);
+  });
+  it('매체 최근 구간 노출 0 → P1 매체 미노출 (같은 매체 급변 이슈는 만들지 않음)', () => {
+    const d = generateDemoData();
+    d.mediaHourly = d.mediaHourly.map((r) => (r.date === d.today && r.media === 'google' && r.hour >= 14 ? { ...r, impressions: 0, clicks: 0, cost: 0, conversions: 0, revenue: 0 } : r));
+    const r = detectIncidents(d);
+    const i = r.find((x) => x.ruleId === 'media_no_impression')!;
+    expect(i.media).toBe('google');
+    expect(i.severity).toBe('P1');
+    expect(i.impact.impressionsLost!).toBeGreaterThan(0);
+    expect(r.some((x) => x.ruleId === 'data_spike' && x.media === 'google')).toBe(false);
+    expect(byRule('media_no_impression')).toHaveLength(0);
+  });
+  it('핵심 키워드 최근일 노출 0 → P1, 비핵심 키워드는 제외', () => {
+    const d = generateDemoData();
+    const zeroLast = (k: Dataset['keywords'][number]) => ({ ...k, daily: k.daily.map((x, i, a) => (i === a.length - 1 ? { ...x, impressions: 0 } : x)) });
+    d.keywords = d.keywords.map((k) => (k.text === '수면밀도' || k.text === '첫 독립 매트리스' ? zeroLast(k) : k));
+    const r = detectIncidents(d).filter((i) => i.ruleId === 'keyword_no_impression');
+    expect(r.map((i) => i.target)).toEqual(['수면밀도']);
+    expect(r[0].severity).toBe('P1');
+    expect(byRule('keyword_no_impression')).toHaveLength(0);
+  });
+});
+
+describe('p.45 추가 탐지 · 데모 · 경계', () => {
+  it('브랜드 키워드 침투 (데모): 평균 순위 ≥ 2.0 또는 손실 ≥ 20% 브랜드 키워드 → P2 · SERP 연동 전 추정 표기', () => {
+    const i = byRule('brand_intrusion')[0];
+    expect(i).toBeDefined();
+    expect(i.severity).toBe('P2');
+    const brand = demo.keywords.filter((k) => k.isBrand && (k.avgRank >= 2 || k.impressionShareLost >= 0.2));
+    expect(i.evidence).toHaveLength(brand.length);
+    expect(i.basis).toContain('SERP');
+    const d = generateDemoData();
+    d.keywords = d.keywords.map((k) => (k.isBrand ? { ...k, avgRank: 1.1, impressionShareLost: 0.05 } : k));
+    expect(detectIncidents(d).some((x) => x.ruleId === 'brand_intrusion')).toBe(false);
+  });
+  it('무효 트래픽: 클릭 +100% · CVR −85% → P2, 전환 추적 단절 매체는 제외', () => {
+    const r = detectIncidents(synthetic({ todayMult: { clicks: 2, conversions: 0.3, revenue: 0.3 } }));
+    expect(r.find((i) => i.ruleId === 'invalid_traffic')?.severity).toBe('P2');
+    const broken = detectIncidents(synthetic({ todayMult: { clicks: 2, conversions: 0, revenue: 0 }, hours: [13, 14, 15] }));
+    expect(broken.some((i) => i.ruleId === 'tracking_break')).toBe(true);
+    expect(broken.some((i) => i.ruleId === 'invalid_traffic')).toBe(false);
+    expect(byRule('invalid_traffic')).toHaveLength(0);
+  });
+  it("'매트리스 추천' 전환 하락은 표본 부족 참고로 표시 (판정은 CPC)", () => {
+    const i = byRule('keyword_spike').find((x) => x.target === '매트리스 추천')!;
+    const conv = i.evidence.find((e) => e.label === '일 전환')!;
+    expect(conv.deltaPct!).toBeLessThan(-20);
+    expect(conv.level).toBe('info');
+    expect(conv.note).toContain('표본 부족');
+    expect(i.title).toContain('참고');
+    expect(i.metric).toBe('CPC');
+  });
+  it('소재 검수 보류 24시간 초과 · 랜딩 4xx → P2 소재 · 랜딩, 24시간 이내 보류는 제외', () => {
+    const base = DEMO_CREATIVES[0];
+    const creatives = [
+      { ...base, id: 'a', name: '보류 소재', status: 'pending' as const, submittedAt: '2026-10-29T10:00:00+09:00' },
+      { ...base, id: 'b', name: '최근 제출', status: 'pending' as const, submittedAt: '2026-10-31T10:00:00+09:00' },
+      { ...base, id: 'c', name: '404 소재', landingStatus: 404 },
+    ];
+    const r = detectIncidents(demo, { creatives });
+    expect(r.filter((i) => i.ruleId === 'creative_pending').map((i) => i.target)).toEqual(['보류 소재']);
+    expect(r.find((i) => i.ruleId === 'landing_error')!.target).toBe('404 소재 랜딩');
+    expect(r.find((i) => i.ruleId === 'landing_error')!.typeId).toBe('creative_landing');
+    expect(byRule('creative_pending')).toHaveLength(0); // 데모 보류 소재는 13:10 제출 (2시간 대기)
+  });
+  it('계정 제재(restricted) → P1 계정 상태', () => {
+    const d = generateDemoData();
+    d.accounts = d.accounts.map((a) => (a.id === 'acc_coupang' ? { ...a, status: 'restricted' as const } : a));
+    const i = detectIncidents(d).find((x) => x.ruleId === 'account_status' && x.media === 'coupang')!;
+    expect(i.severity).toBe('P1');
+  });
+  it('주말 당번이 계정 권한이 없으면 실명 권한 보유자가 1차 조치 대행', () => {
+    const i = byRule('account_permission')[0];
+    const duty = onDutyFor(demo.today)!;
+    if (duty.roleId !== 'global_ae') expect(i.autoActions.some((a) => a.includes('1차 조치 글로벌 매체 AE 대행'))).toBe(true);
+    expect(i.evidence.some((e) => e.threshold?.includes('권한 변경 이벤트 → P1'))).toBe(true);
+  });
+});
+
+describe('p.44 매체 · 외부 환경 (P3 메일)', () => {
+  it('브랜드 검색량 전일 +60% → P3 검색량 급변 · 메일 알림, 데모 데이터는 미탐지', () => {
+    expect(byRule('search_volume')).toHaveLength(0);
+    const d = generateDemoData();
+    const y = addDays(d.today, -1);
+    d.brandSearchDaily = d.brandSearchDaily.map((x) => (x.date === y ? { ...x, volume: Math.round(x.volume * 1.6) } : x));
+    const i = detectIncidents(d).find((x) => x.ruleId === 'search_volume')!;
+    expect(i.severity).toBe('P3');
+    expect(i.deltaPct ?? i.evidence[0].deltaPct!).toBeGreaterThan(30);
+    const log = notificationLog([i], Date.parse(d.generatedAt));
+    expect(log.find((n) => n.kind === '감지')!.channel).toBe('메일');
+  });
+});
+
+describe('원인 후보 근거는 매체별 랜딩 기준', () => {
+  it('Meta 소재 랜딩(이벤트 페이지)에는 품절 옵션 가점이 붙지 않는다', () => {
+    const meta = byRule('data_spike').find((i) => i.media === 'meta')!;
+    const landing = meta.causes.find((c) => c.label === '랜딩 오류 · 품절')!;
+    expect(landing.basis).not.toContain('옵션 품절');
+  });
+});
+
+describe('보고서 표 · 오탐 집계 보정', () => {
+  it('텍스트 근거는 관측 칸에 설명만 (— 접두 없음)', () => {
+    const d = generateDemoData();
+    d.campaigns = d.campaigns.map((c) => (c.name === 'SA_브랜드 방어' ? { ...c, status: 'off' as const } : c));
+    const inc = detectIncidents(d).find((i) => i.ruleId === 'campaign_off')!;
+    const md = incidentReport(inc, { nowMs: Date.parse(d.generatedAt) });
+    expect(md).toContain('| 캠페인 상태 | 집행 중지 |');
+    expect(md).not.toMatch(/\| —[가-힣]/);
+  });
+  it('키워드 CPC 급변 이력은 광고비 기준이 아니라 키워드 급변 기준 오탐으로 집계', () => {
+    const fp = falsePositiveByMetric(historyRecords());
+    expect(fp.keywordSpikePct.n).toBe(1);
+    expect(fp.cost).toEqual({ n: 3, fp: 2 }); // 10/02 Meta · 10/13 Google(오탐) · 10/26 GFA(오탐)
+  });
+});
+
+describe('p.44 매체 · 외부 환경: 매체 장애 · 집계 지연 (P3)', () => {
+  it('한 매체만 현재 시각 데이터가 없으면 P3 · 메일, 데모 데이터는 미탐지', () => {
+    expect(byRule('media_delay')).toHaveLength(0);
+    const d = generateDemoData();
+    d.mediaHourly = d.mediaHourly.filter((r) => !(r.date === d.today && r.media === 'google' && r.hour >= 14));
+    const r = detectIncidents(d);
+    const i = r.find((x) => x.ruleId === 'media_delay')!;
+    expect(i.media).toBe('google');
+    expect(i.severity).toBe('P3');
+    expect(i.typeId).toBe('external');
+    expect(i.title).toContain('14시 이후 2시간');
+    expect(r.some((x) => x.ruleId === 'data_spike' && x.media === 'google')).toBe(false);
+    expect(notificationLog([i], Date.parse(d.generatedAt))[0].channel).toBe('메일');
+  });
+  it('모든 매체가 미수신이면(수집 전체 지연) 매체별 이슈를 만들지 않는다', () => {
+    const d = generateDemoData();
+    d.mediaHourly = d.mediaHourly.filter((r) => !(r.date === d.today && r.hour === 15));
+    expect(detectIncidents(d).some((x) => x.ruleId === 'media_delay')).toBe(false);
   });
 });

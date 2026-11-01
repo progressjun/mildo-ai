@@ -6,7 +6,7 @@ import type { ModuleAgentKit, ToolContext } from '../types';
 import type { Incident } from '@/core/types';
 import {
   activeConfig, checkAccounts, detectIncidents, fmtDateShort, fmtStamp, heldMedia, historyRecords, holidayPrecheck, incidentReport, nextAction,
-  offBlocks, onDutyFor, primaryEvidence, regimeOf, rotationTable, sessionRecords, slaReport, slaState, type AlertIncident,
+  offBlocks, onDutyFor, primaryEvidence, regimeOf, rotationTable, sessionRecords, slaReport, slaState, typeOf, type AlertIncident,
 } from './engine';
 import { DEMO_CREATIVES, TYPE_LABEL } from './data';
 import { accountsBrief, holidayBrief, issuesBrief, slaBrief } from './briefs';
@@ -14,6 +14,12 @@ import { accountsBrief, holidayBrief, issuesBrief, slaBrief } from './briefs';
 const r0 = (v: number | undefined) => (v === undefined || !Number.isFinite(v) ? null : Math.round(v));
 const r1 = (v: number | undefined) => (v === undefined || !Number.isFinite(v) ? null : Math.round(v * 10) / 10);
 const nowOf = (ctx: ToolContext) => Date.parse(ctx.state.data.generatedAt);
+/**
+ * ISO → 데이터 기준 시각(ms). Alert가 남긴 처리 시각은 데이터 시계(+09:00)라 그대로 쓰고,
+ * 다른 모듈이 실제 시각(…Z)으로 남긴 감지 시각은 데이터 기준 시각으로 본다
+ * (도구는 화면 세션 시계에 접근하지 않으므로 SLA 경과를 0부터 계산 — 실제 시각과 섞여 수십 시간이 어긋나는 것을 막는다).
+ */
+const toMsOf = (ctx: ToolContext) => (iso: string) => (iso.endsWith('Z') ? nowOf(ctx) : Date.parse(iso));
 
 /** 스토어 이슈 + 아직 적재되지 않은 최신 탐지 결과 */
 function currentIncidents(ctx: ToolContext): (AlertIncident & { fresh?: boolean })[] {
@@ -23,12 +29,12 @@ function currentIncidents(ctx: ToolContext): (AlertIncident & { fresh?: boolean 
   return [...stored, ...fresh];
 }
 
-function compactIncident(i: AlertIncident & { fresh?: boolean }, nowMs: number) {
-  const st = slaState(i, nowMs);
+function compactIncident(i: AlertIncident & { fresh?: boolean }, nowMs: number, toMs: (iso: string) => number) {
+  const st = slaState(i, nowMs, toMs);
   return {
     id: i.id,
     severity: i.severity,
-    type: TYPE_LABEL[i.typeId] ?? i.ruleId,
+    type: TYPE_LABEL[typeOf(i)] ?? i.ruleId,
     title: i.title,
     target: i.target,
     media: i.media,
@@ -71,9 +77,9 @@ export const agentKit: ModuleAgentKit = {
           asOf: `${ctx.state.data.today} ${String(ctx.state.data.currentHour).padStart(2, '0')}:30`,
           dataKind: 'TEST DATA (시연용)',
           regime: regime.off ? { mode: '주말 · 공휴일 체계', label: regime.label, onDuty: regime.duty?.role, backup: regime.duty?.backup, escalation: 'P1 → PM' } : { mode: '평일' },
-          counts: { open: all.filter((i) => i.status !== 'resolved').length, P1: list.filter((i) => i.severity === 'P1').length, P2: list.filter((i) => i.severity === 'P2').length, P3: list.filter((i) => i.severity === 'P3').length },
+          counts: (() => { const o = all.filter((i) => i.status !== 'resolved'); return { open: o.length, P1: o.filter((i) => i.severity === 'P1').length, P2: o.filter((i) => i.severity === 'P2').length, P3: o.filter((i) => i.severity === 'P3').length, returned: Math.min(20, list.length), matched: list.length }; })(),
           autoAdjustHeld: heldMedia(all),
-          incidents: list.slice(0, 20).map((i) => compactIncident(i, nowMs)),
+          incidents: list.slice(0, 20).map((i) => compactIncident(i, nowMs, toMsOf(ctx))),
         };
       },
     },
@@ -109,7 +115,7 @@ export const agentKit: ModuleAgentKit = {
         const all = currentIncidents(ctx);
         const inc = all.find((i) => i.id === id) ?? all.find((i) => i.id.includes(id) || i.title.includes(id));
         if (!inc) return { error: `이슈를 찾지 못했습니다: ${id}`, available: all.slice(0, 10).map((i) => ({ id: i.id, title: i.title })) };
-        return { id: inc.id, markdown: incidentReport(inc as Incident, { nowMs: nowOf(ctx) }) };
+        return { id: inc.id, markdown: incidentReport(inc as Incident, { nowMs: nowOf(ctx), toMs: toMsOf(ctx) }) };
       },
     },
     {
@@ -140,7 +146,7 @@ export const agentKit: ModuleAgentKit = {
       description: '월간 SLA 리포트(p.49): 등급별 인지 · 1차 조치 · 결과 보고 달성률, 오탐률, 재발 건수, 매체 지연(별도 표기)을 지난 이력(DEMO)과 이번 세션 처리 이력으로 계산한다.',
       inputSchema: { type: 'object', properties: {} },
       execute: () => {
-        const rec = [...historyRecords(), ...sessionRecords(ctx.state.incidents)];
+        const rec = [...historyRecords(), ...sessionRecords(ctx.state.incidents, toMsOf(ctx))];
         const rep = slaReport(rec);
         const row = (x: (typeof rep.rows)[number]) => ({ severity: x.severity, total: x.total, ackPct: r1(x.ack.pct), actionPct: r1(x.action.pct), reportPct: r1(x.report.pct), falsePositive: x.falsePositive.n, recurrence: x.recurrence, mediaDelay: x.mediaDelay });
         return { month: '2026-10', dataKind: '지난 이력 DEMO + 이번 세션', rows: rep.rows.map(row), total: { ...row(rep.total), severity: 'ALL' }, byMedia: rep.byMedia };
@@ -150,7 +156,7 @@ export const agentKit: ModuleAgentKit = {
   briefs: [
     { id: 'alert_accounts', match: /(계정|결제|잔액|충전|권한|비실명|runway)/i, build: (ctx) => accountsBrief(ctx.state.data, activeConfig(ctx.state.changes)) },
     { id: 'alert_holiday', match: /(주말|공휴일|연휴|당번|사전\s?점검|휴일)/, build: (ctx) => holidayBrief(ctx.state.data, activeConfig(ctx.state.changes), Object.fromEntries(Object.entries(ctx.state.tf).map(([k, v]) => [k, v.name]))) },
-    { id: 'alert_sla', match: /(SLA|달성률|오탐|재발|월간\s?리포트)/i, build: (ctx) => slaBrief(ctx.state.incidents) },
-    { id: 'alert_issues', match: /(이슈|알림|장애|급변|탐지|이상|P1|P2|전환\s?(0|추적)|alert)/i, build: (ctx) => issuesBrief(ctx.state.data, currentIncidents(ctx), nowOf(ctx)) },
+    { id: 'alert_sla', match: /(SLA|달성률|오탐|재발|월간\s?리포트)/i, build: (ctx) => slaBrief(ctx.state.incidents, toMsOf(ctx)) },
+    { id: 'alert_issues', match: /(이슈|알림|장애|급변|탐지|이상|P1|P2|전환\s?(0|추적)|alert)/i, build: (ctx) => issuesBrief(ctx.state.data, currentIncidents(ctx), nowOf(ctx), toMsOf(ctx), ctx.state.offHoursMode) },
   ],
 };

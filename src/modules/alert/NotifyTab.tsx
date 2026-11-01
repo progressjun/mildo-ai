@@ -4,7 +4,7 @@ import { addDays, fmt } from '@/core/util';
 import { Icon } from '@/ui/Icon';
 import { Button, Callout, Card, DataTable, Pill, Sev, Src, type Column } from '@/ui/primitives';
 import {
-  buildHourIndex, detectTestIncidents, evaluateMedia, fmtClock, fmtDateShort, fmtStamp, kstDate, nextAction, notificationLog, primaryEvidence, slaState, STATUS_LABEL,
+  buildHourIndex, detectTestIncidents, evaluateMedia, fmtClock, fmtDateShort, fmtStamp, kstDate, nextAction, notificationLog, primaryEvidence, slaState, STATUS_LABEL, typeOf,
   type AlertIncident, type NotifyEntry,
 } from './engine';
 import { DEMO_CREATIVES, TEST_SCENARIOS, TYPE_LABEL, type TestScenarioId } from './data';
@@ -159,7 +159,7 @@ function MessengerCard({ ctx, inc, onOpen, onAck }: { ctx: AlertCtx; inc: AlertI
       <div className="stack-sm" style={{ gap: 2, flex: 1, minWidth: 0 }}>
         <div className={`alert-bubble ${inc.severity}`}>
           <div className="row-between" style={{ flexWrap: 'nowrap' }}>
-            <span className="row" style={{ gap: 6 }}><Sev level={inc.severity} /><strong className="xs">{SEVERITY_LABEL[inc.severity].split(' · ')[1]}</strong><span className="xs muted">{TYPE_LABEL[inc.typeId] ?? ''}</span></span>
+            <span className="row" style={{ gap: 6 }}><Sev level={inc.severity} /><strong className="xs">{SEVERITY_LABEL[inc.severity].split(' · ')[1]}</strong><span className="xs muted">{TYPE_LABEL[typeOf(inc)] ?? ''}</span></span>
             {inc.isTest ? <Pill tone="dark">테스트</Pill> : null}
           </div>
           <strong>{inc.title}</strong>

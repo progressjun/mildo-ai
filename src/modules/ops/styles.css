@@ -1,0 +1,119 @@
+/* 전담 TF · 온보딩 · 계약 · RFP 커버리지 전용 스타일 — 접두사 ops-. 색은 토큰 변수만 사용 */
+
+/* ---------- 제출 준비 스트립 (블랙 패널) ---------- */
+.ops-strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.ops-tile {
+  border: 1px solid color-mix(in srgb, var(--panel-ink) 14%, transparent); border-radius: var(--r-md); background: transparent; color: inherit;
+  padding: 10px 12px; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 3px; min-width: 0; font: inherit;
+}
+.ops-tile:hover { border-color: color-mix(in srgb, var(--panel-ink) 40%, transparent); }
+.ops-tile[aria-pressed='true'] { border-color: var(--accent); }
+.ops-tile-label { font-size: var(--fs-xs); color: var(--panel-muted); display: flex; gap: 6px; align-items: center; justify-content: space-between; }
+.ops-tile-value { font-size: var(--fs-2xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.ops-tile-value.accent { color: var(--accent); }
+.ops-tile-foot { font-size: var(--fs-xs); color: var(--panel-muted); line-height: 1.4; }
+.ops-flag { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; border-radius: 4px; padding: 0 6px; line-height: 18px; white-space: nowrap; }
+.ops-flag.ok { background: var(--good-soft); color: var(--good-ink); }
+.ops-flag.warn { background: var(--warning-soft); color: var(--warning-ink); }
+.ops-flag.bad { background: var(--critical-soft); color: var(--critical-ink); }
+
+/* ---------- 입력 셀 ---------- */
+.ops-cell { padding: 5px 8px; font-size: var(--fs-sm); min-width: 70px; }
+.ops-cell.ops-blank { border-color: var(--warning); background: var(--warning-soft); }
+.ops-cell.ops-blank::placeholder { color: var(--warning-ink); opacity: 0.85; }
+.ops-cell.ops-invalid { border-color: var(--critical); background: var(--critical-soft); }
+.ops-cell-wrap { display: flex; align-items: center; gap: 4px; }
+.ops-cell-wrap .ops-cell { width: 76px; text-align: right; }
+.ops-name { width: 120px; }
+.ops-select { padding: 5px 8px; font-size: var(--fs-sm); width: auto; min-width: 130px; }
+
+/* ---------- 백업 그래프 ---------- */
+.ops-graph { width: 100%; }
+.ops-graph svg { display: block; width: 100%; height: auto; overflow: visible; }
+.ops-graph text { font-family: var(--font-body); }
+.ops-node-title { font-size: 12.5px; font-weight: 700; fill: var(--ink); }
+.ops-node-sub { font-size: 11px; fill: var(--muted); }
+.ops-node-tag { font-size: 10.5px; font-weight: 700; }
+.ops-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--fs-xs); color: var(--ink-2); }
+.ops-legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--ink-2); vertical-align: middle; margin-right: 4px; }
+.ops-legend i.dash { border-top-style: dashed; }
+.ops-legend i.bold { border-top: 3px solid var(--ink); }
+
+/* ---------- 이슈 목록 ---------- */
+.ops-issues { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ops-issues li { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fs-sm); line-height: 1.5; }
+
+/* ---------- 프리셋 · 체크 ---------- */
+.ops-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.ops-chip { border: 1px solid var(--line-strong); background: var(--surface); border-radius: 999px; padding: 3px 10px; font-size: var(--fs-xs); cursor: pointer; color: var(--ink-2); }
+.ops-chip[aria-pressed='true'] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.ops-check { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); cursor: pointer; }
+.ops-check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+
+/* ---------- 조직 · 커뮤니케이션 도식 ---------- */
+.ops-org { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.ops-org-node { border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 6px 14px; text-align: center; background: var(--surface); font-size: var(--fs-sm); min-width: 150px; }
+.ops-org-node.single { background: var(--panel); color: var(--panel-ink); border-color: transparent; }
+.ops-org-node.single .xs { color: var(--panel-muted); }
+.ops-org-arrow { color: var(--muted); font-size: var(--fs-sm); line-height: 1; }
+.ops-org-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.ops-org-row .ops-org-node { min-width: 96px; }
+
+/* ---------- 3단계 체계 · 단계 카드 ---------- */
+.ops-tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ops-tier { border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; background: var(--surface); }
+.ops-tier-k { font-size: var(--fs-xs); color: var(--accent-ink); font-weight: 700; letter-spacing: 0.04em; }
+
+/* ---------- RFP 일정 타임라인 ---------- */
+.ops-sched { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.ops-sched-step { border-top: 3px solid var(--line-strong); padding: 8px 4px 0; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ops-sched-step.done { border-top-color: var(--ink-2); opacity: 0.7; }
+.ops-sched-step.now { border-top-color: var(--ink); }
+.ops-sched-step.next { border-top-color: var(--accent); }
+.ops-sched-step .t { font-size: var(--fs-sm); font-weight: 700; line-height: 1.35; }
+.ops-sched-step .d { font-size: var(--fs-xs); color: var(--muted); }
+.ops-sched-step .s { font-size: var(--fs-xs); font-weight: 700; }
+.ops-sched-step.next .s { color: var(--accent-ink); }
+
+.card.dark .ops-sched-step { border-top-color: color-mix(in srgb, var(--panel-ink) 22%, transparent); }
+.card.dark .ops-sched-step.done { border-top-color: var(--panel-muted); }
+.card.dark .ops-sched-step.now { border-top-color: var(--panel-ink); }
+.card.dark .ops-sched-step.next { border-top-color: var(--accent); }
+.card.dark .ops-sched-step .d { color: var(--panel-muted); }
+.card.dark .ops-sched-step.next .s { color: var(--accent); }
+
+/* ---------- 평가 비중 막대 ---------- */
+.ops-weights { display: flex; flex-direction: column; gap: 8px; }
+.ops-weight-row { display: grid; grid-template-columns: 170px 1fr 92px; gap: 10px; align-items: center; font-size: var(--fs-sm); }
+.ops-weight-track { position: relative; height: 18px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.ops-weight-full { position: absolute; inset: 0 auto 0 0; background: var(--surface-3); border-radius: 4px; }
+.ops-weight-done { position: absolute; inset: 0 auto 0 0; background: var(--ink); border-radius: 4px; }
+.ops-weight-row.priority .ops-weight-done { background: var(--accent); }
+.ops-weight-label { font-size: 10.5px; position: absolute; right: 6px; top: 1px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+/* ---------- 회사 · 레퍼런스 ---------- */
+.ops-facts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.ops-fact { display: flex; flex-direction: column; gap: 3px; border-left: 3px solid var(--accent); padding: 2px 0 2px 10px; min-width: 0; }
+.ops-fact-v { font-size: var(--fs-xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.15; }
+.ops-fact-l { font-size: var(--fs-sm); color: var(--ink-2); }
+.ops-history { display: grid; grid-template-columns: 64px 1fr; gap: 6px 12px; font-size: var(--fs-sm); }
+.ops-history strong { font-variant-numeric: tabular-nums; }
+
+/* ---------- 마일스톤 ---------- */
+.ops-mile { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ops-mile-item { border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; background: var(--surface); }
+.ops-mile-item.kick { background: var(--panel); color: var(--panel-ink); border-color: transparent; }
+.ops-mile-item.kick .muted { color: var(--panel-muted); }
+.ops-mile-date { font-size: var(--fs-xl); font-weight: 900; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+
+.ops-total-row td { font-weight: 700; background: var(--surface-2); }
+
+@media (max-width: 1180px) {
+  .ops-strip, .ops-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ops-sched { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .ops-strip, .ops-facts, .ops-mile, .ops-tiers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ops-sched { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ops-weight-row { grid-template-columns: 110px 1fr 70px; }
+}
