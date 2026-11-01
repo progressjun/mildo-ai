@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { MODULES, MODULE_BY_ID, GROUP_LABEL } from '@/modules/registry';
+import { MODULES, MODULE_BY_ID, GROUP_LABEL, isStubModule } from '@/modules/registry';
 import type { ModuleDef } from '@/modules/types';
 import { navigate, useRoute } from '@/core/router';
 import { useActions, useStore } from '@/core/store';
@@ -48,6 +48,7 @@ export function Shell() {
   const pendingChanges = state.changes.filter((c) => c.status === 'pending').length;
   const badges: Record<string, number> = { alert: openIncidents, flow: pendingChanges };
 
+  const stubIds = useMemo(() => new Set(MODULES.filter(isStubModule).map((m) => m.id)), []);
   const groups = useMemo(() => {
     const g: Record<string, ModuleDef[]> = {};
     for (const m of MODULES) (g[m.group] ??= []).push(m);
@@ -68,7 +69,7 @@ export function Shell() {
               <a key={m.id} href={`#${m.id}`} className="nav-item" aria-current={m.id === mod.id ? 'page' : undefined}>
                 <Icon name={ICON[m.id] ?? 'sparkle'} size={16} />
                 <span>{m.title}</span>
-                {badges[m.id] ? <span className="nav-badge num">{badges[m.id]}</span> : null}
+                {badges[m.id] ? <span className="nav-badge num">{badges[m.id]}</span> : stubIds.has(m.id) ? <span className="nav-soon">준비 중</span> : null}
               </a>
             ))}
           </div>

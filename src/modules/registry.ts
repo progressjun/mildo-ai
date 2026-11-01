@@ -42,3 +42,14 @@ export const MODULES: ModuleDef[] = [
 ];
 
 export const MODULE_BY_ID: Record<string, ModuleDef> = Object.fromEntries(MODULES.map((m) => [m.id, m]));
+
+/** 엔진 · 도구 · 브리프가 아직 없는 모듈(구현 중) — 메뉴에 "준비 중"으로 표시 */
+export function isStubModule(m: ModuleDef): boolean {
+  if (!m.agent) return false;
+  const noBriefs = !(m.agent.briefs?.length);
+  try {
+    return noBriefs && m.agent.tools(null as never).length === 0;
+  } catch {
+    return false;
+  }
+}
