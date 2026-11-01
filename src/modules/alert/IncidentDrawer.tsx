@@ -31,6 +31,7 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
   const linked = state.changes.filter((c) => c.targetId?.startsWith(`alert:${inc.id}:`) || (acc && c.targetId?.startsWith(`alert:account:${acc.id}:`)));
   /** 같은 대상 요청이 이미 있으면 다시 만들지 않는다 (반려된 건은 재요청 가능 — 계정 · 결제 탭과 같은 규칙) */
   const requested = (tid: string) => state.changes.some((c) => c.targetId === tid && c.status !== 'rejected');
+  // 요청 후 라벨은 '요청됨'만 덧붙여 버튼 폭을 유지한다 — 폭이 줄면 더블클릭의 두 번째 클릭이 옆 링크(MILDO Flow 이력 등)에 떨어져 화면이 이동한다
 
   const steps: { key: string; label: string; at?: string; target?: string }[] = [
     { key: 'ack', label: '인지', at: sla.ackAt, target: st.targets.ack },
@@ -186,10 +187,10 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
           {inc.holdMedia && !resolved ? (
             <Button size="sm" icon="play" disabled={!sla.actionAt || requested(`alert:${inc.id}:release`)} title={!sla.actionAt ? '1차 조치 기록 후 요청 가능' : undefined}
               onClick={() => requestChange({ kind: 'setting', target: `${mediaName(inc.holdMedia)} AD Pilot 자동 조정`, targetId: `alert:${inc.id}:release`, before: '보류', after: '재개', reason: `${inc.title} — 조치 완료 확인 후 자동 조정 재개`, approver: 'PM' }, '자동 조정 보류 해제 요청을 만들었습니다')}>
-              {requested(`alert:${inc.id}:release`) ? '보류 해제 요청됨' : '자동 조정 보류 해제 요청 (PM)'}
+              {`자동 조정 보류 해제 요청${requested(`alert:${inc.id}:release`) ? '됨' : ''} (PM)`}
             </Button>
           ) : null}
-          {inc.ruleId === 'account_payment' && acc ? (() => {
+          {inc.ruleId === 'account_payment' && acc && !resolved ? (() => {
             // 감지 시점 잔액(테스트 주입 이슈는 주입 데이터 기준)을 쓴다
             const balance = inc.metric === '잔액' && Number.isFinite(inc.observed) ? (inc.observed as number) : acc.balance;
             const daily = Number.isFinite(inc.baseline) && (inc.baseline as number) > 0 ? (inc.baseline as number) : acc.avgDailySpend;
@@ -197,28 +198,31 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
             const topup = Math.max(0, Math.ceil((daily * days - balance) / 100000) * 100000);
             // 계정 단위 targetId — 계정 · 결제 탭 충전 요청과 같은 형식이라 중복 요청이 막히고 AD Pilot · Flow 잔액 계산에 반영된다
             const tid = `alert:account:${acc.id}:topup`;
+            const prev = state.changes.find((c) => c.targetId === tid && c.status !== 'rejected');
+            const prevAmt = prev ? Number(prev.after) - Number(prev.before) : NaN;
+            const amt = prev && Number.isFinite(prevAmt) && prevAmt > 0 ? prevAmt : topup;
             return (
               <Button size="sm" icon="wallet" disabled={topup <= 0 || requested(tid)} title={topup <= 0 ? `잔액이 이미 ${days}일치 이상` : requested(tid) ? '이 계정의 충전 요청이 이미 있습니다 (MILDO Flow)' : undefined}
                 onClick={() => requestChange({ kind: 'setting', target: `${acc.name} 비즈머니 충전`, targetId: tid, before: balance, after: balance + topup, changePct: balance > 0 ? (topup / balance) * 100 : undefined, reason: `잔액 ${fmt.krw(balance)}원 < 일 평균 소진 ${fmt.krw(daily)}원 · 자동충전 ${acc.autoCharge === 'failed' || inc.title.includes('자동충전 실패') ? '실패' : acc.autoCharge} → 주말 · 연휴 대비 ${days}일치까지 ${fmt.krw(topup)}원 충전 요청 (p.50 결제 수단 수면밀도 · ${days}일치는 운영 가정)`, approver: 'CLIENT' }, '충전 요청을 만들었습니다')}>
-                {requested(tid) ? '충전 요청됨' : `충전 요청 ${fmt.krw(topup)}원 · ${days}일치 (수면밀도 승인)`}
+                {`충전 요청${prev ? '됨' : ''} ${fmt.krw(amt)}원 · ${days}일치 (수면밀도 승인)`}
               </Button>
             );
           })() : null}
-          {inc.ruleId === 'account_permission' ? (() => {
+          {inc.ruleId === 'account_permission' && !resolved ? (() => {
             // 계정 단위 targetId — 계정 · 결제 탭 권한 회수 요청과 같은 형식이라 두 화면에서 중복 요청이 생기지 않는다
             const tid = acc ? `alert:account:${acc.id}:revoke` : `alert:${inc.id}:revoke`;
             const users = acc ? acc.permissions.filter((x) => !x.realName || dayDiff(data.today, x.lastLogin) > cfg.staleLoginDays).map((x) => `${x.user}(${x.role})`).join(', ') : '';
             return (
               <Button size="sm" icon="shield" disabled={requested(tid)}
                 onClick={() => requestChange({ kind: 'setting', target: `${inc.target} 권한 회수`, targetId: tid, before: users || '관리자 권한 유지', after: '회수 · 실명 계정 대체', reason: '담당자 실명 계정 · 최소 권한 · 교체 시 즉시 회수 (p.50)', approver: 'PM' }, '권한 회수 요청을 만들었습니다')}>
-                {requested(tid) ? '회수 요청됨' : '권한 회수 요청 (PM → 수면밀도 통보)'}
+                {`권한 회수 요청${requested(tid) ? '됨' : ''} (PM → 수면밀도 통보)`}
               </Button>
             );
           })() : null}
-          {inc.ruleId === 'soldout_landing' ? (
+          {inc.ruleId === 'soldout_landing' && !resolved ? (
             <Button size="sm" icon="pause" disabled={requested(`alert:${inc.id}:pause`)}
               onClick={() => requestChange({ kind: 'status', target: `${inc.target} 키워드`, targetId: `alert:${inc.id}:pause`, before: 'on', after: 'off', reason: `${inc.title} — 재입고 시 재개`, approver: 'AE' }, '키워드 일시 중지 요청을 만들었습니다')}>
-              {requested(`alert:${inc.id}:pause`) ? '일시 중지 요청됨' : '키워드 일시 중지 요청 (담당 AE)'}
+              {`키워드 일시 중지 요청${requested(`alert:${inc.id}:pause`) ? '됨' : ''} (담당 AE)`}
             </Button>
           ) : null}
           {['budget_forecast', 'keyword_spike', 'brand_intrusion', 'budget_exhausted'].includes(inc.ruleId) ? <a className="btn sm" href="#adpilot">AD Pilot 조정 후보</a> : null}

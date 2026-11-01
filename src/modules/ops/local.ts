@@ -61,3 +61,18 @@ export function saveOpsLocal(v: OpsLocal): void {
     /* 저장 불가 환경 — 화면 상태만 유지 */
   }
 }
+
+/**
+ * 앱 전역 '시연 상태 초기화' 이벤트 (Lab · Watch 로컬 기록과 같은 이름) — 받으면 ops 로컬 입력값
+ * (레퍼런스 · 수수료 · 계약 · Kick-off · 백업 재지정 · 제출 체크)도 처음 상태로. 화면이 열려 있지 않아도 저장본을 지우고,
+ * 열려 있으면 useOpsLocal이 기본값으로 되돌린다. (TF 명단은 전역 스토어라 스토어 초기화가 비운다)
+ */
+export const OPS_RESET_EVENT = 'mildo-os:reset';
+export function clearOpsLocal(): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(OPS_STORAGE_KEY);
+  } catch {
+    /* 저장 불가 환경 — 무시 */
+  }
+}
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') window.addEventListener(OPS_RESET_EVENT, clearOpsLocal);

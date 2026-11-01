@@ -10,7 +10,8 @@ import {
   referenceCheck, referenceRows, rfpBrief, rfpCoverage, rfpSchedule, simulateLeave, tfBrief, tfMarkdown, tfMissing, tfRoster, type OpsInputs,
 } from './engine';
 import { ANNUAL_BUDGET_MAX, clampAnnualBudget, RFP_ITEMS } from './data';
-import { defaultOpsLocal, mergeOpsLocal } from './local';
+import { clearOpsLocal, defaultOpsLocal, loadOpsLocal, mergeOpsLocal, OPS_RESET_EVENT, OPS_STORAGE_KEY, saveOpsLocal } from './local';
+import { LAB_RESET_EVENT } from '../lab/store';
 
 const FULL_TF = {
   pm: { name: '김총괄', years: '12', allocation: '60' },
@@ -544,5 +545,25 @@ describe('QA 회귀: 연간 광고비 입력 상한', () => {
     expect(mergeOpsLocal({ annualBudget: 1e30 }).annualBudget).toBe(ANNUAL_BUDGET_MAX);
     expect(mergeOpsLocal({ annualBudget: -1 }).annualBudget).toBe(RFP.annualBudget);
     expect(mergeOpsLocal({ annualBudget: '1e9' }).annualBudget).toBe(RFP.annualBudget);
+  });
+});
+
+describe('QA 회귀: 전역 시연 상태 초기화 → ops 로컬 입력값', () => {
+  it('Lab · Watch와 같은 이벤트 이름을 쓰고, clearOpsLocal은 저장본(제출 체크 · 수수료 · Kick-off)을 지운다', () => {
+    expect(OPS_RESET_EVENT).toBe(LAB_RESET_EVENT);
+    const mem: Record<string, string> = {};
+    const g = globalThis as unknown as { localStorage?: Storage };
+    const prev = g.localStorage;
+    g.localStorage = { getItem: (k: string) => mem[k] ?? null, setItem: (k: string, v: string) => { mem[k] = v; }, removeItem: (k: string) => { delete mem[k]; }, clear: () => {}, key: () => null, length: 0 } as Storage;
+    try {
+      saveOpsLocal({ ...defaultOpsLocal(), kickoff: '2027-01-04', docs: { deck: true, geo_case: true }, fees: { 구글: { fee: '10', payback: 'no' } } });
+      expect(mem[OPS_STORAGE_KEY]).toContain('2027-01-04');
+      expect(loadOpsLocal().docs.deck).toBe(true);
+      clearOpsLocal();
+      expect(mem[OPS_STORAGE_KEY]).toBeUndefined();
+      expect(loadOpsLocal()).toEqual(defaultOpsLocal());
+    } finally {
+      g.localStorage = prev;
+    }
   });
 });

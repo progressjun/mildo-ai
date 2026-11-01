@@ -2,12 +2,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '@/core/store';
 import { isStubModule, MODULES } from '../registry';
-import { defaultOpsLocal, loadOpsLocal, saveOpsLocal, type OpsLocal } from './local';
+import { defaultOpsLocal, loadOpsLocal, OPS_RESET_EVENT, saveOpsLocal, type OpsLocal } from './local';
 import { opsSummary, type OpsInputs } from './engine';
 
 export function useOpsLocal() {
   const [local, setLocal] = useState<OpsLocal>(() => loadOpsLocal());
   useEffect(() => saveOpsLocal(local), [local]);
+  // 전역 '시연 상태 초기화' — 열려 있는 화면의 입력값도 기본값으로 (저장본은 local.ts 리스너가 지운다)
+  useEffect(() => {
+    const onReset = () => setLocal(defaultOpsLocal());
+    window.addEventListener(OPS_RESET_EVENT, onReset);
+    return () => window.removeEventListener(OPS_RESET_EVENT, onReset);
+  }, []);
   const patch = useCallback((p: Partial<OpsLocal> | ((s: OpsLocal) => Partial<OpsLocal>)) => {
     setLocal((s) => ({ ...s, ...(typeof p === 'function' ? p(s) : p) }));
   }, []);

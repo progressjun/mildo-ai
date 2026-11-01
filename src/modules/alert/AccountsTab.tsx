@@ -75,10 +75,14 @@ export function AccountsTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: strin
               {cur.prepaid && (cur.runwayDays < cfg.runwayWarnDays || cur.account.autoCharge === 'failed') ? (() => {
                 const topup = Math.max(0, Math.ceil((cur.account.avgDailySpend * cfg.runwayWarnDays - cur.account.balance) / 100000) * 100000);
                 const tid = `alert:account:${cur.account.id}:topup`;
+                // 요청 후에도 라벨 폭 유지 ('요청됨' + 요청 금액) — 폭이 줄면 더블클릭의 두 번째 클릭이 옆 버튼(이슈 열기 등)에 떨어진다
+                const prev = state.changes.find((c) => c.targetId === tid && c.status !== 'rejected');
+                const prevAmt = prev ? Number(prev.after) - Number(prev.before) : NaN;
+                const amt = prev && Number.isFinite(prevAmt) && prevAmt > 0 ? prevAmt : topup;
                 return (
                   <Button size="sm" variant="primary" icon="wallet" disabled={exists(tid) || topup <= 0}
                     onClick={() => { actions.addChange({ module: 'alert', kind: 'setting', target: `${cur.account.name} 충전`, targetId: tid, before: cur.account.balance, after: cur.account.balance + topup, changePct: cur.account.balance > 0 ? (topup / cur.account.balance) * 100 : undefined, reason: `잔액 ${fmt.dec1(cur.runwayDays)}일치 → ${cfg.runwayWarnDays}일치 확보 (${fmt.krw(topup)}원) · 결제 수단 수면밀도 (p.50)`, requestedBy: state.role, approver: 'CLIENT' }); actions.toast({ tone: 'info', title: '충전 요청을 만들었습니다', body: '승인: 수면밀도 · MILDO Flow', route: 'flow' }); }}>
-                    {exists(tid) ? '충전 요청됨' : `충전 요청 ${fmt.krw(topup)}원 (수면밀도 승인)`}
+                    {`충전 요청${prev ? '됨' : ''} ${fmt.krw(amt)}원 (수면밀도 승인)`}
                   </Button>
                 );
               })() : null}
@@ -87,7 +91,7 @@ export function AccountsTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: strin
                 return (
                   <Button size="sm" icon="shield" disabled={exists(tid)}
                     onClick={() => { actions.addChange({ module: 'alert', kind: 'setting', target: `${cur.account.name} 권한 회수`, targetId: tid, before: cur.account.permissions.filter((p) => !p.realName || dayDiff(data.today, p.lastLogin) > cfg.staleLoginDays).map((p) => `${p.user}(${p.role})`).join(', '), after: '회수 · 실명 계정 대체', reason: '담당자 실명 계정 · 최소 권한 · 교체 시 즉시 회수 (p.50)', requestedBy: state.role, approver: 'PM' }); actions.toast({ tone: 'info', title: '권한 회수 요청을 만들었습니다', body: 'PM → 수면밀도 통보', route: 'flow' }); }}>
-                    {exists(tid) ? '회수 요청됨' : '권한 회수 요청 (PM → 수면밀도 통보)'}
+                    {`권한 회수 요청${exists(tid) ? '됨' : ''} (PM → 수면밀도 통보)`}
                   </Button>
                 );
               })() : null}

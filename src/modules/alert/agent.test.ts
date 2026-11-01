@@ -85,3 +85,22 @@ describe('MILDO Alert agentKit', () => {
     }
   });
 });
+
+describe('QA 회귀: 도구 결과는 UTF-8 32KB(32,768바이트) 이하 — 한글은 글자당 3바이트라 문자열 길이로는 부족', () => {
+  const bytes = (v: unknown) => new TextEncoder().encode(typeof v === 'string' ? v : JSON.stringify(v)).length;
+  const full: AppState = { ...state, incidents: detectIncidents(DEMO) };
+  const fullCtx = { state: full, actions: {} as ToolContext['actions'], navigate: () => undefined } as ToolContext;
+  const fullTools = agentKit.tools(fullCtx);
+  const exec = (name: string, input: Record<string, unknown> = {}) => fullTools.find((t) => t.name === name)!.execute(input);
+  const cases: [string, Record<string, unknown>][] = [
+    ['alert_scan', {}], ['alert_scan', { severity: 'all', includeResolved: true }], ['alert_scan', { severity: 'P1' }],
+    ['alert_account_check', {}], ['alert_account_check', { accountId: 'acc_gfa' }],
+    ['alert_holiday_check', {}], ['alert_holiday_check', { block: 'next' }], ['alert_holiday_check', { block: 'long' }],
+    ['alert_sla_report', {}],
+    ...detectIncidents(DEMO).map((i) => ['alert_incident_report', { id: i.id }] as [string, Record<string, unknown>]),
+  ];
+  it.each(cases)('%s %j', async (name, input) => {
+    const r = await exec(name, input);
+    expect(bytes(r)).toBeLessThanOrEqual(32_768);
+  });
+});

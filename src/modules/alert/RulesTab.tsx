@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type MouseEvent } from 'react';
 import type { ChangeRequest } from '@/core/types';
 import { CRITICAL_ISSUE_TYPES, DECISION_MATRIX, EXTRA_DETECTORS } from '@/data/constants';
 import { Button, Callout, Card, DataTable, Field, NumberInput, Pill, Sev, Src, type Column } from '@/ui/primitives';
@@ -78,6 +78,12 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
     actions.toast({ tone: 'good', title: '탐지 기준 반영 · 재스캔', body: `${c.target}: ${c.before} → ${c.after} · 신규 이슈 ${fresh.length}건`, route: 'alert' });
   };
 
+  /**
+   * 더블클릭의 두 번째 클릭(e.detail > 1)은 무시한다 — 승인 → 반영 → 롤백 버튼이 같은 자리에 차례로 나타나
+   * 더블클릭 한 번에 '승인 + 반영'(또는 '반영 + 롤백')이 함께 실행되던 문제. 키보드 실행(detail 0)은 그대로.
+   */
+  const once = (fn: () => void) => (e: MouseEvent) => { if (e.detail > 1) return; fn(); };
+
   const changeCols: Column<ChangeRequest>[] = [
     { key: 'at', label: '요청', render: (c) => <span className="num xs">{fmtStamp(toMs(c.createdAt))}<div className="muted">{c.requestedBy}</div></span>, width: 100 },
     { key: 't', label: '대상', render: (c) => <span className="small">{c.target}</span> },
@@ -89,12 +95,12 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
         <div className="row" style={{ gap: 4 }}>
           {c.status === 'pending' ? (
             <>
-              <Button size="sm" variant="primary" disabled={!canPm} title={!canPm ? `현재 역할(${state.role})은 PM 승인 건을 처리할 수 없음` : undefined} onClick={() => actions.updateChange(c.id, { status: 'approved' }, '승인')}>승인</Button>
-              <Button size="sm" variant="ghost" disabled={!canPm} onClick={() => actions.updateChange(c.id, { status: 'rejected' }, '반려')}>반려</Button>
+              <Button size="sm" variant="primary" disabled={!canPm} title={!canPm ? `현재 역할(${state.role})은 PM 승인 건을 처리할 수 없음` : undefined} onClick={once(() => actions.updateChange(c.id, { status: 'approved' }, '승인'))}>승인</Button>
+              <Button size="sm" variant="ghost" disabled={!canPm} onClick={once(() => actions.updateChange(c.id, { status: 'rejected' }, '반려'))}>반려</Button>
             </>
           ) : null}
-          {c.status === 'approved' ? <Button size="sm" variant="primary" disabled={!canPm} onClick={() => applyAndScan(c)}>반영</Button> : null}
-          {c.status === 'applied' ? <Button size="sm" icon="rollback" disabled={!canPm} onClick={() => actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', '이전 기준으로 복원')}>롤백</Button> : null}
+          {c.status === 'approved' ? <Button size="sm" variant="primary" disabled={!canPm} onClick={once(() => applyAndScan(c))}>반영</Button> : null}
+          {c.status === 'applied' ? <Button size="sm" icon="rollback" disabled={!canPm} onClick={once(() => actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', '이전 기준으로 복원'))}>롤백</Button> : null}
           {!canPm && (c.status === 'pending' || c.status === 'approved') ? <span className="xs muted">PM · 수면밀도만 처리</span> : null}
         </div>
       ),
@@ -211,7 +217,7 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
             <input id="cfg-reason" className="input" value={reason} onChange={(e) => setReason(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && canSubmit) submit(); }} placeholder="예: 광고비 주의 기준 오탐 40% · 집계 지연 반복" />
           </Field>
           <div className="row" style={{ alignItems: 'flex-end' }}>
-            <Button variant="primary" icon="send" disabled={!canSubmit} onClick={submit}>기준 변경 요청 {toSubmit.length ? `${toSubmit.length}건` : ''} (승인 PM)</Button>
+            <Button variant="primary" icon="send" disabled={!canSubmit} onClick={submit}>기준 변경 요청 {toSubmit.length}건 (승인 PM)</Button>
             <Button variant="ghost" onClick={() => setDraft(draftOf(cfg))}>현재값으로</Button>
           </div>
         </div>

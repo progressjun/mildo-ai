@@ -89,3 +89,19 @@ describe('ops agentKit', () => {
     }
   });
 });
+
+describe('QA 회귀: ops 도구 결과는 UTF-8 32KB(32,768바이트) 이하', () => {
+  const bytes = (v: unknown) => new TextEncoder().encode(typeof v === 'string' ? v : JSON.stringify(v)).length;
+  const full = ctx(Object.fromEntries(['pm', 'sa_lead', 'sa_ae', 'da_ae', 'global_ae', 'analyst', 'dev'].map((id) => [id, { id, name: '김민지', years: '12', allocation: '100' }])));
+  const cases: [string, Record<string, unknown>][] = [
+    ['ops_tf', {}], ['ops_tf', { absent: ['sa_lead', 'sa_ae', 'da_ae', 'global_ae'], days: 60, start: '2026-12-20' }],
+    ['ops_fee_calc', {}], ['ops_fee_calc', { fees: { '네이버 SA · DA': 10, 카카오: 11, 구글: 12, 메타: 13, '버티컬 매체': 14 }, paybackPct: { 구글: 2 }, annualBudget: 1e12 }],
+    ['ops_rfp_coverage', {}], ['ops_rfp_coverage', { status: 'all' }], ['ops_rfp_coverage', { status: 'input' }],
+    ['ops_onboarding', {}], ['ops_onboarding', { kickoff: '2027-02-08' }],
+  ];
+  it.each(cases)('%s %j', async (name, input) => {
+    const r = await tool(name, full).execute(input);
+    expect(bytes(r)).toBeLessThanOrEqual(32_768);
+    expect(JSON.stringify(r)).not.toMatch(/NaN|Infinity/);
+  });
+});
