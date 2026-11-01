@@ -2,9 +2,10 @@
  * 커맨드 센터 집계 — 오늘의 운영 상태를 한 화면 요약으로.
  */
 import type { ChangeRequest, Dataset, Incident } from '@/core/types';
-import { DATA_TIMETABLE, MEDIA } from '@/data/constants';
+import { DATA_TIMETABLE, GFA_DELEGATION, MEDIA } from '@/data/constants';
 import { headline, monthlyPacing } from '@/core/selectors';
 import { paceCampaigns } from '@/modules/adpilot/engine';
+import { buildTimetable, dataNowMinutes } from '@/modules/reports/engine';
 import { fmt, isOffDay, metrics } from '@/core/util';
 import type { Brief } from '@/ai/prompts';
 
@@ -24,6 +25,51 @@ export function timetableProgress(currentHour: number, minute = 30) {
     }
     return { ...t, state, minutesUntil: at - nowMin };
   });
+}
+
+/** '1시간 후' · '45분 후' · '1시간 5분 후' */
+export function untilLabel(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return '곧';
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  return `${h ? `${h}시간 ` : ''}${m ? `${m}분 ` : ''}후`;
+}
+
+export interface HomeSlot {
+  time: string;
+  title: string;
+  channel: string;
+  state: SlotState;
+  /** 오른쪽 상태 문구 (완료 · N분 후 · 다음 영업일 이동 등) */
+  label: string;
+  /** 주말 · 공휴일 처리 규칙 (리포트 · 데이터 시간표 화면과 같은 문구) */
+  offNote?: string;
+}
+
+/**
+ * 커맨드 센터 시간표 — '리포트 · 데이터 시간표' 화면과 같은 계산(buildTimetable)을 써서
+ * 주말 · 공휴일 이동(이슈 브리핑 → 다음 영업일 09:30 등)과 완료 상태가 두 화면에서 같게 한다.
+ */
+export function homeTimetable(data: Dataset, opts: { offHours?: boolean; incidents?: readonly Incident[]; changes?: readonly ChangeRequest[] } = {}) {
+  const t = buildTimetable(data, { offHours: opts.offHours, incidents: opts.incidents, changes: opts.changes });
+  const nowMin = dataNowMinutes(data);
+  let nextAssigned = false;
+  const items: HomeSlot[] = t.items.map((i) => {
+    const base = { time: i.time, title: i.title, channel: i.channel, offNote: i.offMode ? i.offNote : undefined };
+    if (i.status === 'done') return { ...base, state: 'done', label: '완료' };
+    if (i.status === 'now') {
+      nextAssigned = true;
+      return { ...base, state: 'now', label: '진행 중' };
+    }
+    if (i.effectiveDate !== data.today) return { ...base, state: 'next', label: i.statusLabel };
+    const [h, m] = i.effectiveTime.split(':').map(Number);
+    if (!nextAssigned) {
+      nextAssigned = true;
+      return { ...base, state: 'now', label: untilLabel(h * 60 + m - nowMin) };
+    }
+    return { ...base, state: 'next', label: i.channel };
+  });
+  return { off: t.off, offLabel: t.offLabel, nextBusinessDay: t.nextBusinessDay, items };
 }
 
 export function operatingSummary(data: Dataset, incidents: Incident[], changes: ChangeRequest[]) {
@@ -98,4 +144,40 @@ export function hhmmOf(h: number | null | undefined): string {
   const hh = Math.floor(h);
   const mm = Math.min(59, Math.round((h - hh) * 60));
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+/* ---------------- p.23 작동 시나리오 → 승인 요청 ---------------- */
+
+/** 시나리오가 만든 요청을 알아보는 사유 접두어 */
+export const SCENARIO_TAG = '작동 시나리오:';
+/** 시나리오 GFA 일 예산 증액 폭 (p.23 예시 — 위임 범위 ±10~30% 구간) */
+export const SCENARIO_BUDGET_PCT = 12;
+
+/** GFA 쇼핑 고객 확장 예산 변경안: 천 원 단위로 반올림해 표시 변경 폭과 실제 금액이 어긋나지 않게 한다 */
+export function scenarioBudget(dailyBudget: number, pct = SCENARIO_BUDGET_PCT) {
+  const before = Number.isFinite(dailyBudget) && dailyBudget > 0 ? dailyBudget : 0;
+  const after = Math.round((before * (1 + pct / 100)) / 1000) * 1000;
+  const changePct = before > 0 ? Math.round(((after - before) / before) * 1000) / 10 : 0;
+  const route = GFA_DELEGATION.find((g) => Math.abs(changePct) <= g.maxPct) ?? GFA_DELEGATION[GFA_DELEGATION.length - 1];
+  return { before, after, changePct, approver: route.approver, approverLabel: route.label };
+}
+
+type ScenarioRequest = Pick<ChangeRequest, 'module' | 'kind' | 'target' | 'targetId' | 'before' | 'after' | 'changePct' | 'reason' | 'requestedBy' | 'approver'>;
+
+/** 시나리오 승인 요청 2건: Lab 키워드 테스트 등록(담당 AE) · GFA 예산 변경(위임 범위 → PM) */
+export function scenarioRequests(data: Dataset): ScenarioRequest[] {
+  const out: ScenarioRequest[] = [
+    { module: 'lab', kind: 'keyword_add', target: '생활 상황_TEST (신혼 구문형 4개)', before: '-', after: '테스트 그룹 등록', reason: `${SCENARIO_TAG} '신혼' 수요 증가 가정 → 구문형 후보 테스트`, requestedBy: 'AD Pilot', approver: 'AE' },
+  ];
+  const gfa = data.campaigns.find((c) => c.name.includes('쇼핑 고객 확장'));
+  if (gfa) {
+    const b = scenarioBudget(gfa.dailyBudget);
+    out.push({ module: 'gfa', kind: 'budget', target: gfa.name, targetId: gfa.id, before: b.before, after: b.after, changePct: b.changePct, reason: `${SCENARIO_TAG} 신혼 수요 환기 — 쇼핑 고객 확장 예산 증액`, requestedBy: 'GFA Control', approver: b.approver });
+  }
+  return out;
+}
+
+/** 시나리오 요청이 아직 승인 대기 중인지 — 대기 중이면 같은 요청을 다시 만들지 않는다 (화면 이동 · 재실행 뒤에도) */
+export function scenarioPending(changes: readonly ChangeRequest[]): boolean {
+  return changes.some((c) => c.status === 'pending' && typeof c.reason === 'string' && c.reason.startsWith(SCENARIO_TAG));
 }

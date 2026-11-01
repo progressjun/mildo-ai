@@ -215,3 +215,6 @@
   .reports-tt-table td:nth-child(2) { min-width: 170px; }
   .reports-tt-table td:nth-child(4), .reports-tt-table td:nth-child(5) { min-width: 120px; }
 }
+/* 절감표 숫자 입력 — 반영하지 않는 값(음수 등) 표시 */
+.reports-input-sm.invalid, .reports-input-xs.invalid { border-color: var(--critical); }
+.reports-input-err { color: var(--critical); white-space: nowrap; }

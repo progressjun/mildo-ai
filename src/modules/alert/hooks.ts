@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react';
 import type { Incident } from '@/core/types';
 import { useActions, useStore } from '@/core/store';
-import { activeConfig, detectIncidents, msToKstIso, regimeOf, roleIdByLabel, type AlertIncident } from './engine';
+import { activeConfig, detectIncidents, msToKstIso, regimeOf, roleIdByLabel, withAppliedTopups, type AlertIncident } from './engine';
 import { dataNowMs, toDataMs, useDataClock } from './clock';
 import { DEMO_CREATIVES } from './data';
 
@@ -9,7 +9,8 @@ import { DEMO_CREATIVES } from './data';
 export function useAlert(tickMs = 15000) {
   const { state, dispatch } = useStore();
   const actions = useActions();
-  const data = state.data;
+  // 계정 잔액은 MILDO Flow에서 반영된 충전 요청을 더한 값 (AD Pilot · Flow 잔액 계산과 같은 기준)
+  const data = useMemo(() => withAppliedTopups(state.data, state.changes), [state.data, state.changes]);
   const nowMs = useDataClock(data.generatedAt, tickMs);
   const toMs = useCallback((iso: string) => toDataMs(iso, data.generatedAt), [data.generatedAt]);
   const cfg = useMemo(() => activeConfig(state.changes), [state.changes]);

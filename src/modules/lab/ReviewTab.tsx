@@ -1,11 +1,76 @@
 /* 검수 에이전트 — 모든 문안을 REVIEW_RULES + 데이터 대조(판매가 · 프로모션 · 재고)로 자동 검수 → 차단 / 경고 / 확인 + 사유 + 수정 제안 */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { REVIEW_RULES } from '@/data/constants';
 import { fmt, fmtDate } from '@/core/util';
+import { useAi } from '@/ai/useAi';
+import { AI_ERROR_COPY, AiError } from '@/ai/claude';
+import type { Dataset } from '@/core/types';
 import { Button, Callout, Card, type Column, CopyButton, DataTable, Pill, Segmented, Src } from '@/ui/primitives';
 import { EXTRA_REVIEW_RULES, REVIEW_SAMPLES, SA_CHAR_LIMITS } from './data';
-import { charLen, priceReferences, REVIEW_LEVEL_META, reviewCopy, ruleLabel, type CopyItem, type PriceRef, type ReviewLevel, type ReviewResult } from './engine';
+import { charLen, parseAiRewrites, priceReferences, REVIEW_LEVEL_META, reviewCopy, rewritePrompt, ruleLabel, type CopyItem, type PriceRef, type ReviewLevel, type ReviewResult } from './engine';
 import { Highlighted, ReviewPill, type LabModel } from './parts';
+
+/**
+ * AI 수정안 — 버튼을 누를 때만 Claude 호출(askJson). 돌아온 안은 같은 검수 규칙으로 다시 판정해 보여주고,
+ * 실패 · 미연결이면 규칙 기반 수정 제안(위)을 그대로 쓴다. 자동 재시도 없음 · 중지 가능.
+ */
+function AiRewriteBox({ r, d, limit, onUse }: { r: ReviewResult; d: Dataset; limit?: number; onUse: (t: string) => void }) {
+  const ai = useAi();
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const [out, setOut] = useState<{ for: string; items: { text: string; why: string; r: ReviewResult }[] } | null>(null);
+  const ctl = useRef<AbortController | null>(null);
+  const runId = useRef(0);
+  useEffect(() => () => { runId.current += 1; ctl.current?.abort(); }, []);
+  const src = r.text;
+  const run = async () => {
+    if (!ai.connected || !src.trim()) return;
+    const my = ++runId.current;
+    ctl.current = new AbortController();
+    setBusy(true);
+    setNote('');
+    try {
+      const raw = await ai.askJson<unknown>(rewritePrompt(r, limit), { signal: ctl.current.signal });
+      if (runId.current !== my) return;
+      const items = parseAiRewrites(raw, src).map((x) => ({ ...x, r: reviewCopy(x.text, d, { limit }) }));
+      setOut({ for: src, items });
+      setNote(items.length ? `AI 수정안 ${items.length}개 — 같은 검수 규칙으로 다시 판정했습니다. 차단 안은 쓰지 않습니다.` : 'AI가 쓸 수 있는 수정안을 돌려주지 않았습니다. 위 규칙 기반 수정 제안을 사용하세요.');
+    } catch (e) {
+      if (runId.current !== my) return;
+      const err = e as AiError;
+      if (err.code !== 'cancelled') setNote(`${AI_ERROR_COPY[err.code] ?? err.message ?? 'AI 호출 실패'} 위 규칙 기반 수정 제안은 그대로 사용할 수 있습니다.`);
+    } finally {
+      if (runId.current === my) setBusy(false);
+    }
+  };
+  const stop = () => { runId.current += 1; ctl.current?.abort(); setBusy(false); };
+  const items = out && out.for === src ? out.items : [];
+  return (
+    <div className="stack-sm">
+      <div className="row" style={{ gap: 6 }}>
+        {busy
+          ? <Button size="sm" icon="stop" onClick={stop}>중지</Button>
+          : <Button size="sm" variant="accent" icon="sparkle" disabled={!ai.connected || !src.trim()} title={ai.connected ? '검수 지적을 함께 보내 같은 규칙 안에서 고쳐 쓴 안을 받습니다' : 'AI 미연결 — 규칙 기반 수정 제안을 사용하세요'} onClick={run}>{items.length ? 'AI 수정안 다시 받기' : 'AI 수정안 받기'}</Button>}
+        {items.length ? <Src kind="AI" /> : null}
+        {busy ? <span className="small muted">생성 중… 검수 지적과 규칙을 대조하고 있습니다.</span> : !ai.connected ? <span className="lab-sub">AI 미연결 — 규칙 기반 수정 제안(자동 치환 초안)으로 동작합니다.</span> : null}
+      </div>
+      {items.map((x) => (
+        <div key={x.text} className="lab-todo-item">
+          <ReviewPill level={x.r.level} />
+          <div className="stack-sm" style={{ gap: 2, minWidth: 0 }}>
+            <strong className="small"><Highlighted text={x.text} marks={x.r.findings.map((f) => ({ match: f.match, level: f.level }))} /></strong>
+            <span className="lab-sub">{x.why || 'AI 수정안'} · {charLen(x.text)}자{x.r.findings.filter((f) => f.level !== 'pass').length ? ` · 재검수 지적: ${x.r.findings.filter((f) => f.level !== 'pass').map((f) => `${f.match}(${REVIEW_LEVEL_META[f.level].label})`).join(' · ')}` : ''}</span>
+          </div>
+          <span className="row" style={{ gap: 4 }}>
+            <CopyButton text={x.text} />
+            <Button size="sm" disabled={x.r.level === 'block'} title={x.r.level === 'block' ? '재검수 차단 — 사용할 수 없습니다' : '검수 상자에 넣어 다시 검수'} onClick={() => onUse(x.text)}>검수 상자로</Button>
+          </span>
+        </div>
+      ))}
+      {note ? <div className="xs muted">{note}</div> : null}
+    </div>
+  );
+}
 
 type LimitMode = 'none' | 'title' | 'desc';
 
@@ -80,7 +145,8 @@ export function ReviewTab({ m }: { m: LabModel }) {
             <Segmented options={[{ id: 'none', label: '글자수 기준 없음' }, { id: 'title', label: `제목 ${SA_CHAR_LIMITS.title}자` }, { id: 'desc', label: `설명 ${SA_CHAR_LIMITS.description}자` }]} value={mode} onChange={setMode} label="글자수 기준" />
           </div>
           <span className="lab-sub">현재 {charLen(text)}자</span>
-          <ResultView r={r} />
+          {text.trim() ? <ResultView r={r} /> : <span className="small muted">검수할 문안을 입력하거나 위 예시를 누르세요. 입력하는 즉시 차단 · 경고 · 확인 사유와 수정 제안을 보여줍니다.</span>}
+          {text.trim() ? <AiRewriteBox r={r} d={d} limit={limit} onUse={setText} /> : null}
         </Card>
         <Card title="검수 규칙" sub="차단 → 경고 → 확인 순. 차단 문안은 테스트 카드 · 집행 등록 불가" actions={<Src kind="PROPOSAL" page="p.27 · p.35 · p.45" />}>
           <div className="stack-sm">

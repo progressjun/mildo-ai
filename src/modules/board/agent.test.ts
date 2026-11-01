@@ -37,6 +37,20 @@ describe('board agent kit', () => {
     }
   });
 
+  it('모든 도구: 최대 입력에서도 UTF-8 32KB 이하 (계약은 바이트 기준 — 한글 1자 = 3바이트)', async () => {
+    const bytes = (r: unknown) => new TextEncoder().encode(JSON.stringify(r)).length;
+    const inputs: Record<string, Record<string, unknown>[]> = {
+      board_summary: [{}, { period: 'last30' }, { period: 'mtd' }],
+      board_keywords: [{}, { limit: 40 }, { limit: 40, window: 7 }, { limit: 999, signal: 'any' }],
+      board_pacing: [{}],
+      board_data_status: [{}],
+      board_hourly: [{}, { metric: 'cost' }, { metric: 'roas', media: 'meta' }],
+    };
+    for (const t of agentKit.tools(ctx())) {
+      for (const inp of inputs[t.name] ?? [{}]) expect(bytes(await t.execute(inp)), `${t.name} ${JSON.stringify(inp)}`).toBeLessThanOrEqual(32_768);
+    }
+  });
+
   it('board_summary: 기간 입력 · 잘못된 기간은 최근 7일', async () => {
     const y = await run('board_summary', { period: 'yesterday' });
     expect(y.기간.이름).toBe('어제');

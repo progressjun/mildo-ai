@@ -5,7 +5,7 @@ import { MEDIA, MEDIA_IDS } from '@/data/constants';
 import { fmt } from '@/core/util';
 import { Button, Card, Empty, Src } from '@/ui/primitives';
 import { AiInsight } from '@/ui/AiInsight';
-import { PROPOSAL_SHARES, growthFormula, growthPrompt, type AllocationModel, type GrowthSignal } from './engine';
+import { PROPOSAL_SHARES, growthFormula, growthPrompt, pctInt, type AllocationModel, type GrowthSignal } from './engine';
 import { overviewBrief } from './briefs';
 import { REBALANCE_RULES } from './data';
 import { BIND_LABEL, MediaLabel, SIGNAL_TONE, Verdict, type TabId } from './parts';
@@ -97,7 +97,7 @@ export function OverviewTab({ d, model, signals, onGo }: { d: Dataset; model: Al
                 <td colSpan={4}>합계 (연 {fmt.krw(model.budget)})</td>
                 <td className="r">100%</td>
                 <td className="r">{fmt.roas(observedRoas)}</td>
-                <td className="r">격차 {fmt.int(model.baseline.spread.gapPct)}%</td>
+                <td className="r">격차 {pctInt(model.baseline.spread.gapPct)}</td>
                 <td className="r">예상 매출 {fmt.delta(model.upliftOptimizedPct)}</td>
               </tr>
             </tfoot>

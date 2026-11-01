@@ -4,7 +4,7 @@ import { MEDIA } from '@/data/constants';
 import { fmt, sum } from '@/core/util';
 import { AiInsight } from '@/ui/AiInsight';
 import { Card, DataTable, Pill, Segmented, Src, Stat, Toggle, type Column } from '@/ui/primitives';
-import { fmtRemain, fmtStamp, heldMedia, nextAction, primaryEvidence, sevCounts, slaState, typeOf, type AlertIncident } from './engine';
+import { fmtRemain, fmtStamp, heldMedia, nextAction, releasedIncidentIds, primaryEvidence, sevCounts, slaState, typeOf, type AlertIncident } from './engine';
 import { TYPE_LABEL } from './data';
 import { issuesBrief } from './briefs';
 import { krwOrDash, MediaTag, SevLabel, SlaTimer, StatusPill } from './parts';
@@ -22,7 +22,8 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
 
   const open = incidents.filter((i) => i.status !== 'resolved');
   const counts = sevCounts(incidents);
-  const held = heldMedia(incidents);
+  const held = heldMedia(incidents, state.changes);
+  const released = useMemo(() => releasedIncidentIds(state.changes), [state.changes]);
   const withSla = useMemo(() => incidents.map((i) => ({ i, st: slaState(i, nowMs, toMs, state.offHoursMode) })), [incidents, nowMs, toMs, state.offHoursMode]);
   const urgent = withSla.filter(({ i, st }) => i.status !== 'resolved' && (st.overdue || (st.remainingMin !== null && st.remainingMin <= 10)));
   const overdue = urgent.filter(({ st }) => st.overdue);
@@ -51,7 +52,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
             {i.page ? <Src kind="PROPOSAL" page={i.page} /> : null}
             {i.isTest ? <Pill tone="dark">테스트 주입</Pill> : null}
             {i.recurrence?.count ? <Pill tone="warning" title={i.recurrence.dates.join(', ')}>30일 내 재발 {i.recurrence.count}회</Pill> : null}
-            {i.holdMedia && i.status !== 'resolved' ? <Pill tone="outline" icon="pause">자동 조정 보류</Pill> : null}
+            {i.holdMedia && i.status !== 'resolved' ? (released.has(i.id) ? <Pill tone="good" icon="play" title="MILDO Flow에서 보류 해제 요청 반영">자동 조정 재개 (보류 해제 반영)</Pill> : <Pill tone="outline" icon="pause">자동 조정 보류</Pill>) : null}
           </div>
         </div>
       ),
@@ -96,7 +97,9 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
       >
         <div className="alert-queue">
           <DataTable rows={rows} columns={columns} rowKey={({ i }) => i.id} onRowClick={({ i }) => onOpen(i.id)} maxHeight={560}
-            empty={status === 'open' ? '열린 이슈가 없습니다. 알림 · 테스트 주입 탭에서 테스트 이슈를 만들 수 있습니다.' : '조건에 맞는 이슈가 없습니다'} />
+            empty={status === 'open' && (open.length === 0 || (testOnly && sev === 'all' && !open.some((i) => i.isTest)))
+              ? `열린 ${testOnly ? '테스트 ' : ''}이슈가 없습니다. 알림 · 테스트 주입 탭에서 테스트 이슈를 만들 수 있습니다.`
+              : `조건에 맞는 이슈가 없습니다 (${[status === 'open' ? '열린 이슈' : status === 'resolved' ? '해결' : '전체', sev !== 'all' ? sev : '', testOnly ? '테스트 주입만' : ''].filter(Boolean).join(' · ')}). 등급 · 상태 필터를 바꿔 보세요.`} />
         </div>
       </Card>
 
@@ -135,7 +138,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
 데이터(JSON, 시연용 TEST DATA):
 ${JSON.stringify(list)}`;
           }}
-          fallback={() => issuesBrief(data, incidents, nowMs, toMs, state.offHoursMode)}
+          fallback={() => issuesBrief(data, incidents, nowMs, toMs, state.offHoursMode, state.changes)}
         />
       </div>
     </div>

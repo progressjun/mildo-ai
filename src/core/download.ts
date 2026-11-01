@@ -13,7 +13,14 @@ function getDownloads(): Promise<DownloadsNs | null> {
   return dlPromise;
 }
 
-export async function saveFile(filename: string, data: string, mime = 'text/plain;charset=utf-8'): Promise<'saved' | 'declined' | 'unavailable'> {
+/**
+ * 결과: saved · declined(보는 사람이 확인창에서 거절 — 재시도 · 오류 표시 안 함) · unavailable(저장 기능 없음)
+ * · failed(빈 데이터 · 허용되지 않는 확장자 등 — 호출자가 사용자에게 알린다)
+ */
+export type SaveResult = 'saved' | 'declined' | 'unavailable' | 'failed';
+
+export async function saveFile(filename: string, data: string, mime = 'text/plain;charset=utf-8'): Promise<SaveResult> {
+  if (!data) return 'failed';
   const w = window as unknown as { claude?: unknown };
   if (w.claude) {
     const dl = await getDownloads();
@@ -21,8 +28,11 @@ export async function saveFile(filename: string, data: string, mime = 'text/plai
       try {
         await dl.save({ filename, data: new Blob([data], { type: mime }) });
         return 'saved';
-      } catch {
-        return 'declined';
+      } catch (e) {
+        const code = (e as { code?: string } | null)?.code;
+        if (code === 'declined') return 'declined';
+        if (code === 'unavailable') return 'unavailable';
+        return 'failed';
       }
     }
     return 'unavailable';

@@ -7,7 +7,7 @@ import { uid } from '@/core/util';
 import { Button, Callout, Card, CopyButton, DownloadButton, Empty, Pill, Segmented, Src, Toggle } from '@/ui/primitives';
 import { AEO_TOPICS, GEO_RULES, type AeoTopicId } from './data';
 import {
-  buildFaqDraft, dateLabel, faqAiPrompt, faqJsonLd, faqMarkdown, livePromotion, QUERY_BY_ID, sanitizeAiFaq, TOPIC_LABEL,
+  buildFaqDraft, dateLabel, DENIED_CODES, faqAiPrompt, faqJsonLd, faqMarkdown, livePromotion, QUERY_BY_ID, sanitizeAiFaq, TOPIC_LABEL,
   type FaqItem, type FaqReviewed, type Visibility, type faqCoverage,
 } from './engine';
 import { ReviewHits, VerdictBadge } from './parts';
@@ -22,6 +22,8 @@ export function FaqTab({ d, onItems, reviewed, cov, vis }: {
   const [onlyPub, setOnlyPub] = useState(true);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
+  const [blocked, setBlocked] = useState(false);
+  const usable = ai.connected && !blocked;
   const ctl = useRef<AbortController | null>(null);
   const ld = useMemo(() => faqJsonLd(reviewed, onlyPub), [reviewed, onlyPub]);
   const rule = useMemo(() => buildFaqDraft(d), [d]);
@@ -39,7 +41,7 @@ export function FaqTab({ d, onItems, reviewed, cov, vis }: {
   const add = () => onItems((cur) => [...cur, { id: uid('faq'), topic: topic === 'all' ? 'criteria' : topic, q: '', a: '', source: 'edited', queries: [] }]);
 
   const generate = async () => {
-    if (!ai.connected) return;
+    if (!usable) return;
     setBusy(true);
     setNote('');
     ctl.current = new AbortController();
@@ -53,7 +55,8 @@ export function FaqTab({ d, onItems, reviewed, cov, vis }: {
       }
     } catch (e) {
       const err = e as AiError;
-      if (err.code !== 'cancelled') setNote(AI_ERROR_COPY[err.code] ?? err.message);
+      if (DENIED_CODES.has(err.code)) { setBlocked(true); setNote(''); }
+      else if (err.code !== 'cancelled') setNote(AI_ERROR_COPY[err.code] ?? err.message);
     } finally {
       setBusy(false);
     }
@@ -128,10 +131,11 @@ export function FaqTab({ d, onItems, reviewed, cov, vis }: {
             {busy ? (
               <Button size="sm" icon="stop" onClick={() => ctl.current?.abort()}>중지</Button>
             ) : (
-              <Button size="sm" variant="accent" icon="sparkle" disabled={!ai.connected} onClick={generate}
-                title={ai.connected ? undefined : 'AI 미연결 — 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 실행'}>AI 초안 생성</Button>
+              <Button size="sm" variant="accent" icon="sparkle" disabled={!usable} onClick={generate}
+                title={usable ? undefined : blocked ? 'Claude 사용이 허용되지 않음 — 규칙 초안으로 계속' : 'AI 미연결 — 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 실행'}>AI 초안 생성</Button>
             )}
-            {!ai.connected ? <div className="xs muted">{ai.backend === 'checking' ? 'AI 연결 상태 확인 중' : 'AI 미연결 — 규칙 초안만 사용합니다. 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.'}</div> : null}
+            {blocked ? <div className="xs muted">Claude 사용이 허용되지 않아 AI 초안을 만들 수 없습니다. 규칙 초안과 직접 편집으로 계속합니다.</div>
+              : !ai.connected ? <div className="xs muted">{ai.backend === 'checking' ? 'AI 연결 상태 확인 중' : 'AI 미연결 — 규칙 초안만 사용합니다. 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.'}</div> : null}
             {busy ? <div className="xs muted">Claude가 FAQ 초안을 작성 중입니다.</div> : null}
             {note ? <div className="xs">{note}</div> : null}
           </Card>

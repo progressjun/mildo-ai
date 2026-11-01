@@ -11,7 +11,7 @@ import { addDays, monthKey, sum } from '@/core/util';
 import { heatLevel } from './BoardHeatmap';
 import {
   accountInfo, dataBrief, delegationText,
-  BOARD_PERIOD_IDS, boardKpis, boardPromptPayload, budgetPacing, campaignPaceRows, changeFlag, channelBrief, channelRows, channelTrend, clock,
+  BOARD_PERIOD_IDS, FLAG_SEVERITY, boardKpis, boardPromptPayload, budgetPacing, campaignPaceRows, changeFlag, channelBrief, channelRows, channelTrend, clock,
   collectionSummary, curveExhaustHour, filterKeywords, groupRollup, hourWeekHeatmap, hourlyCostCurve, intentRollup, keyMappingSamples, keywordAnomaly,
   keywordBrief, keywordCsv, keywordRows, keywordSummary, keywordVerdict, landingInfo, mediaComparison, mediaTrend, monthPaceRows, pacingBrief,
   periodBrief, periodWindow, productGroupOf, reconciliation, sortKeywords, sourceStatuses, standardKeyStats, todaySignals, validationChecks,
@@ -242,7 +242,16 @@ describe('02 키워드 성과 필터', () => {
     expect(lines).toHaveLength(rows.length + 1);
     expect(csv).not.toMatch(/NaN|undefined|Infinity/);
     expect(csv).toContain('TEST DATA');
-    expect(keywordCsv([])).toBe('');
+    // 0행이어도 머리글 한 줄 (빈 문자열이면 아티팩트 downloads.save가 bad_request로 거절 → 버튼이 아무 반응 없음)
+    const none = keywordCsv([]);
+    expect(none.charCodeAt(0)).toBe(0xfeff);
+    expect(none.split('\n')).toHaveLength(1);
+    expect(none).toBe(lines[0]);
+  });
+
+  it('표 정렬 키: 변동 판정은 내림차순 첫 클릭에 위험 → 주의 → 정상 → 판정 불가', () => {
+    const levels = (['ok', 'na', 'danger', 'warn'] as const).slice().sort((a, b) => FLAG_SEVERITY[b] - FLAG_SEVERITY[a]);
+    expect(levels).toEqual(['danger', 'warn', 'ok', 'na']);
   });
 
   it('제품군 · 랜딩 매핑 경계값', () => {

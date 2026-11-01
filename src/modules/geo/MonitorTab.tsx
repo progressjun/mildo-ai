@@ -9,11 +9,13 @@ import { Button, Callout, Card, CopyButton, DataTable, DownloadButton, Empty, Pi
 import { HBarChart, LineChart, ShareBar } from '@/ui/charts';
 import { CITE_LABEL, COMPETITOR_COLOR, COMPETITOR_COLOR_FALLBACK, GEO_ROUNDS, GEO_RULES, LIVE_ENGINE } from './data';
 import {
-  BRAND, dateLabel, INTENT_LABEL, liveSummary, liveVerdict, parseAiAnswer, visibilityMarkdown, visibilityRows, type GeoSnapshot, type LiveRecord, type QueryStat, type Visibility,
+  BRAND, dateLabel, DENIED_CODES, INTENT_LABEL, liveSummary, liveVerdict, parseAiAnswer, visibilityMarkdown, visibilityRows, type GeoSnapshot, type LiveRecord, type QueryStat, type Visibility,
 } from './engine';
 import { EngineCell, IntentPill, LiveCell, VerdictBadge } from './parts';
 
 type IntentFilter = 'all' | IntentId;
+
+const LIVE_DENIED_COPY = 'Claude 사용이 허용되지 않아 라이브 진단을 실행할 수 없습니다. 매트릭스(데모 스냅샷)와 지난 라이브 기록은 그대로 볼 수 있습니다.';
 
 export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLive, onClearLive }: {
   snap: GeoSnapshot; vis: Visibility; roundIndex: number; onRound: (i: number) => void;
@@ -25,6 +27,8 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState('');
+  // Claude 사용 거부(not_granted 등) 뒤에는 버튼을 끄고 이유를 보여 준다 — 재요청하지 않는다 (아티팩트 계약)
+  const [blocked, setBlocked] = useState<string | null>(null);
   const ctl = useRef<AbortController | null>(null);
 
   const rows = useMemo(() => vis.queries.filter((q) => intent === 'all' || q.query.intent === intent), [vis, intent]);
@@ -33,11 +37,12 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
   const nE = snap.engines.length;
   const need = Math.min(GEO_RULES.coveredEngines, Math.max(1, nE));
 
+  const usable = ai.connected && !blocked;
   const reason = ai.backend === 'checking' ? 'AI 연결 상태를 확인하는 중입니다.'
-    : ai.connected ? '' : 'AI 미연결 — 설정에서 Anthropic API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.';
+    : blocked ?? (ai.connected ? '' : 'AI 미연결 — 설정에서 Anthropic API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.');
 
   const runLive = async (ids: string[]) => {
-    if (!ai.connected || !ids.length) return;
+    if (!usable || !ids.length) return;
     setNote('');
     ctl.current = new AbortController();
     for (const id of ids) {
@@ -50,7 +55,8 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
         onLive({ ...parseAiAnswer(text), queryId: q.id, query: q.text, at: nowIso(), backend });
       } catch (e) {
         const err = e as AiError;
-        if (err.code !== 'cancelled') setNote(AI_ERROR_COPY[err.code] ?? err.message);
+        if (DENIED_CODES.has(err.code)) setBlocked(LIVE_DENIED_COPY);
+        else if (err.code !== 'cancelled') setNote(AI_ERROR_COPY[err.code] ?? err.message);
         break;
       }
     }
@@ -163,7 +169,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
           <Card tone="dark" title={<span className="row" style={{ gap: 6 }}>라이브 진단 · Claude <Src kind="LIVE" /></span>}
             sub="Claude 응답 기준 진단이며 다른 엔진은 수집 연동 필요">
             <div className="row" style={{ gap: 6 }}>
-              <Pill tone={ai.connected ? 'good' : 'neutral'} icon={ai.connected ? 'check' : 'zap'}>{ai.backend === 'checking' ? '확인 중' : ai.connected ? 'Claude 연결됨' : 'AI 미연결'}</Pill>
+              <Pill tone={usable ? 'good' : 'neutral'} icon={usable ? 'check' : 'zap'}>{ai.backend === 'checking' ? '확인 중' : blocked ? 'Claude 사용 불가' : ai.connected ? 'Claude 연결됨' : 'AI 미연결'}</Pill>
               <span className="xs muted">질의 문장을 지시문 없이 그대로 보내고, 답변에서 '수면밀도 · 밀도 매트리스' 언급 · 순서 · 경쟁사 · 인용 URL을 파싱합니다.</span>
             </div>
             <div className="row" style={{ gap: 6 }}>
@@ -171,8 +177,8 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
                 <Button size="sm" icon="stop" onClick={() => ctl.current?.abort()}>중지</Button>
               ) : (
                 <>
-                  <Button size="sm" variant="accent" icon="sparkle" disabled={!ai.connected || !selected} title={reason || undefined} onClick={() => selected && runLive([selected.query.id])}>선택 질의 진단</Button>
-                  <Button size="sm" icon="play" disabled={!ai.connected || checked.size === 0} title={reason || (checked.size ? undefined : '매트릭스에서 체크한 질의가 없습니다')} onClick={() => runLive([...checked])}>체크한 {checked.size}개 일괄 진단</Button>
+                  <Button size="sm" variant="accent" icon="sparkle" disabled={!usable || !selected} title={reason || undefined} onClick={() => selected && runLive([selected.query.id])}>선택 질의 진단</Button>
+                  <Button size="sm" icon="play" disabled={!usable || checked.size === 0} title={reason || (checked.size ? undefined : '매트릭스에서 체크한 질의가 없습니다')} onClick={() => runLive([...checked])}>체크한 {checked.size}개 일괄 진단</Button>
                 </>
               )}
             </div>

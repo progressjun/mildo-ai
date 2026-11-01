@@ -1122,6 +1122,9 @@ export function parseAiAnswer(text: string): LiveParse {
   };
 }
 
+/** Claude를 쓸 수 없게 된 응답 코드 — 버튼을 끄고 다시 요청하지 않는다 (no_backend: 거부 직후 백엔드가 규칙 엔진으로 바뀐 경우) */
+export const DENIED_CODES: ReadonlySet<string> = new Set(['not_granted', 'sampling_disabled', 'no_backend']);
+
 export function liveVerdict(r: LiveParse | null | undefined): Verdict {
   if (!r) return { id: 'none', label: '미진단', tone: 'outline', basis: 'Claude 연결 시 버튼으로 진단' };
   if (r.mentioned) return { id: 'mentioned', label: `언급 · ${r.position}번째`, tone: r.position === 1 ? 'good' : 'neutral', basis: `브랜드 ${r.order.length}개 중 ${r.position}번째 · 경쟁사 ${r.competitors.length}개` };
@@ -1428,15 +1431,24 @@ export function paidSummary(rows: PaidRow[]) {
 const termKey = (s: unknown) => String(s ?? '').replace(/\s+/g, '').toLowerCase();
 export const REGISTRATION_ORIGIN: Record<string, string> = { geo: 'SearchTuneOS', adpilot: 'AD Pilot', lab: 'MILDO Lab' };
 
+/** targetId에서 검색어 부분 — 'term:…' · 'labreg:…' · MILDO Flow 시연 이력 'seed:term:<공백→_>' */
+const idTermKey = (id: unknown): string | null => {
+  const m = String(id ?? '').match(/^(?:seed:)?(?:term|labreg):(.+)$/);
+  return m ? termKey(m[1].replace(/_/g, '')) : null;
+};
+/** target에서 검색어 부분 — '… → X_TEST 등록'(AD Pilot) · '… 테스트 그룹 등록'(MILDO Flow 시연 이력) */
+const targetTermKey = (target: unknown): string => termKey(String(target ?? '').split('→')[0].replace(/\s*테스트\s*그룹\s*등록\s*$/, ''));
+
 /**
  * 같은 검색어의 등록 요청이 이미 있는가 — SearchTuneOS · AD Pilot(targetId 'term:…', target '… → X_TEST 등록') ·
- * MILDO Lab(targetId 'labreg:…') 어느 화면에서 올렸든 같은 검색어면 중복으로 본다. 반려 · 롤백 건은 제외.
+ * MILDO Lab(targetId 'labreg:…') · MILDO Flow 시연 이력(targetId 'seed:term:…', target '… 테스트 그룹 등록')
+ * 어느 화면에서 올렸든 같은 검색어면 중복으로 본다. 반려 · 롤백 건은 제외.
  */
 export function findRegistration(changes: readonly ChangeRequest[] | null | undefined, term: string): ChangeRequest | undefined {
   const t = termKey(term);
   if (!t) return undefined;
   return (changes ?? []).find((c) => !!c && c.kind === 'keyword_add' && c.status !== 'rejected' && c.status !== 'rolled_back' && (
-    c.targetId === `term:${term}` || c.targetId === `labreg:${t}` || termKey(c.target) === t || termKey(String(c.target ?? '').split('→')[0]) === t
+    idTermKey(c.targetId) === t || targetTermKey(c.target) === t
   ));
 }
 
@@ -1621,15 +1633,18 @@ export function caseMetrics(c: CaseInput) {
   if (!rateOk(c.afterRate)) invalid.push('진단 후 언급률(0~100%)');
   if (!citeOk(c.beforeCites)) invalid.push('진단 전 인용 수(0 이상 정수)');
   if (!citeOk(c.afterCites)) invalid.push('진단 후 인용 수(0 이상 정수)');
-  const rateDeltaPp = isNum(c.beforeRate) && isNum(c.afterRate) ? c.afterRate - c.beforeRate : null;
-  const citeDelta = isNum(c.beforeCites) && isNum(c.afterCites) ? c.afterCites - c.beforeCites : null;
+  // 범위를 벗어난 값은 변화량 · 삽입 문구에 쓰지 않는다 (예: 언급률 140% → [범위 확인]) — 잘못 입력한 수치가 제안서로 복사되지 않도록
+  const okRate = (v: number | null): v is number => isNum(v) && rateOk(v);
+  const okCite = (v: number | null): v is number => isNum(v) && citeOk(v);
+  const rateDeltaPp = okRate(c.beforeRate) && okRate(c.afterRate) ? c.afterRate - c.beforeRate : null;
+  const citeDelta = okCite(c.beforeCites) && okCite(c.afterCites) ? c.afterCites - c.beforeCites : null;
   const citeDeltaPct = citeDelta !== null && isNum(c.beforeCites) && c.beforeCites > 0 ? (citeDelta / c.beforeCites) * 100 : null;
-  const v = (n: number | null, suf: string) => (isNum(n) ? `${Number.isInteger(n) ? n : n.toFixed(1)}${suf}` : '[입력]');
+  const v = (n: number | null, suf: string, ok: boolean) => (!isNum(n) ? '[입력]' : !ok ? '[범위 확인]' : `${Number.isInteger(n) ? n : n.toFixed(1)}${suf}`);
   const sign = (n: number) => (n > 0 ? '+' : '');
   const text = [
     `${c.brand.trim() || '[브랜드]'}${c.beforeLabel || c.afterLabel ? ` · ${c.beforeLabel || '[진단 전]'} → ${c.afterLabel || '[진단 후]'}` : ''}${c.engines.trim() ? ` · ${c.engines.trim()}` : ''}`,
-    `브랜드 언급률 ${v(c.beforeRate, '%')} → ${v(c.afterRate, '%')}${rateDeltaPp !== null ? ` (${sign(rateDeltaPp)}${rateDeltaPp.toFixed(1)}pp)` : ''}`,
-    `인용 수 ${v(c.beforeCites, '건')} → ${v(c.afterCites, '건')}${citeDelta !== null ? ` (${sign(citeDelta)}${citeDelta}건${citeDeltaPct !== null ? `, ${sign(citeDeltaPct)}${citeDeltaPct.toFixed(1)}%` : ''})` : ''}`,
+    `브랜드 언급률 ${v(c.beforeRate, '%', okRate(c.beforeRate))} → ${v(c.afterRate, '%', okRate(c.afterRate))}${rateDeltaPp !== null ? ` (${sign(rateDeltaPp)}${rateDeltaPp.toFixed(1)}pp)` : ''}`,
+    `인용 수 ${v(c.beforeCites, '건', okCite(c.beforeCites))} → ${v(c.afterCites, '건', okCite(c.afterCites))}${citeDelta !== null ? ` (${sign(citeDelta)}${citeDelta}건${citeDeltaPct !== null ? `, ${sign(citeDeltaPct)}${citeDeltaPct.toFixed(1)}%` : ''})` : ''}`,
     c.demo ? 'TEST DATA · 실제 사례 아님' : '',
   ].filter(Boolean).join(' · ');
   return { rateDeltaPp, citeDelta, citeDeltaPct, complete: missing.length === 0 && invalid.length === 0, missing, invalid, demo: !!c.demo, text };

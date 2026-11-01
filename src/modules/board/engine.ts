@@ -216,6 +216,8 @@ export function kpiDaily(d: Dataset, win: PeriodWindow): KpiDay[] {
 /* ================================================================== */
 
 export interface Flag { level: Level; label: string; basis: string }
+/** 변동 판정 심각도 (표 정렬용) — 높을수록 심각. DataTable 첫 클릭(내림차순)에 위험 → 주의 → 정상 → 판정 불가 순 */
+export const FLAG_SEVERITY: Record<Level, number> = { danger: 3, warn: 2, ok: 1, na: 0 };
 
 /** 직전 기간 대비 변동 판정 — p.47 이상 징후 기준(ROAS −20/−35 · CPA +30/+50 · 광고비 ±30/±50)을 기간 비교에 준용 */
 export function changeFlag(cur: Pick<Totals, 'cost' | 'roas' | 'cpa'>, prev: Pick<Totals, 'cost' | 'roas' | 'cpa'>): Flag {
@@ -681,6 +683,8 @@ export function keywordCsv(rows: readonly KeywordRow[], window: KeywordWindow = 
     { key: 'lost', label: '노출 기회 손실(%)' }, { key: 'rank', label: '평균 순위' }, { key: 'search', label: '월간 검색량' }, { key: 'bid', label: '입찰가(원)' },
     { key: 'landing', label: '랜딩' }, { key: 'signals', label: '신호' }, { key: 'source', label: '출처' },
   ];
+  // 필터 결과 0행이어도 머리글만 있는 CSV를 만든다 (빈 문자열이면 아티팩트 저장이 bad_request로 거절되어 아무 반응이 없다)
+  if (!rows.length) return toCsv([Object.fromEntries(cols.map((c) => [c.key, '']))], cols).split('\n')[0];
   const blank = (v: number | null) => (v === null ? '' : v);
   const data = rows.map((r) => ({
     text: r.text, intent: r.intentName, adgroup: r.adgroup, status: r.status, group: r.groupLabel,

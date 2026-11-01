@@ -13,7 +13,7 @@ import {
   type Candidate, type CandidateSource,
 } from './engine';
 import { setLab } from './store';
-import { Dl, LandingPill, ScoreBar, TierPill, type LabModel } from './parts';
+import { Dl, LandingPill, ScoreBar, TierPill, useClickGuard, type LabModel } from './parts';
 
 const SOURCE_BASIS: Record<CandidateSource, string> = {
   search_term: '미등록 · 전환 발생 (실측)',
@@ -22,6 +22,13 @@ const SOURCE_BASIS: Record<CandidateSource, string> = {
   sku48: '제품 1 × 문제 4 × 상황 4 × 비교 3',
   ai_expand: 'AI 확장 (askJson)',
 };
+
+/** 후보 CSV 열 (엑셀에서 바로 읽히도록 한글 머리글 · 수치는 TEST DATA 기준) */
+const CSV_COLUMNS = [
+  { key: 'phrase', label: '구문형 키워드' }, { key: 'source', label: '출처' }, { key: 'intent', label: '의도 분류' }, { key: 'volume', label: '예상 검색량' },
+  { key: 'volumeNote', label: '검색량 근거' }, { key: 'roas', label: '보고서 ROAS(%)' }, { key: 'landing', label: '랜딩 매칭' }, { key: 'score', label: '우선순위 점수' },
+  { key: 'flags', label: '주의' }, { key: 'status', label: '상태' },
+];
 
 function heat(score: number) {
   // 점수 → 단일 색 농도 (텍스트 대비 유지 위해 최대 42%)
@@ -55,16 +62,21 @@ export function DiscoverTab({ m }: { m: LabModel }) {
   const selRows = rows.filter((c) => selected.has(c.id) && (c.status === 'new' || c.status === 'rejected') && c.purchase);
   const check = bulkCheck(selRows.length);
 
-  const register = (cs: Candidate[], force = false) => {
-    if (!cs.length) return;
+  const guard = useClickGuard();
+  // 등록 직후 행이 목록에서 빠지면 다음 후보 버튼이 같은 자리로 올라온다 — 더블클릭이 다른 후보를 등록하지 않도록 연속 호출은 무시
+  const register = guard((cs: Candidate[], force = false) => {
+    if (!cs.length) return false;
     const b = bulkCheck(cs.length);
-    if (b.level === 'block') { actions.toast({ tone: 'warning', title: '대량 등록 차단', body: b.reason }); return; }
-    if (b.level === 'warn' && !force) { setConfirm(cs); return; }
-    for (const c of cs) actions.addChange(registrationPayload(c, state.role, cs.length));
-    actions.toast({ tone: 'good', title: `테스트 그룹 등록 요청 ${cs.length}건`, body: `${b.approver === 'PM' ? 'PM' : '담당 AE'} 승인 후 테스트 전용 그룹 · 입찰 상한으로 등록됩니다`, route: 'flow' });
+    if (b.level === 'block') { actions.toast({ tone: 'warning', title: '대량 등록 차단', body: b.reason }); return false; }
+    if (b.level === 'warn' && !force) { setConfirm(cs); return false; }
+    const ps = cs.map((c) => registrationPayload(c, state.role, cs.length));
+    for (const p of ps) actions.addChange(p);
+    const pm = ps.filter((p) => p.approver === 'PM').length;
+    const who = pm === ps.length ? 'PM' : pm ? `담당 AE · PM(브랜드 ${pm}건)` : '담당 AE';
+    actions.toast({ tone: 'good', title: `테스트 그룹 등록 요청 ${cs.length}건`, body: `${who} 승인 후 테스트 전용 그룹 · 입찰 상한으로 등록됩니다`, route: 'flow' });
     setSelected(new Set());
     setConfirm(null);
-  };
+  });
 
   const runAi = async () => {
     setAiNote('');
@@ -220,7 +232,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
         actions={<>
           <Src kind="DEMO" />
           <DownloadButton filename={`mildo-lab-candidates-${d.today}.csv`} mime="text/csv;charset=utf-8" label="CSV"
-            data={() => toCsv(rows.map((c) => ({ phrase: c.phrase, source: SOURCE_LABEL[c.source], intent: INTENT_NAME(c.intent), volume: c.volume, volumeNote: c.volumeNote, roas: c.evidence ? Math.round(c.evidence.roas) : '', landing: `${c.landing.label} ${LANDING_LEVEL_META[c.landing.level].label}`, score: c.score, flags: c.flags.join(' / '), status: CANDIDATE_STATUS_LABEL[c.status] })))} />
+            data={() => toCsv(rows.map((c) => ({ phrase: c.phrase, source: SOURCE_LABEL[c.source], intent: INTENT_NAME(c.intent), volume: c.volume, volumeNote: c.volumeNote, roas: c.evidence ? Math.round(c.evidence.roas) : '', landing: `${c.landing.label} ${LANDING_LEVEL_META[c.landing.level].label}`, score: c.score, flags: c.flags.join(' / '), status: CANDIDATE_STATUS_LABEL[c.status] })), CSV_COLUMNS)} />
           <Button size="sm" variant="primary" icon="send" disabled={!selRows.length || check.level === 'block'} title={check.reason} onClick={() => register(selRows)}>선택 {selRows.length}건 등록 요청</Button>
         </>}>
         <div className="row" style={{ gap: 12, alignItems: 'flex-end' }}>

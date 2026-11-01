@@ -9,7 +9,7 @@ import { useLab } from '@/modules/lab/store';
 import { fmtDate, monthKey } from '@/core/util';
 import { PageHeader, Pill, Src, Tabs } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
-import { availableMonths, buildTimetable, cadenceStatus, computeSavings, dataNowMinutes, generateReport, type IssueLike, type ReportType } from './engine';
+import { availableMonths, buildTimetable, cadenceStatus, computeSavings, dataNowMinutes, fmtCut, generateReport, type IssueLike, type ReportType } from './engine';
 import { ReportsTab, type Interp } from './ReportsTab';
 import { TimetableTab } from './TimetableTab';
 import { DEFAULT_SAVINGS_INPUTS, SavingsTab, type SavingsInputs } from './SavingsTab';
@@ -60,7 +60,7 @@ export default function View() {
   const tabs: { id: TabId; label: ReactNode; badge?: ReactNode }[] = [
     { id: 'reports', label: '리포트 4종', badge: openP1 ? <Pill tone="critical">P1 {openP1}</Pill> : undefined },
     { id: 'timetable', label: '데이터 제공 시간표', badge: <Pill tone="neutral">{tt.done}/{tt.items.length}</Pill> },
-    { id: 'savings', label: '절감 실측 · 90일 일정', badge: <Pill tone="neutral" title={`${sv.verdict.label} · ${sv.verdict.basis}`}>목표 −{Math.round(sv.reductionPct)}%</Pill> },
+    { id: 'savings', label: '절감 실측 · 90일 일정', badge: <Pill tone="neutral" title={`${sv.verdict.label} · ${sv.verdict.basis}`}>목표 {fmtCut(sv.reductionPct)}</Pill> },
   ];
 
   return (

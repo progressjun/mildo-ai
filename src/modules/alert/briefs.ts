@@ -3,7 +3,7 @@
  * 확정 팩트 / 반복 관측 패턴 / AI 해석(규칙 해석) / 전제 조건 / 반례 / 다음 액션을 분리한다.
  */
 import type { Brief } from '@/ai/prompts';
-import type { Dataset, Incident } from '@/core/types';
+import type { ChangeRequest, Dataset, Incident } from '@/core/types';
 import { SLA } from '@/data/constants';
 import { fmt, sum } from '@/core/util';
 import {
@@ -43,7 +43,7 @@ function interpret(i: AlertIncident): string | null {
   }
 }
 
-export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs = Date.parse(data.generatedAt), toMs: (iso: string) => number = Date.parse, offHours = false): Brief {
+export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs = Date.parse(data.generatedAt), toMs: (iso: string) => number = Date.parse, offHours = false, changes?: readonly ChangeRequest[]): Brief {
   const list = (incidents as AlertIncident[]).filter((i) => i.status !== 'resolved');
   const p = { P1: list.filter((i) => i.severity === 'P1'), P2: list.filter((i) => i.severity === 'P2'), P3: list.filter((i) => i.severity === 'P3') };
   const regime = regimeOf(data.today, offHours);
@@ -52,7 +52,7 @@ export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs
     `기준 ${fmtDateShort(data.today)} ${String(data.currentHour).padStart(2, '0')}:30 열린 이슈 ${list.length}건 (P1 ${p.P1.length} · P2 ${p.P2.length} · P3 ${p.P3.length}). 수치는 시연용 TEST DATA.`,
     ...top.map((i) => `${i.severity} ${i.title}: ${primaryEvidence(i)} (판정 기준 ${i.basis ?? '—'}, 제안서 ${i.page ?? 'p.44'}).`),
   ];
-  const held = heldMedia(list);
+  const held = heldMedia(list, changes);
   const patterns: string[] = [];
   if (held.length) patterns.push(`자동 조정 보류 매체 ${held.map((m) => MEDIA[m].name).join(', ')} — 원인 확인 전 AD Pilot 자동 조정이 멈춘 상태.`);
   const rec = list.filter((i) => i.recurrence?.count);

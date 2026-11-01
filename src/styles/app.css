@@ -266,7 +266,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 /* ---------- 채팅 ---------- */
 .chat { display: flex; flex-direction: column; gap: 14px; }
 .msg { display: flex; flex-direction: column; gap: 6px; max-width: 920px; }
-.msg.user { align-self: flex-end; background: var(--ink); color: var(--paper); border-radius: 14px 14px 4px 14px; padding: 10px 14px; max-width: 70%; }
+.msg.user { align-self: flex-end; background: var(--ink); color: var(--paper); border-radius: 14px 14px 4px 14px; padding: 10px 14px; max-width: 70%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.assistant { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
 .tool-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: var(--surface-2); color: var(--ink-2); padding: 1px 8px; border-radius: 999px; font-family: var(--font-mono); }
 

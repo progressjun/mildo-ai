@@ -32,7 +32,8 @@ export function CreativeTab({ m, onMakeCard, onOpenCards }: { m: LabModel; onMak
     const rt = reviewCopy(c.title, d, { limit: SA_CHAR_LIMITS.title });
     const rd = reviewCopy(c.description, d, { limit: SA_CHAR_LIMITS.description });
     const lv: ReviewLevel = REVIEW_LEVEL_META[rt.level].rank >= REVIEW_LEVEL_META[rd.level].rank ? rt.level : rd.level;
-    return { c, lv, notes: [...rt.findings, ...rd.findings].filter((f) => f.level !== 'pass').map((f) => `${f.match} · ${REVIEW_LEVEL_META[f.level].label} · ${f.suggestion}`) };
+    // 제목 · 설명에 같은 표현이 있으면 지적이 두 번 나오므로 같은 문구는 한 번만
+    return { c, lv, notes: [...new Set([...rt.findings, ...rd.findings].filter((f) => f.level !== 'pass').map((f) => `${f.match} · ${REVIEW_LEVEL_META[f.level].label} · ${f.suggestion}`))] };
   }), [rows, d]);
 
   const runAi = async () => {

@@ -5,7 +5,7 @@
 import type { ModuleAgentKit, ToolContext } from '../types';
 import type { Incident } from '@/core/types';
 import {
-  activeConfig, checkAccounts, detectIncidents, fmtDateShort, fmtStamp, heldMedia, historyRecords, holidayPrecheck, incidentReport, nextAction,
+  activeConfig, checkAccounts, detectIncidents, withAppliedTopups, fmtDateShort, fmtStamp, heldMedia, historyRecords, holidayPrecheck, incidentReport, nextAction,
   offBlocks, onDutyFor, primaryEvidence, regimeOf, rotationTable, sessionRecords, slaReport, slaState, typeOf, type AlertIncident,
 } from './engine';
 import { DEMO_CREATIVES, TYPE_LABEL } from './data';
@@ -78,7 +78,7 @@ export const agentKit: ModuleAgentKit = {
           dataKind: 'TEST DATA (시연용)',
           regime: regime.off ? { mode: '주말 · 공휴일 체계', label: regime.label, onDuty: regime.duty?.role, backup: regime.duty?.backup, escalation: 'P1 → PM' } : { mode: '평일' },
           counts: (() => { const o = all.filter((i) => i.status !== 'resolved'); return { open: o.length, P1: o.filter((i) => i.severity === 'P1').length, P2: o.filter((i) => i.severity === 'P2').length, P3: o.filter((i) => i.severity === 'P3').length, returned: Math.min(20, list.length), matched: list.length }; })(),
-          autoAdjustHeld: heldMedia(all),
+          autoAdjustHeld: heldMedia(all, ctx.state.changes),
           incidents: list.slice(0, 20).map((i) => compactIncident(i, nowMs, toMsOf(ctx))),
         };
       },
@@ -88,7 +88,7 @@ export const agentKit: ModuleAgentKit = {
       description: '광고 계정별 소유 · 잔액 · 일 평균 소진 · 잔액 소진 예상 일수(runway) · 소진 예상 시각 · 자동충전 · 권한(실명 · 미접속) · 상태 점검 결과를 반환한다 (제안서 p.50).',
       inputSchema: { type: 'object', properties: { accountId: { type: 'string', description: '특정 계정 id (예: acc_gfa). 생략 시 전체' } } },
       execute: (input) => {
-        const checks = checkAccounts(ctx.state.data, activeConfig(ctx.state.changes)).filter((c) => !input.accountId || c.account.id === input.accountId);
+        const checks = checkAccounts(withAppliedTopups(ctx.state.data, ctx.state.changes), activeConfig(ctx.state.changes)).filter((c) => !input.accountId || c.account.id === input.accountId);
         return checks.map((c) => ({
           id: c.account.id,
           name: c.account.name,
@@ -123,7 +123,7 @@ export const agentKit: ModuleAgentKit = {
       description: '주말 · 공휴일 대응(p.48): 당번 순번, 지정한 휴무 구간의 연휴 전날 사전 점검(예산 · 소재 · 결제 잔액 · 권한 · 당번) 결과를 현재 데이터로 계산해 반환한다.',
       inputSchema: { type: 'object', properties: { block: { type: 'string', enum: ['current', 'next', 'long'], description: 'current=현재/가장 가까운 휴무, next=그다음, long=다음 3일 이상 연휴 (기본 current)' } } },
       execute: (input) => {
-        const data = ctx.state.data;
+        const data = withAppliedTopups(ctx.state.data, ctx.state.changes);
         const blocks = offBlocks(data.today, 120);
         const which = (input.block as string) ?? 'current';
         const block = which === 'long' ? blocks.find((b) => b.days >= 3 && b.start > data.today) : which === 'next' ? blocks[1] : blocks[0];
@@ -154,9 +154,9 @@ export const agentKit: ModuleAgentKit = {
     },
   ],
   briefs: [
-    { id: 'alert_accounts', match: /(계정|결제|잔액|충전|권한|비실명|runway)/i, build: (ctx) => accountsBrief(ctx.state.data, activeConfig(ctx.state.changes)) },
-    { id: 'alert_holiday', match: /(주말|공휴일|연휴|당번|사전\s?점검|휴일)/, build: (ctx) => holidayBrief(ctx.state.data, activeConfig(ctx.state.changes), Object.fromEntries(Object.entries(ctx.state.tf).map(([k, v]) => [k, v.name]))) },
+    { id: 'alert_accounts', match: /(계정|결제|잔액|충전|권한|비실명|runway)/i, build: (ctx) => accountsBrief(withAppliedTopups(ctx.state.data, ctx.state.changes), activeConfig(ctx.state.changes)) },
+    { id: 'alert_holiday', match: /(주말|공휴일|연휴|당번|사전\s?점검|휴일)/, build: (ctx) => holidayBrief(withAppliedTopups(ctx.state.data, ctx.state.changes), activeConfig(ctx.state.changes), Object.fromEntries(Object.entries(ctx.state.tf).map(([k, v]) => [k, v.name]))) },
     { id: 'alert_sla', match: /(SLA|달성률|오탐|재발|월간\s?리포트)/i, build: (ctx) => slaBrief(ctx.state.incidents, toMsOf(ctx)) },
-    { id: 'alert_issues', match: /(이슈|알림|장애|급변|탐지|이상|P1|P2|전환\s?(0|추적)|alert)/i, build: (ctx) => issuesBrief(ctx.state.data, currentIncidents(ctx), nowOf(ctx), toMsOf(ctx), ctx.state.offHoursMode) },
+    { id: 'alert_issues', match: /(이슈|알림|장애|급변|탐지|이상|P1|P2|전환\s?(0|추적)|alert)/i, build: (ctx) => issuesBrief(ctx.state.data, currentIncidents(ctx), nowOf(ctx), toMsOf(ctx), ctx.state.offHoursMode, ctx.state.changes) },
   ],
 };

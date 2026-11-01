@@ -10,8 +10,8 @@ import { AiInsight } from '@/ui/AiInsight';
 import { ALLOCATION_GUARDRAILS, CURVE_PRIORS, PACE_RULES, REBALANCE_RULES } from './data';
 import { resolveConfig } from '@/modules/adpilot/engine';
 import {
-  B_RANGE, CONSTRAINT_LABEL, PROPOSAL_SHARES, activeDuplicate, allocationModel, allocationSnapshot, budgetConstraints, exhaustText, f2, fitResponseCurves, growthPrompt,
-  marginalCurvePoints, maxShareMove, rebalanceShares, reallocationChange, type BudgetConstraint, type ConstraintVerdict, type Guardrails, type Shares,
+  B_RANGE, CONSTRAINT_LABEL, PROPOSAL_SHARES, activeDuplicate, allocationModel, allocationSnapshot, budgetConstraints, exhaustText, f2, fitResponseCurves, growthPrompt, guardrailIssues,
+  marginalCurvePoints, maxShareMove, pctInt, rebalanceShares, reallocationChange, type BudgetConstraint, type ConstraintVerdict, type Guardrails, type Shares,
 } from './engine';
 import { allocationBrief } from './briefs';
 import { BIND_LABEL, MediaLabel, StackRows, Verdict } from './parts';
@@ -42,6 +42,7 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
   const model = useMemo(() => allocationModel(d, input), [d, input]);
   const curvePts = useMemo(() => marginalCurvePoints(model.curves, model.budget), [model]);
   const constraints = useMemo(() => budgetConstraints(d, model), [d, model]);
+  const guardWarn = guardrailIssues(guard);
 
   if (!model.baseline.valid) {
     return <Callout tone="warning" title="반응 곡선을 적합할 데이터가 없습니다">매체별 일별 광고비 · 매출 데이터(최근 90일)가 필요합니다. 배분 가안(p.37)을 유지합니다.</Callout>;
@@ -122,7 +123,7 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
           <Stat label="전체 ROAS · 시나리오" value={fmt.roas(model.scenario.totalRoas)} foot={<span className="xs muted">가안 {fmt.roas(model.baseline.totalRoas)} · 균등화안 {fmt.roas(model.optimized.totalRoas)}</span>} />
           <Stat label="균등화안 예상 증분" value={fmt.krw(model.upliftOptimized)} delta={model.upliftOptimizedPct}
             foot={<span className="xs muted">b ±0.1: {fmt.delta(model.sensitivity.lowPct)} ~ {fmt.delta(model.sensitivity.highPct)} · 방향 {model.sensitivity.stable ? '유지' : `변동 (${model.sensitivity.flipped.map((m) => MEDIA[m].short).join(' · ')})`}</span>} />
-          <Stat label="한계 ROAS 격차 · 시나리오" value={`${fmt.int(model.scenario.spread.gapPct)}%`}
+          <Stat label="한계 ROAS 격차 · 시나리오" value={pctInt(model.scenario.spread.gapPct)}
             foot={<span className="xs muted">{model.scenario.spread.maxMedia ? MEDIA[model.scenario.spread.maxMedia].short : '—'} {fmt.roas(model.scenario.spread.max)} vs {model.scenario.spread.minMedia ? MEDIA[model.scenario.spread.minMedia].short : '—'} {fmt.roas(model.scenario.spread.min)} · 균등화 {fmt.roas(model.equalize.marginalRoas)}</span>} />
         </div>
         <Callout tone="info" title="예측이 아닌 시나리오">
@@ -183,12 +184,13 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
               <tr>
                 <td>합계</td><td className="r">100% · {fmt.krw(model.budget)}</td><td className="r">{fmt.ratio(MEDIA_IDS.reduce((a, m) => a + shares[m], 0))}</td>
                 <td className="r">{fmt.krw(model.budget)}</td><td className="r">{fmt.krw(model.scenario.totalRevenue)}</td><td className="r">{fmt.roas(model.scenario.totalRoas)}</td>
-                <td className="r">격차 {fmt.int(model.scenario.spread.gapPct)}%</td><td>{model.scenario.guardViolations.length ? `가드레일 위반 ${model.scenario.guardViolations.length}` : '위반 없음'}</td>
+                <td className="r">격차 {pctInt(model.scenario.spread.gapPct)}</td><td>{model.scenario.guardViolations.length ? `가드레일 위반 ${model.scenario.guardViolations.length}` : '위반 없음'}</td>
                 <td className="r">{fmt.krw(model.optimized.totalRevenue)}</td>
               </tr>
             </tfoot>
           </table>
         </div>
+        {guardWarn.length ? <Callout tone="warning" title="가드레일 입력 확인">{guardWarn.join(' · ')} — 최소가 최대보다 크면 최대를 적용하고, 합계로 100%를 맞출 수 없으면 균등화안은 가드레일을 해제해 계산합니다. 아래 '반응 곡선 가정 · 식별' 표에서 최소 · 최대를 고치세요.</Callout> : null}
         <div className="row-between">
           <span className="xs muted">균등화안: {model.equalize.note}</span>
           <div className="row">
@@ -251,6 +253,7 @@ export function AllocationTab({ d, initialCredit = false }: { d: Dataset; initia
             </tbody>
           </table>
         </div>
+        {guardWarn.length ? <Callout tone="warning" title="가드레일 입력 확인">{guardWarn.join(' · ')}</Callout> : null}
         <div className="xs muted">
           일 광고비가 평균 대비 ±{fmt.ratio(Math.min(...model.curves.map((c) => c.costCv).filter(Number.isFinite)), 0)}~{fmt.ratio(Math.max(...model.curves.map((c) => c.costCv).filter(Number.isFinite)), 0)} 범위에서만 움직여, 그 밖의 배분은 외삽입니다. 사전 가정 b는 온보딩 중 증액 테스트(±20%) · 홀드아웃으로 교체합니다. 데이터 적합 b를 쓰면 체감이 거의 없는 직선이 되어 평균 ROAS가 높은 매체로 가드레일 상한까지 몰립니다 — 반례 시나리오로만 봅니다.
         </div>

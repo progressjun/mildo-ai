@@ -19,7 +19,7 @@ import {
 import { mediaRows, rangeOf, totalsOf } from '@/core/selectors';
 import { addDays, fmt, isOffDay, KR_HOLIDAYS, WEEKDAY_KO } from '@/core/util';
 import {
-  BASELINE_TOLERANCE_PCT, BEDDING_MATCH_TOLERANCE_PCT, BEDDING_MONTHLY_CLAIM, DECISION_APPROVER, FEE_INPUT_RANGE, FEE_MEDIA_MAP, GEO_CASE_BLANK,
+  BASELINE_TOLERANCE_PCT, BEDDING_MATCH_TOLERANCE_PCT, BEDDING_MONTHLY_CLAIM, clampAnnualBudget, DECISION_APPROVER, FEE_INPUT_RANGE, FEE_MEDIA_MAP, GEO_CASE_BLANK,
   INTERNAL_FREEZE_BUSINESS_DAYS, LEAVE_ASSUMPTIONS, ON_DUTY_POOL, ONBOARDING_WEEKS, PROPOSAL_PAGES, REFERENCES, RFP_DEDICATED_COVERAGE, RFP_ITEMS,
   RFP_GROUP_LABEL, RFP_NOTES, RFP_PAGE_LIMIT, ROLE_ACCOUNT_USER, ROLE_DOMAIN, TF_INPUT_RULES, type EvalId, type ReferenceField, type ReferenceRow, type RfpGroup,
   type RfpItem,
@@ -673,7 +673,7 @@ export interface FeeCalc {
 }
 
 export function feeCalc(inputs: Record<string, FeeInput | undefined> = {}, annualBudget: number = RFP.annualBudget): FeeCalc {
-  const budgetTotal = Number.isFinite(annualBudget) && annualBudget > 0 ? annualBudget : 0;
+  const budgetTotal = clampAnnualBudget(annualBudget);
   const warnings: string[] = [];
   const rows: FeeRow[] = CONTRACT_TERMS.fees.map((f) => {
     const ids = FEE_MEDIA_MAP[f.media] ?? [];

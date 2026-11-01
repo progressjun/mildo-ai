@@ -252,6 +252,20 @@ export const TIER_META: Record<Candidate['tier'], { label: string; tone: 'accent
  * 키워드 테스트 그룹 등록 요청인가 (Lab 후보 등록 · AD Pilot 테스트 그룹 등록).
  * kind 'test'(Watch 소액 테스트 · Growth 파일럿 등)는 키워드가 아니므로 여기서 제외하고 incomingTests()로 따로 받는다.
  */
+/**
+ * 등록 요청이 가리키는 구문. 다른 화면은 대상 문구에 접미사를 붙여 보낸다 —
+ * AD Pilot '구문 → GENERIC_TEST 등록' (targetId 'term:구문'), SearchTuneOS 'term:구문', MILDO Flow 신규 요청 · 시연 이력 '구문 테스트 그룹 등록'.
+ * 같은 구문을 Lab이 다시 추천 · 등록하지 않도록 접미사를 떼고 비교한다.
+ */
+export function registrationPhrase(c: Pick<ChangeRequest, 'target' | 'targetId'>): string {
+  const tid = String(c?.targetId ?? '');
+  if (tid.startsWith('term:') && tid.slice(5).trim()) return tid.slice(5).trim();
+  return String(c?.target ?? '')
+    .replace(/\s*→\s*[A-Z_]*TEST\s*등록$/, '')
+    .replace(/\s+테스트 그룹 등록$/, '')
+    .trim();
+}
+
 export function isRegistration(c: ChangeRequest): boolean {
   if (!c) return false;
   if (c.kind === 'keyword_add' && c.module === 'lab') return !String(c.targetId ?? '').startsWith('labdec:');
@@ -287,7 +301,7 @@ export function candidateStatus(data: Dataset, changes: readonly ChangeRequest[]
   if (kw) return { status: kw.status === 'test' ? 'testing' : 'existing', note: kw.status === 'test' ? `테스트 그룹 키워드 (${kw.adgroup})` : `등록 키워드 (${kw.adgroup})` };
   const st = (data?.searchTerms ?? []).find((t) => t.registered && norm(t.term) === p);
   if (st) return { status: 'testing', note: '검색어 보고서 등록 구문 · 테스트 그룹 집행' };
-  const reg = [...(changes ?? [])].filter((c) => isRegistration(c) && norm(c.target) === p).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+  const reg = [...(changes ?? [])].filter((c) => isRegistration(c) && norm(registrationPhrase(c)) === p).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
   if (reg) {
     if (reg.status === 'pending' || reg.status === 'held') return { status: 'requested', note: `등록 요청 · ${APPROVER_LABEL[reg.approver]} 승인 대기` };
     if (reg.status === 'approved' || reg.status === 'applied') return { status: 'testing', note: reg.status === 'applied' ? '테스트 그룹 반영 완료' : '승인 · 반영 대기' };
@@ -483,7 +497,8 @@ export function registrationPayload(c: Candidate, requestedBy: string, batchSize
     module: 'lab', kind: 'keyword_add' as ChangeKind, target: c.phrase, targetId: `labreg:${norm(c.phrase)}`,
     before: '미등록', after: `${c.intent.toUpperCase()}_TEST · 입찰 상한 ${fmt.won(c.bidCap)}`,
     reason: `${SOURCE_LABEL[c.source]} · 우선순위 ${c.score}점(${TIER_META[c.tier].label}) · 의도 ${INTENT_NAME(c.intent)} · 랜딩 ${c.landing.label}(${LANDING_LEVEL_META[c.landing.level].label})${c.flags.length ? ` · ${c.flags[0]}` : ''}`,
-    requestedBy, approver: (batchSize >= LAB_BULK.pmFrom ? 'PM' : 'AE') as ApprovalLevel,
+    // 브랜드 검색어 편입은 PM 승인 (AD Pilot · SearchTuneOS와 같은 기준) · 6건 이상 일괄도 PM
+    requestedBy, approver: (batchSize >= LAB_BULK.pmFrom || c.intent === 'brand' ? 'PM' : 'AE') as ApprovalLevel,
   };
 }
 
@@ -701,17 +716,18 @@ export function buildPipeline(data: Dataset, changes: readonly ChangeRequest[] =
   }
   const regs = [...(changes ?? [])].filter((c) => isRegistration(c) && isActiveStatus(c.status)).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   for (const c of regs) {
-    const key = norm(c.target);
+    const phrase = registrationPhrase(c) || String(c.target ?? '');
+    const key = norm(phrase);
     if (taken.has(key)) continue;
     taken.add(key);
-    const ci = classifyIntent(c.target);
+    const ci = classifyIntent(phrase);
     const approved = c.status === 'approved' || c.status === 'applied';
     const j = judgeKeywordTest(EMPTY_STATS, 0, crit);
     items.push({
-      id: `req:${c.id}`, phrase: c.target, source: 'request', sourceLabel: c.module === 'lab' ? 'Lab 등록 요청' : `${SOURCE_MODULE_LABEL[c.module] ?? c.module} ${c.module === 'adpilot' ? '후보' : '테스트 요청'}`,
+      id: `req:${c.id}`, phrase, source: 'request', sourceLabel: c.module === 'lab' ? 'Lab 등록 요청' : `${SOURCE_MODULE_LABEL[c.module] ?? c.module} ${c.module === 'adpilot' ? '후보' : '테스트 요청'}`,
       intent: ci.intent, adgroup: `${ci.intent.toUpperCase()}_TEST`, step: approved ? 2 : 1, start: null, days: approved ? 0 : null, isNew: true, overdue: false,
       judgement: approved ? { ...j, badge: '집행 대기 · Day 0 · 데이터 수집 전', basis: `${c.status === 'applied' ? '테스트 그룹 반영' : '승인 완료 · 반영 대기'} — 익일 07:00 수집부터 집계` } : { ...j, badge: `STEP 1 · ${APPROVER_LABEL[c.approver]} 승인 대기`, basis: c.reason },
-      registration: c, landing: landingFor(data, c.target, ci.intent).url, notes: [String(c.after), ...soldNotes(c.target)],
+      registration: c, landing: landingFor(data, phrase, ci.intent).url, notes: [String(c.after), ...soldNotes(phrase)],
     });
   }
   return items;
@@ -976,6 +992,34 @@ export function cumulativeSeries(card: TestCard, metric: CardMetric, days?: numb
 }
 
 /** 사용자 카드 id — 기존 카드 · 요청 이력(labcard:)과 겹치지 않는 가장 작은 번호 (Lab 기록 초기화 후에도 이력과 섞이지 않게) */
+/**
+ * Lab 로컬 기록(사용자 카드 · 카드 결정 · 랩업 · 라이브러리 추가분)을 승인 이력(state.changes)과 맞춘다.
+ *  - 사용자 카드: 등록 요청(targetId 'labcard:<id>')이 이력에 없으면 숨김 (시연 상태 초기화로 이력이 지워진 경우)
+ *  - 카드 결정: 결정 요청이 이력에 없거나 반려 · 롤백되면 무효 → 카드는 다시 결정할 수 있는 상태로 돌아간다
+ *  - 랩업 · 라이브러리 추가분: 유효한 결정이 있는 카드만
+ */
+export function reconcileLab<T extends { userCards: TestCard[]; decisions: Record<string, CardDecision>; wrapups: Record<string, Wrapup>; library: Pattern[] }>(
+  lab: T, changes: readonly Pick<ChangeRequest, 'id' | 'targetId' | 'status'>[] = [],
+): Pick<T, 'userCards' | 'decisions' | 'wrapups' | 'library'> & { rejectedDecisions: Record<string, CardDecision> } {
+  const list = changes ?? [];
+  const byId = new Map(list.map((c) => [c.id, c]));
+  const cardIds = new Set(list.map((c) => String(c.targetId ?? '').match(/^labcard:([^:]+)$/)?.[1]).filter((x): x is string => !!x));
+  const userCards = (lab.userCards ?? []).filter((c) => cardIds.has(c.id));
+  const decisions: Record<string, CardDecision> = {};
+  const rejectedDecisions: Record<string, CardDecision> = {};
+  for (const [id, dec] of Object.entries(lab.decisions ?? {})) {
+    if (!dec) continue;
+    if (!dec.changeId) { decisions[id] = dec; continue; }
+    const ch = byId.get(dec.changeId);
+    if (!ch) continue;
+    if (ch.status === 'rejected' || ch.status === 'rolled_back') rejectedDecisions[id] = dec;
+    else decisions[id] = dec;
+  }
+  const wrapups = Object.fromEntries(Object.entries(lab.wrapups ?? {}).filter(([id]) => !!decisions[id])) as Record<string, Wrapup>;
+  const library = (lab.library ?? []).filter((pt) => pt.source !== 'user' || !!wrapups[pt.id.replace(/^pt_/, '')]);
+  return { userCards, decisions, wrapups, library, rejectedDecisions };
+}
+
 export function nextUserCardId(cards: readonly Pick<TestCard, 'id'>[] = [], changes: readonly Pick<ChangeRequest, 'targetId'>[] = []): string {
   const used = new Set<string>((cards ?? []).map((c) => c.id));
   for (const ch of changes ?? []) {
@@ -994,7 +1038,7 @@ export function wrapupDue(decision: CardDecision | undefined): string | null {
 }
 
 /** 테스트 카드 생성 입력 검증 (p.27 한 번에 한 변수 · 동일 타겟 · 유사 예산) */
-export function validateCardInput(i: { title: string; hypothesis: string; variable: string; control: string; variant: string; sameTarget: boolean; budgetGapPct: number; start: string; today: string }): string[] {
+export function validateCardInput(i: { title: string; hypothesis: string; variable: string; control: string; variant: string; sameTarget: boolean; budgetGapPct: number; start: string; today: string; plannedDays?: number }): string[] {
   const e: string[] = [];
   if (!i.title?.trim()) e.push('카드 제목을 입력하세요');
   if (!i.hypothesis?.trim() || i.hypothesis.trim().length < 10) e.push('가설은 "~하면 ~가 오른다" 형태로 10자 이상 입력하세요');
@@ -1004,6 +1048,8 @@ export function validateCardInput(i: { title: string; hypothesis: string; variab
   if (!i.sameTarget) e.push('동일 타겟 조건을 확인하세요 (p.27)');
   if (!finite(i.budgetGapPct) || Math.abs(i.budgetGapPct) > 10) e.push('두 안의 예산 차이는 ±10% 이내여야 합니다 (유사 예산)');
   if (i.start && i.today && i.start < i.today) e.push('시작일은 데이터 기준일 이후여야 합니다');
+  if (!i.start || !/^\d{4}-\d{2}-\d{2}$/.test(i.start)) e.push('시작일을 입력하세요');
+  if (i.plannedDays !== undefined && !(Number.isInteger(i.plannedDays) && i.plannedDays >= 7 && i.plannedDays <= 42)) e.push('기간은 7~42일 사이의 정수 일수로 입력하세요 (기준 14일)');
   return e;
 }
 
@@ -1550,6 +1596,38 @@ export function copyPrompt(campaign: IntentId, hyp: HypId): string {
   return `네이버 파워링크 광고 문안을 만든다. 브랜드: 수면밀도(매트리스). 캠페인: ${c.name} (키워드 예: ${c.keywords.join(', ')} · 메시지 예: "${c.message}" · 랜딩: ${c.landing}). 가설 ${h.id} ${h.name}: ${h.focus}.
 규칙: 제목 ${SA_CHAR_LIMITS.title}자 이내, 설명 ${SA_CHAR_LIMITS.description}자 이내(공백 포함). 의료 효능 암시(치료 · 교정 · 통증 완화 · 디스크) 금지, 최상급 · 순위 표현 금지, 절대 표현 금지, 경쟁사명 금지, 가격 · 할인율은 쓰지 않는다.
 JSON 배열로만 답한다: [{"title": "...", "description": "...", "hypothesis": "${h.id}"}] 4개.`;
+}
+
+/**
+ * 검수 에이전트 · AI 수정안 프롬프트 — 검수 결과(차단 · 경고 · 확인 사유)를 함께 보내 같은 규칙 안에서 고쳐 쓰게 한다.
+ * 결과는 parseAiRewrites → reviewCopy로 다시 검수한다 (AI 출력도 같은 규칙을 통과해야 사용).
+ */
+export function rewritePrompt(r: Pick<ReviewResult, 'text' | 'findings' | 'suggested'>, limit?: number): string {
+  const issues = (r.findings ?? []).filter((f) => f.level !== 'pass').map((f) => `${REVIEW_LEVEL_META[f.level].label} · "${f.match}": ${f.reason}`).slice(0, 8);
+  return `수면밀도(매트리스) 광고 문안을 검수 규칙에 맞게 고쳐 쓴다.
+원문: "${String(r.text ?? '').slice(0, 300)}"
+검수 지적: ${issues.length ? issues.join(' / ') : '없음 (표현만 다듬기)'}
+규칙 기반 수정 초안: "${String(r.suggested ?? '').slice(0, 300)}"
+규칙: 의료 효능 암시(치료 · 교정 · 통증 완화 · 디스크 개선 등) 금지, 최상급 · 순위 표현은 출처 · 집계 기간이 없으면 쓰지 않는다, 절대 표현(100% · 무조건 · 완벽) 금지, 경쟁사명 금지, 원문에 없는 가격 · 할인율 · 수치를 새로 만들지 않는다, 품절 옵션을 언급하지 않는다.${limit ? ` 공백 포함 ${limit}자 이내.` : ''} 원문의 제품 속성 · 메시지 의도는 유지한다.
+JSON 배열로만 답한다: [{"text": "수정 문안", "why": "바꾼 이유 한 문장"}] 3개.`;
+}
+
+export interface AiRewrite { text: string; why: string }
+/** AI 수정안 파싱 — 문자열 배열 · {text|copy|rewrite, why|reason} 배열 · {rewrites:[…]} 모두 허용, 빈 값 · 중복 · 원문과 같은 안 제외, 최대 3개 */
+export function parseAiRewrites(raw: unknown, original = ''): AiRewrite[] {
+  const arr: unknown[] = Array.isArray(raw) ? raw : raw && typeof raw === 'object' && Array.isArray((raw as { rewrites?: unknown[] }).rewrites) ? (raw as { rewrites: unknown[] }).rewrites : [];
+  const out: AiRewrite[] = [];
+  const seen = new Set<string>([norm(original)]);
+  for (const it of arr) {
+    const o = (typeof it === 'string' ? { text: it } : it) as Record<string, unknown> | null;
+    if (!o || typeof o !== 'object') continue;
+    const text = String(o.text ?? o.copy ?? o.rewrite ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!text || seen.has(norm(text))) continue;
+    seen.add(norm(text));
+    out.push({ text, why: String(o.why ?? o.reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 160) });
+    if (out.length >= 3) break;
+  }
+  return out;
 }
 
 /** 주간 인사이트 브리프 초안 (p.28 주간 산출물 · 마크다운) */

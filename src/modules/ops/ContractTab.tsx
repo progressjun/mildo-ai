@@ -2,7 +2,7 @@
 import { RFP } from '@/data/constants';
 import { fmt } from '@/core/util';
 import { Button, Callout, Card, CopyButton, Field, NumberInput, Pill, Segmented, Src, Stat } from '@/ui/primitives';
-import { RFP_NOTES } from './data';
+import { ANNUAL_BUDGET_MAX, clampAnnualBudget, RFP_NOTES } from './data';
 import { allocationText, annualCost, type contractCheck, type FeeCalc, type FeeInput, type PaybackChoice, type SolutionFeeChoice } from './engine';
 import type { OpsLocal } from './local';
 import { InputFlag } from './parts';
@@ -46,7 +46,7 @@ export function ContractTab({ fee, contract, local, patch }: { fee: FeeCalc; con
         actions={<><Src kind="PROPOSAL" page="p.58" /><Src kind="PROPOSAL" page="p.37" /><InputFlag missing={fee.missing.total + fee.missing.invalid} /><CopyButton text={() => feeMarkdown(fee, contract)} label="표 복사" /></>}>
         <div className="row" style={{ alignItems: 'flex-end', gap: 14 }}>
           <Field label="연간 광고비 (원) · RFP 약 50억, 운영 방향에 따라 변동" id="ops-budget">
-            <NumberInput id="ops-budget" value={local.annualBudget} min={0} step={100_000_000} onChange={(v) => patch({ annualBudget: v > 0 ? v : 0 })} suffix={`= ${fmt.krw(local.annualBudget)}원`} style={{ width: 280 }} />
+            <NumberInput id="ops-budget" value={local.annualBudget} min={0} max={ANNUAL_BUDGET_MAX} step={100_000_000} onChange={(v) => patch({ annualBudget: clampAnnualBudget(v) })} suffix={`= ${fmt.krw(local.annualBudget)}원`} style={{ width: 280 }} />
           </Field>
           {local.annualBudget !== RFP.annualBudget ? <Button size="sm" icon="rollback" onClick={() => patch({ annualBudget: RFP.annualBudget })}>RFP {fmt.krw(RFP.annualBudget)}으로</Button> : null}
           <span className="ops-input-badge"><Src kind="RFP" /></span>

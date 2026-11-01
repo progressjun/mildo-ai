@@ -1,20 +1,38 @@
 /* MILDO Lab 화면 공용 조각 — 모델 훅 · 배지 · 승인 액션 */
-import { useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { ApprovalLevel, ChangeRequest } from '@/core/types';
 import { useActions, useStore } from '@/core/store';
 import { Button, Pill } from '@/ui/primitives';
 import { demoTestCards, PATTERN_SEEDS, SCORE_WEIGHTS } from './data';
 import {
   APPROVER_LABEL, buildPipeline, canApprove, CARD_VERDICT_META, collectCopies, discoverCandidates, judgeTestCard, KW_VERDICT_META, LANDING_LEVEL_META,
-  resolveCriteria, REVIEW_LEVEL_META, reviewAll, skuEntries, TIER_META, type Candidate, type CardJudgement, type CardVerdict, type KwJudgement, type LandingMatch, type ReviewLevel,
+  reconcileLab, resolveCriteria, REVIEW_LEVEL_META, reviewAll, skuEntries, TIER_META, type Candidate, type CardJudgement, type CardVerdict, type KwJudgement, type LandingMatch, type ReviewLevel,
 } from './engine';
-import { useLab } from './store';
+import { resetLab, useLab } from './store';
+
+/**
+ * 연속 클릭 방지 — 요청을 만든 직후 목록이 다시 그려지면 같은 자리에 다른 후보 · 이벤트의 버튼이 들어온다.
+ * 더블클릭의 두 번째 클릭이 그 버튼을 누르지 않도록, 요청을 실제로 만든 호출 뒤 ms 안의 다음 호출은 무시한다.
+ * fn이 false를 돌려주면(확인 단계 표시 · 차단 등 아무것도 만들지 않음) 잠그지 않는다.
+ */
+export function useClickGuard(ms = 500) {
+  const last = useRef(0);
+  return <A extends unknown[]>(fn: (...a: A) => unknown) => (...a: A) => {
+    if (Date.now() - last.current < ms) return;
+    if (fn(...a) !== false) last.current = Date.now();
+  };
+}
 
 /** Lab 화면 전체가 공유하는 계산 결과 */
 export function useLabModel() {
   const { state } = useStore();
   const actions = useActions();
-  const lab = useLab();
+  const raw = useLab();
+  // 승인 이력과 맞춘 로컬 기록 (반려 · 롤백된 결정은 무효, 시연 상태 초기화로 이력이 지워진 사용자 카드 · 결정은 숨김)
+  const lab = useMemo(() => ({ ...raw, ...reconcileLab(raw, state.changes) }), [raw, state.changes]);
+  // 설정 '시연 상태 초기화' 직후(승인 이력 · 이슈가 모두 비는 순간) Lab 로컬 기록도 처음 상태로
+  const emptyGlobal = state.changes.length === 0 && state.incidents.length === 0;
+  useEffect(() => { if (emptyGlobal) resetLab(); }, [emptyGlobal]);
   const d = state.data;
   const crit = useMemo(() => resolveCriteria(lab.criteria), [lab.criteria]);
   const cards = useMemo(() => [...demoTestCards(d.today), ...lab.userCards], [d.today, lab.userCards]);
@@ -74,6 +92,8 @@ export function ChangeActions({ c, compact }: { c: ChangeRequest; compact?: bool
   const { updateChange, toast } = useActions();
   const perm = canApprove(state.role, c.approver);
   const reason = perm.ok ? undefined : perm.reason;
+  // 승인 직후 같은 자리에 '반영' 버튼이 나타난다 — 더블클릭이 승인 + 반영으로 이어지지 않게
+  const guard = useClickGuard();
   return (
     <div className="stack-sm" style={{ gap: 4 }}>
       <div className="row" style={{ gap: 4 }}>
@@ -82,13 +102,13 @@ export function ChangeActions({ c, compact }: { c: ChangeRequest; compact?: bool
         {c.status === 'pending' ? (
           <>
             <Button size="sm" variant="primary" icon="check" disabled={!perm.ok} title={reason}
-              onClick={() => { updateChange(c.id, { status: 'approved' }, '승인'); toast({ tone: 'good', title: `승인: ${c.target}`, body: 'MILDO Flow 이력에 기록했습니다', route: 'flow' }); }}>승인</Button>
-            <Button size="sm" icon="x" disabled={!perm.ok} title={reason} onClick={() => updateChange(c.id, { status: 'rejected' }, '반려', 'Lab 화면에서 반려')}>반려</Button>
+              onClick={guard(() => { updateChange(c.id, { status: 'approved' }, '승인'); toast({ tone: 'good', title: `승인: ${c.target}`, body: 'MILDO Flow 이력에 기록했습니다', route: 'flow' }); })}>승인</Button>
+            <Button size="sm" icon="x" disabled={!perm.ok} title={reason} onClick={guard(() => updateChange(c.id, { status: 'rejected' }, '반려', 'Lab 화면에서 반려'))}>반려</Button>
           </>
         ) : null}
         {c.status === 'approved' ? (
           <Button size="sm" variant="accent" icon="check" disabled={!perm.ok} title={reason}
-            onClick={() => { updateChange(c.id, { status: 'applied' }, '반영'); toast({ tone: 'good', title: `반영: ${c.target}`, body: String(c.after) }); }}>반영</Button>
+            onClick={guard(() => { updateChange(c.id, { status: 'applied' }, '반영'); toast({ tone: 'good', title: `반영: ${c.target}`, body: String(c.after) }); })}>반영</Button>
         ) : null}
       </div>
       {!perm.ok && (c.status === 'pending' || c.status === 'approved') ? <span className="lab-sub">{perm.reason}</span> : null}

@@ -1547,8 +1547,12 @@ export function blockToMarkdown(b: Block): string {
 export interface MarkdownExtras {
   interpretation?: { text: string; by: 'ai' | 'rule' } | null;
   aeNotes?: { author: string; text: string; at: string }[];
-  feedback?: { sectionTitle: string; author: string; text: string; resolved?: boolean }[];
+  /** client: 수면밀도 담당자 피드백 여부 (생략 시 author로 판정) — 반영 대기 · 완료 상태는 피드백에만 붙는다 */
+  feedback?: { sectionTitle: string; author: string; text: string; resolved?: boolean; client?: boolean }[];
 }
+/** 수면밀도 담당자 작성 여부 (store 역할명 '수면밀도' · 표시명 '수면밀도 담당자') */
+export const isClientAuthor = (author: string) => author === '수면밀도' || author === '수면밀도 담당자';
+
 export function reportToMarkdown(r: Report, extras: MarkdownExtras = {}): string {
   const out: string[] = [];
   out.push(`# ${r.title}`);
@@ -1560,7 +1564,7 @@ export function reportToMarkdown(r: Report, extras: MarkdownExtras = {}): string
     if (z === 'ai') {
       if (extras.interpretation?.text) {
         out.push(`## ${zoneLabelOf(r, 'ai')}`);
-        out.push(extras.interpretation.by === 'ai' ? '_Claude 생성 · AI 해석 — 확정 팩트와 구분해 읽습니다_' : '_규칙 엔진 해석 · AI 미연결_');
+        out.push(extras.interpretation.by === 'ai' ? '_Claude 생성 · AI 해석 — 확정 팩트와 구분해 읽습니다_' : '_규칙 엔진 해석 (AI 미연결 또는 호출 실패 시 대체)_');
         out.push(extras.interpretation.text.replace(/^#{1,3}\s/gm, '#### '));
       }
       continue;
@@ -1579,7 +1583,10 @@ export function reportToMarkdown(r: Report, extras: MarkdownExtras = {}): string
   }
   if (extras.feedback?.length) {
     out.push('## 수면밀도 피드백 (코멘트 단위)');
-    out.push(extras.feedback.map((f) => `- [${mdEsc(f.sectionTitle)}] ${mdEsc(f.text)} — ${f.author} · ${f.resolved ? '반영 완료' : '반영 대기'}`).join('\n'));
+    out.push(extras.feedback.map((f) => {
+      const client = f.client ?? isClientAuthor(f.author);
+      return `- [${mdEsc(f.sectionTitle)}] ${mdEsc(f.text)} — ${f.author}${client ? ` · ${f.resolved ? '반영 완료' : '반영 대기'}` : ' · 코멘트'}`;
+    }).join('\n'));
   }
   out.push('---');
   out.push('_보고서는 시스템이 만들고, 담당 AE는 해석과 다음 액션을 덧붙입니다 (제안서 p.17) · MILDO OS · 프로그레스미디어_');
@@ -1714,6 +1721,16 @@ export interface SavingsResult {
   measured: { tasks: number; before: number; after: number; reductionPct: number; verdict: Verdict } | null;
 }
 const clean = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback);
+/**
+ * 절감률 표기 — 줄면 '−59%', 0이면 '0%', 늘면 '+12% 증가' (실측이 기존보다 큰 경우 '−-12%'로 표기되지 않게)
+ * 소수 첫째 자리에서 반올림해 0이 되면 부호 없이 0%.
+ */
+export function fmtCut(pct: number): string {
+  if (!fin(pct)) return '—';
+  const r = Math.round(pct);
+  if (r === 0) return '0%';
+  return r > 0 ? `−${r.toLocaleString('ko-KR')}%` : `+${(-r).toLocaleString('ko-KR')}% 증가`;
+}
 /** 약 n시간 (반올림) */
 export const aboutHours = (min: number) => (fin(min) ? Math.round(min / 60) : NaN);
 /** 제안서 p.19 기준 목표 절감률 (기본값에서 계산: 1,070 → 435 = −59%) */
@@ -1744,10 +1761,13 @@ export function computeSavings(input: { before?: Record<string, number>; measure
   const saved = before - after;
   const reductionPct = before > 0 ? (saved / before) * 100 : 0;
   const targetPct = DEFAULT_TARGET_PCT;
-  const meetsFloor = reductionPct >= SAVINGS_FLOOR_PCT;
-  const verdict: Verdict = meetsFloor
-    ? { label: '하한 충족', tone: 'good', basis: `하한 −${SAVINGS_FLOOR_PCT}% 대비 목표 −${Math.round(reductionPct)}% (도입 브랜드 실적, p.11 · p.19)` }
-    : { label: '하한 미달', tone: 'critical', basis: `하한 −${SAVINGS_FLOOR_PCT}% 대비 −${Math.round(reductionPct)}% — 업무 범위 · 자동화 수단 재검토` };
+  const meetsFloor = before > 0 && reductionPct >= SAVINGS_FLOOR_PCT;
+  // 기존 소요 합계가 0분이면 절감률을 정의할 수 없다 — '하한 미달'로 판정하지 않는다
+  const verdict: Verdict = before <= 0
+    ? { label: '판정 불가', tone: 'neutral', basis: '기존 소요 합계 0분 — 업무별 기존 소요(분/주)를 입력해야 절감률을 계산합니다' }
+    : meetsFloor
+      ? { label: '하한 충족', tone: 'good', basis: `하한 −${SAVINGS_FLOOR_PCT}% 대비 목표 ${fmtCut(reductionPct)} (도입 브랜드 실적, p.11 · p.19)` }
+      : { label: '하한 미달', tone: 'critical', basis: `하한 −${SAVINGS_FLOOR_PCT}% 대비 ${fmtCut(reductionPct)} — 업무 범위 · 자동화 수단 재검토` };
   const mRows = rows.filter((r) => r.measured !== null);
   let measured: SavingsResult['measured'] = null;
   if (mRows.length) {
@@ -1755,11 +1775,13 @@ export function computeSavings(input: { before?: Record<string, number>; measure
     const ma = sum(mRows, (r) => r.measured ?? 0);
     const mp = mb > 0 ? (1 - ma / mb) * 100 : 0;
     const tgt = mb > 0 ? (1 - sum(mRows, (r) => r.after) / mb) * 100 : 0;
-    const v: Verdict = mp >= tgt - 0.05
-      ? { label: '목표 달성', tone: 'good', basis: `목표 −${Math.round(tgt)}% 대비 실측 −${Math.round(mp)}% (실측 ${mRows.length}/${rows.length}개 업무)` }
-      : mp >= SAVINGS_FLOOR_PCT
-        ? { label: '하한 충족 · 목표 미달', tone: 'warning', basis: `하한 −${SAVINGS_FLOOR_PCT}% 이상 · 목표 −${Math.round(tgt)}% 대비 실측 −${Math.round(mp)}%` }
-        : { label: '하한 미달', tone: 'critical', basis: `하한 −${SAVINGS_FLOOR_PCT}% 대비 실측 −${Math.round(mp)}% — 원인 업무 재설계` };
+    const v: Verdict = mb <= 0
+      ? { label: '판정 불가', tone: 'neutral', basis: `실측 업무의 기존 소요 합계 0분 — 기존 소요를 입력해야 실측 절감률을 계산합니다 (실측 ${mRows.length}/${rows.length}개 업무)` }
+      : mp >= tgt - 0.05
+        ? { label: '목표 달성', tone: 'good', basis: `목표 ${fmtCut(tgt)} 대비 실측 ${fmtCut(mp)} (실측 ${mRows.length}/${rows.length}개 업무)` }
+        : mp >= SAVINGS_FLOOR_PCT
+          ? { label: '하한 충족 · 목표 미달', tone: 'warning', basis: `하한 −${SAVINGS_FLOOR_PCT}% 이상 · 목표 ${fmtCut(tgt)} 대비 실측 ${fmtCut(mp)}` }
+          : { label: '하한 미달', tone: 'critical', basis: `하한 −${SAVINGS_FLOOR_PCT}% 대비 실측 ${fmtCut(mp)} — 원인 업무 재설계` };
     measured = { tasks: mRows.length, before: mb, after: ma, reductionPct: mp, verdict: v };
   }
   return {
@@ -1772,9 +1794,9 @@ export function computeSavings(input: { before?: Record<string, number>; measure
 /** 업무 단위 실측 판정 — 목표(업무별 절감률) · 하한 40% 대비 */
 export function measuredVerdict(measuredPct: number | null, targetPct: number): Verdict | null {
   if (measuredPct === null || !fin(measuredPct)) return null;
-  if (measuredPct >= targetPct - 0.05) return { label: '목표 달성', tone: 'good', basis: `목표 −${Math.round(targetPct)}% 대비 −${Math.round(measuredPct)}%` };
-  if (measuredPct >= SAVINGS_FLOOR_PCT) return { label: '하한 충족', tone: 'warning', basis: `하한 −${SAVINGS_FLOOR_PCT}% · 목표 −${Math.round(targetPct)}% 대비 −${Math.round(measuredPct)}%` };
-  return { label: '하한 미달', tone: 'critical', basis: `하한 −${SAVINGS_FLOOR_PCT}% 대비 −${Math.round(measuredPct)}%` };
+  if (measuredPct >= targetPct - 0.05) return { label: '목표 달성', tone: 'good', basis: `목표 ${fmtCut(targetPct)} 대비 ${fmtCut(measuredPct)}` };
+  if (measuredPct >= SAVINGS_FLOOR_PCT) return { label: '하한 충족', tone: 'warning', basis: `하한 −${SAVINGS_FLOOR_PCT}% · 목표 ${fmtCut(targetPct)} 대비 ${fmtCut(measuredPct)}` };
+  return { label: '하한 미달', tone: 'critical', basis: `하한 −${SAVINGS_FLOOR_PCT}% 대비 ${fmtCut(measuredPct)}` };
 }
 
 /** 절감 시간 재투입 계획 — 비율 합이 100이 아니면 정규화, 합 0이면 균등 */

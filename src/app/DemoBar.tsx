@@ -42,7 +42,7 @@ export function DemoBar() {
         {LIVE_DEMO.map((s, i) => {
           const fill = elapsed <= s.sec[0] ? 0 : elapsed >= s.sec[1] ? 100 : ((elapsed - s.sec[0]) / (s.sec[1] - s.sec[0])) * 100;
           return (
-            <button key={s.title} type="button" className="demo-step" aria-current={i === current ? 'step' : undefined} onClick={() => dispatch({ type: 'demo/seek', seconds: s.sec[0] })} title={`${s.from}–${s.to} ${s.title} · ${s.detail}`}>
+            <button key={s.title} type="button" className="demo-step" aria-current={i === current ? 'step' : undefined} onClick={() => { dispatch({ type: 'demo/seek', seconds: s.sec[0] }); navigate(s.route); }} title={`${s.from}–${s.to} ${s.title} · ${s.detail}`}>
               <i className="fill" style={{ width: `${fill}%` }} />
               <span>{s.from} {s.title}</span>
             </button>

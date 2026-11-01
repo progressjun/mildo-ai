@@ -10,15 +10,20 @@ import type { ModuleAgentKit, ToolContext } from '../types';
 import { demoTestCards, HYP_IDS, PATTERN_SEEDS, SA_CHAR_LIMITS, SCORE_WEIGHTS, type HypId } from './data';
 import {
   buildPipeline, candidateStatus, classifyIntent, collectCopies, creativeBrief, discoverCandidates, discoveryBrief, groupPools, INTENT_NAME,
-  judgeTestCard, labBrief, labOverview, LANDING_LEVEL_META, ruleLabel, parseAiCandidates, pipelineBrief, pipelineSummary, registrationPayload, resolveCriteria, reviewAll, reviewBrief, reviewCopy, rn,
+  judgeTestCard, labBrief, labOverview, LANDING_LEVEL_META, ruleLabel, parseAiCandidates, pipelineBrief, pipelineSummary, reconcileLab, registrationPayload, resolveCriteria, reviewAll, reviewBrief, reviewCopy, rn,
   skuEntries, skuFormula, SOURCE_LABEL, generateSaCopies, type CandidateSource, type TestCard,
 } from './engine';
 import { getLab } from './store';
 
 const SRC = 'TEST DATA (시연용 테스트 데이터) · 제안서 p.26–28 · p.36 기준';
 
-function allCards(today: string): TestCard[] {
-  return [...demoTestCards(today), ...getLab().userCards];
+/** Lab 로컬 기록 — 화면과 같은 기준으로 승인 이력과 맞춘 값 (반려 · 롤백된 결정 · 이력이 지워진 사용자 카드는 제외) */
+function labOf(changes: Parameters<typeof reconcileLab>[1]) {
+  const raw = getLab();
+  return { ...raw, ...reconcileLab(raw, changes) };
+}
+function allCards(today: string, changes: Parameters<typeof reconcileLab>[1]): TestCard[] {
+  return [...demoTestCards(today), ...labOf(changes).userCards];
 }
 const isIntent = (v: unknown): v is IntentId => typeof v === 'string' && (INTENT_IDS as string[]).includes(v);
 const isHyp = (v: unknown): v is HypId => typeof v === 'string' && (HYP_IDS as string[]).includes(v);
@@ -78,7 +83,7 @@ export const agentKit: ModuleAgentKit = {
         const d = ctx.state.data;
         const crit = resolveCriteria(getLab().criteria);
         const items = buildPipeline(d, ctx.state.changes, crit).filter((i) => !inp.keyword || i.phrase.includes(String(inp.keyword)));
-        const cards = allCards(d.today).filter((c) => !inp.cardId || c.id === inp.cardId);
+        const cards = allCards(d.today, ctx.state.changes).filter((c) => !inp.cardId || c.id === inp.cardId);
         const s = pipelineSummary(items);
         return {
           출처: SRC,
@@ -92,7 +97,7 @@ export const agentKit: ModuleAgentKit = {
           그룹합산: groupPools(items, crit).map((p) => ({ 그룹: p.adgroup, 건수: p.count, 클릭: p.stats.clicks, 전환: rn(p.stats.conversions, 2), 판정: p.judgement.badge })),
           테스트카드: cards.map((c) => {
             const j = judgeTestCard(c, d.today);
-            const dec = getLab().decisions[c.id];
+            const dec = labOf(ctx.state.changes).decisions[c.id];
             return {
               id: c.id, 제목: c.title, 가설: c.hypothesis, 변수: c.variable, 매체: c.media, 판정: j.badge, 근거: j.basis, 다음: j.action,
               일수: `${j.dataDays}/${c.plannedDays}`, CVR: [rn(j.C.cvr, 2), rn(j.V.cvr, 2)], CTR: [rn(j.C.ctr, 2), rn(j.V.ctr, 2)], CVR상승pct: rn(j.liftCvr, 1), pCVR: rn(j.pCvr, 3), pCTR: rn(j.pCtr, 3),
@@ -124,7 +129,7 @@ export const agentKit: ModuleAgentKit = {
           };
         }
         const lab = getLab();
-        const all = reviewAll(d, collectCopies(d, allCards(d.today), lab.aiCopies));
+        const all = reviewAll(d, collectCopies(d, allCards(d.today, ctx.state.changes), lab.aiCopies));
         return {
           출처: 'REVIEW_RULES + 데이터 대조 · VisualTune 초안은 DEMO',
           건수: all.count, 전체: all.total, 규칙별: all.byRule,
@@ -163,8 +168,8 @@ export const agentKit: ModuleAgentKit = {
       inputSchema: { type: 'object', properties: {} },
       execute: () => {
         const d = ctx.state.data;
-        const lab = getLab();
-        const ov = labOverview(d, ctx.state.changes, lab.criteria, allCards(d.today), lab.decisions, { aiCandidates: lab.aiCandidates, aiCopies: lab.aiCopies, role: ctx.state.role });
+        const lab = labOf(ctx.state.changes);
+        const ov = labOverview(d, ctx.state.changes, lab.criteria, allCards(d.today, ctx.state.changes), lab.decisions, { aiCandidates: lab.aiCandidates, aiCopies: lab.aiCopies, role: ctx.state.role });
         const t = ov.tiles;
         return {
           출처: SRC,
@@ -207,7 +212,7 @@ export const agentKit: ModuleAgentKit = {
     {
       id: 'lab-overview',
       match: /((mildo\s?)?lab|랩(?!업)).*(현황|요약|오늘|할 일|우선)|운영 루프|주간 인사이트/i,
-      build: (ctx) => labBrief(ctx.state.data, ctx.state.changes, getLab().criteria, allCards(ctx.state.data.today), [...PATTERN_SEEDS, ...getLab().library]),
+      build: (ctx) => labBrief(ctx.state.data, ctx.state.changes, getLab().criteria, allCards(ctx.state.data.today, ctx.state.changes), [...PATTERN_SEEDS, ...labOf(ctx.state.changes).library]),
     },
     {
       id: 'lab-pipeline',
@@ -222,12 +227,12 @@ export const agentKit: ModuleAgentKit = {
     {
       id: 'lab-review',
       match: /(검수|문안|카피|광고 문구|의료\s?효능|표시광고|최상급)/,
-      build: (ctx) => reviewBrief(ctx.state.data, allCards(ctx.state.data.today), getLab().aiCopies),
+      build: (ctx) => reviewBrief(ctx.state.data, allCards(ctx.state.data.today, ctx.state.changes), getLab().aiCopies),
     },
     {
       id: 'lab-creative',
       match: /(visualtune|소재\s?테스트|크리에이티브|테스트 카드|가설\s?[abc]|a\/b)/i,
-      build: (ctx) => creativeBrief(ctx.state.data, allCards(ctx.state.data.today), [...PATTERN_SEEDS, ...getLab().library]),
+      build: (ctx) => creativeBrief(ctx.state.data, allCards(ctx.state.data.today, ctx.state.changes), [...PATTERN_SEEDS, ...labOf(ctx.state.changes).library]),
     },
   ],
 };

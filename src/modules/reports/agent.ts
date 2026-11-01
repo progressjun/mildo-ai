@@ -8,7 +8,7 @@ import type { ModuleAgentKit, ToolContext } from '../types';
 import { fmt, fmtDate } from '@/core/util';
 import { getLab } from '@/modules/lab/store';
 import {
-  aboutHours, aeTarget, automationRollout, availableMonths, buildTimetable, cadenceStatus, commentTarget, computeSavings, dataNowMinutes, generateReport, nextSends, reinvestPlan,
+  aboutHours, aeTarget, automationRollout, availableMonths, buildTimetable, cadenceStatus, commentTarget, computeSavings, dataNowMinutes, fmtCut, generateReport, nextSends, reinvestPlan,
   reportToMarkdown, scopeOf, type IssueLike, type Report,
 } from './engine';
 import type { ReportType } from './data';
@@ -179,7 +179,7 @@ export const agentKit: ModuleAgentKit = {
         return {
           title: 'SA 업무 자동화 절감 목표',
           facts: [
-            `주간 SA 운영 업무 ${fmt.int(s.before)}분 → 자동화 후 목표 ${fmt.int(s.after)}분, 절감률 −${Math.round(s.reductionPct)}% (약 ${aboutHours(s.before)}시간 → 약 ${aboutHours(s.after)}시간, 제안서 p.19).`,
+            `주간 SA 운영 업무 ${fmt.int(s.before)}분 → 자동화 후 목표 ${fmt.int(s.after)}분, 절감률 ${fmtCut(s.reductionPct)} (약 ${aboutHours(s.before)}시간 → 약 ${aboutHours(s.after)}시간, 제안서 p.19).`,
             `절감 ${fmt.int(s.saved)}분/주는 연간 약 ${fmt.int(s.annualSavedHours)}시간, 주 40시간 기준 ${fmt.dec1(s.fte)}명분입니다.`,
           ],
           patterns: [`도입 브랜드 3곳의 반복 업무 리소스 감소 실적은 최소 ${SAVINGS_FLOOR_PCT}%이며(p.11), 목표는 이 실적을 하한으로 둡니다.`],

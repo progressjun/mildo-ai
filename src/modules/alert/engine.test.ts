@@ -4,9 +4,9 @@ import { generateDemoData } from '@/data/demo';
 import { SLA } from '@/data/constants';
 import { addDays, weekday } from '@/core/util';
 import {
-  activeConfig, budgetForecasts, checkAccounts, checkPromoPrices, defaultConfig, detectBulkChange, detectIncidents, detectTestIncidents,
-  encodeThreshold, evaluateMedia, falsePositiveByMetric, fmtHour, historyRecords, holidayPrecheck, hourProfile, incidentReport, injectScenario, notificationLog,
-  offBlocks, onDutyFor, parseThreshold, rankCauses, regimeOf, sessionRecords, slaReport, slaState, slaTargets, type AlertIncident,
+  activeConfig, appliedTopupFor, budgetForecasts, checkAccounts, checkPromoPrices, defaultConfig, detectBulkChange, detectIncidents, detectTestIncidents,
+  encodeThreshold, evaluateMedia, falsePositiveByMetric, fmtHour, heldMedia, historyRecords, holidayPrecheck, hourProfile, incidentReport, injectScenario, notificationLog,
+  offBlocks, onDutyFor, parseThreshold, rankCauses, regimeOf, releasedIncidentIds, sessionRecords, slaReport, slaState, slaTargets, testBaseId, withAppliedTopups, type AlertIncident,
 } from './engine';
 import { DEMO_CREATIVES } from './data';
 
@@ -614,5 +614,54 @@ describe('p.44 매체 · 외부 환경: 매체 장애 · 집계 지연 (P3)', ()
     const d = generateDemoData();
     d.mediaHourly = d.mediaHourly.filter((r) => !(r.date === d.today && r.hour === 15));
     expect(detectIncidents(d).some((x) => x.ruleId === 'media_delay')).toBe(false);
+  });
+});
+
+describe('QA 회귀: 보류 해제 반영 · 테스트 주입 중복', () => {
+  const chg = (targetId: string, status: ChangeRequest['status']): ChangeRequest => ({
+    id: `c-${targetId}-${status}`, createdAt: '2026-10-31T15:31:00+09:00', module: 'alert', kind: 'setting', target: 't', targetId,
+    before: '보류', after: '재개', reason: 'r', requestedBy: 'PM', approver: 'PM', status, history: [],
+  });
+  it('보류 해제 요청이 반영(applied)되면 그 이슈의 매체는 자동 조정 보류 목록에서 빠진다 (AD Pilot과 같은 규칙)', () => {
+    const tb = byRule('tracking_break')[0] as AlertIncident;
+    expect(tb.holdMedia).toBe('kakao');
+    expect(heldMedia(found)).toContain('kakao');
+    expect(heldMedia(found, [chg(`alert:${tb.id}:release`, 'pending')])).toContain('kakao');
+    expect(heldMedia(found, [chg(`alert:${tb.id}:release`, 'approved')])).toContain('kakao');
+    expect(heldMedia(found, [chg(`alert:${tb.id}:release`, 'applied')])).not.toContain('kakao');
+    expect(heldMedia(found, [chg(`alert:${tb.id}:release`, 'rolled_back')])).toContain('kakao');
+    expect(releasedIncidentIds([chg(`alert:${tb.id}:release`, 'applied'), chg('alert:account:acc_gfa:topup', 'applied')])).toEqual(new Set([tb.id]));
+  });
+  it('테스트 주입 id는 원래 탐지 id + :test-n — 같은 시나리오 중복 주입을 원래 id로 판정한다', () => {
+    const a = detectTestIncidents(demo, 'ad_off', { seq: 1 });
+    const b = detectTestIncidents(demo, 'ad_off', { seq: 2 });
+    expect(a).toHaveLength(1);
+    expect(a[0].id).not.toBe(b[0].id);
+    expect(testBaseId(a[0].id)).toBe(testBaseId(b[0].id));
+    expect(testBaseId(a[0].id)).not.toMatch(/:test-/);
+    expect(testBaseId('plain:id')).toBe('plain:id');
+  });
+});
+
+describe('QA 회귀: MILDO Flow에서 반영된 충전 요청은 계정 점검 잔액에 반영', () => {
+  const gfa = demo.accounts.find((a) => a.id === 'acc_gfa')!;
+  const topup = (status: ChangeRequest['status'], targetId = 'alert:account:acc_gfa:topup', target = `${gfa.name} 충전`): ChangeRequest => ({
+    id: `t-${status}-${targetId}`, createdAt: '2026-10-31T15:31:00+09:00', module: 'alert', kind: 'setting', target, targetId,
+    before: gfa.balance, after: gfa.balance + 5_500_000, reason: 'r', requestedBy: 'PM', approver: 'CLIENT', status, history: [],
+  });
+  it('applied만 더하고 pending · rolled_back은 무시 · 반영 없으면 같은 객체', () => {
+    expect(withAppliedTopups(demo, [])).toBe(demo);
+    expect(withAppliedTopups(demo, [topup('pending'), topup('rolled_back')])).toBe(demo);
+    expect(appliedTopupFor([topup('applied')], gfa)).toBe(5_500_000);
+    expect(appliedTopupFor([topup('applied', 'alert:account_payment:x:2026-10-31:topup', `${gfa.name} 비즈머니 충전`)], gfa)).toBe(5_500_000);
+    const d = withAppliedTopups(demo, [topup('applied')]);
+    expect(d.accounts.find((a) => a.id === 'acc_gfa')!.balance).toBe(gfa.balance + 5_500_000);
+    const before = checkAccounts(demo).find((c) => c.account.id === 'acc_gfa')!;
+    const after = checkAccounts(d).find((c) => c.account.id === 'acc_gfa')!;
+    expect(before.runwayDays).toBeLessThan(1);
+    expect(after.runwayDays).toBeGreaterThan(3);
+    // 잔액은 회복됐지만 자동충전 실패는 남아 점검 실패 유지 (결제 수단 문제는 충전으로 해결되지 않음)
+    expect(after.findings.some((f) => f.label === '잔액' && f.level === 'fail')).toBe(false);
+    expect(after.findings.some((f) => f.label === '자동충전' && f.level === 'fail')).toBe(true);
   });
 });

@@ -5,7 +5,7 @@ import { fmt } from '@/core/util';
 import { Markdown } from '@/ui/Markdown';
 import { Icon } from '@/ui/Icon';
 import { Button, Callout, CopyButton, DownloadButton, Drawer, Field, Pill, Src, Stat } from '@/ui/primitives';
-import { backupOf, fmtRemain, fmtStamp, incidentReport, nextAction, preventSuggestion, roleLabel, slaState, typeOf, type AlertIncident } from './engine';
+import { backupOf, dayDiff, fmtRemain, fmtStamp, incidentReport, nextAction, preventSuggestion, roleLabel, slaState, typeOf, type AlertIncident } from './engine';
 import { TYPE_LABEL } from './data';
 import { CauseList, ChangeStatusPill, EvidenceTable, krwOrDash, MediaTag, mediaName, SevLabel, SlaTimer, StatusPill } from './parts';
 import { canApprove, type AlertCtx } from './hooks';
@@ -26,7 +26,11 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
   const sla = inc.sla ?? {};
   const resolved = inc.status === 'resolved';
   const report = () => incidentReport(inc, { nowMs, toMs, nameOf });
-  const linked = state.changes.filter((c) => c.targetId?.startsWith(`alert:${inc.id}`));
+  const acc = data.accounts.find((a) => a.name === inc.target);
+  // 이슈 단위 요청(alert:<이슈>:…) + 계정 단위 요청(alert:account:<계정>:… — 계정 · 결제 탭과 같은 형식)
+  const linked = state.changes.filter((c) => c.targetId?.startsWith(`alert:${inc.id}:`) || (acc && c.targetId?.startsWith(`alert:account:${acc.id}:`)));
+  /** 같은 대상 요청이 이미 있으면 다시 만들지 않는다 (반려된 건은 재요청 가능 — 계정 · 결제 탭과 같은 규칙) */
+  const requested = (tid: string) => state.changes.some((c) => c.targetId === tid && c.status !== 'rejected');
 
   const steps: { key: string; label: string; at?: string; target?: string }[] = [
     { key: 'ack', label: '인지', at: sla.ackAt, target: st.targets.ack },
@@ -38,11 +42,16 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
   ];
   const firstOpen = steps.findIndex((s) => !s.at);
 
+  const closeFalsePositive = () => {
+    const why = fpReason.trim();
+    if (!why || resolved) return;
+    act(inc, { status: 'resolved', falsePositive: true, actionNote: `오탐 · ${why}`, sla: { ...sla, ackAt: sla.ackAt ?? clockIso(), resolvedAt: clockIso() } }, `오탐으로 종료 · ${why}`);
+    setFpArmed(false);
+  };
   const requestChange = (c: Omit<ChangeRequest, 'id' | 'createdAt' | 'history' | 'status' | 'module' | 'requestedBy'>, msg: string) => {
     actions.addChange({ ...c, module: 'alert', requestedBy: state.role });
     actions.toast({ tone: 'info', title: msg, body: `승인 주체: ${c.approver === 'CLIENT' ? '수면밀도' : c.approver} · MILDO Flow에서 처리`, route: 'flow' });
   };
-  const acc = data.accounts.find((a) => a.name === inc.target);
 
   return (
     <Drawer title={<span className="row" style={{ gap: 8 }}><SevLabel sev={inc.severity} /><StatusPill inc={inc} /></span>} onClose={onClose}>
@@ -131,8 +140,8 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
                 <Button size="sm" variant="ghost" icon="x" onClick={() => setFpArmed(true)}>오탐으로 종료</Button>
               ) : (
                 <span className="row" style={{ gap: 6 }}>
-                  <input id={`fp-${inc.id}`} className="input" style={{ width: 200 }} value={fpReason} onChange={(e) => setFpReason(e.target.value)} placeholder="오탐 사유 (예: 집계 지연 정상화)" aria-label="오탐 사유" />
-                  <Button size="sm" variant="danger" disabled={!fpReason.trim()} onClick={() => { act(inc, { status: 'resolved', falsePositive: true, actionNote: `오탐 · ${fpReason.trim()}`, sla: { ...sla, ackAt: sla.ackAt ?? clockIso(), resolvedAt: clockIso() } }, `오탐으로 종료 · ${fpReason.trim()}`); setFpArmed(false); }}>확인</Button>
+                  <input id={`fp-${inc.id}`} className="input" style={{ width: 200 }} value={fpReason} onChange={(e) => setFpReason(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) closeFalsePositive(); }} placeholder="오탐 사유 (예: 집계 지연 정상화)" aria-label="오탐 사유" autoFocus />
+                  <Button size="sm" variant="danger" disabled={!fpReason.trim()} onClick={closeFalsePositive}>확인</Button>
                   <Button size="sm" variant="ghost" onClick={() => setFpArmed(false)}>취소</Button>
                 </span>
               )}
@@ -175,9 +184,9 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
         <span className="alert-section-label">연결 요청 · 화면 (승인은 MILDO Flow)</span>
         <div className="row">
           {inc.holdMedia && !resolved ? (
-            <Button size="sm" icon="play" disabled={!sla.actionAt || linked.some((c) => c.targetId === `alert:${inc.id}:release`)} title={!sla.actionAt ? '1차 조치 기록 후 요청 가능' : undefined}
+            <Button size="sm" icon="play" disabled={!sla.actionAt || requested(`alert:${inc.id}:release`)} title={!sla.actionAt ? '1차 조치 기록 후 요청 가능' : undefined}
               onClick={() => requestChange({ kind: 'setting', target: `${mediaName(inc.holdMedia)} AD Pilot 자동 조정`, targetId: `alert:${inc.id}:release`, before: '보류', after: '재개', reason: `${inc.title} — 조치 완료 확인 후 자동 조정 재개`, approver: 'PM' }, '자동 조정 보류 해제 요청을 만들었습니다')}>
-              자동 조정 보류 해제 요청 (PM)
+              {requested(`alert:${inc.id}:release`) ? '보류 해제 요청됨' : '자동 조정 보류 해제 요청 (PM)'}
             </Button>
           ) : null}
           {inc.ruleId === 'account_payment' && acc ? (() => {
@@ -189,22 +198,27 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
             // 계정 단위 targetId — 계정 · 결제 탭 충전 요청과 같은 형식이라 중복 요청이 막히고 AD Pilot · Flow 잔액 계산에 반영된다
             const tid = `alert:account:${acc.id}:topup`;
             return (
-              <Button size="sm" icon="wallet" disabled={topup <= 0 || linked.some((c) => c.targetId === tid)} title={topup <= 0 ? `잔액이 이미 ${days}일치 이상` : undefined}
+              <Button size="sm" icon="wallet" disabled={topup <= 0 || requested(tid)} title={topup <= 0 ? `잔액이 이미 ${days}일치 이상` : requested(tid) ? '이 계정의 충전 요청이 이미 있습니다 (MILDO Flow)' : undefined}
                 onClick={() => requestChange({ kind: 'setting', target: `${acc.name} 비즈머니 충전`, targetId: tid, before: balance, after: balance + topup, changePct: balance > 0 ? (topup / balance) * 100 : undefined, reason: `잔액 ${fmt.krw(balance)}원 < 일 평균 소진 ${fmt.krw(daily)}원 · 자동충전 ${acc.autoCharge === 'failed' || inc.title.includes('자동충전 실패') ? '실패' : acc.autoCharge} → 주말 · 연휴 대비 ${days}일치까지 ${fmt.krw(topup)}원 충전 요청 (p.50 결제 수단 수면밀도 · ${days}일치는 운영 가정)`, approver: 'CLIENT' }, '충전 요청을 만들었습니다')}>
-                충전 요청 {fmt.krw(topup)}원 · {days}일치 (수면밀도 승인)
+                {requested(tid) ? '충전 요청됨' : `충전 요청 ${fmt.krw(topup)}원 · ${days}일치 (수면밀도 승인)`}
               </Button>
             );
           })() : null}
-          {inc.ruleId === 'account_permission' ? (
-            <Button size="sm" icon="shield" disabled={linked.some((c) => c.targetId === `alert:${inc.id}:revoke`)}
-              onClick={() => requestChange({ kind: 'setting', target: `${inc.target} 비실명 계정 권한 회수`, targetId: `alert:${inc.id}:revoke`, before: '관리자 권한 유지', after: '권한 회수 · 실명 계정 대체', reason: '담당자 실명 계정 · 최소 권한 · 교체 시 즉시 회수 (p.50)', approver: 'PM' }, '권한 회수 요청을 만들었습니다')}>
-              권한 회수 요청 (PM → 수면밀도 통보)
-            </Button>
-          ) : null}
+          {inc.ruleId === 'account_permission' ? (() => {
+            // 계정 단위 targetId — 계정 · 결제 탭 권한 회수 요청과 같은 형식이라 두 화면에서 중복 요청이 생기지 않는다
+            const tid = acc ? `alert:account:${acc.id}:revoke` : `alert:${inc.id}:revoke`;
+            const users = acc ? acc.permissions.filter((x) => !x.realName || dayDiff(data.today, x.lastLogin) > cfg.staleLoginDays).map((x) => `${x.user}(${x.role})`).join(', ') : '';
+            return (
+              <Button size="sm" icon="shield" disabled={requested(tid)}
+                onClick={() => requestChange({ kind: 'setting', target: `${inc.target} 권한 회수`, targetId: tid, before: users || '관리자 권한 유지', after: '회수 · 실명 계정 대체', reason: '담당자 실명 계정 · 최소 권한 · 교체 시 즉시 회수 (p.50)', approver: 'PM' }, '권한 회수 요청을 만들었습니다')}>
+                {requested(tid) ? '회수 요청됨' : '권한 회수 요청 (PM → 수면밀도 통보)'}
+              </Button>
+            );
+          })() : null}
           {inc.ruleId === 'soldout_landing' ? (
-            <Button size="sm" icon="pause" disabled={linked.some((c) => c.targetId === `alert:${inc.id}:pause`)}
+            <Button size="sm" icon="pause" disabled={requested(`alert:${inc.id}:pause`)}
               onClick={() => requestChange({ kind: 'status', target: `${inc.target} 키워드`, targetId: `alert:${inc.id}:pause`, before: 'on', after: 'off', reason: `${inc.title} — 재입고 시 재개`, approver: 'AE' }, '키워드 일시 중지 요청을 만들었습니다')}>
-              키워드 일시 중지 요청 (담당 AE)
+              {requested(`alert:${inc.id}:pause`) ? '일시 중지 요청됨' : '키워드 일시 중지 요청 (담당 AE)'}
             </Button>
           ) : null}
           {['budget_forecast', 'keyword_spike', 'brand_intrusion', 'budget_exhausted'].includes(inc.ruleId) ? <a className="btn sm" href="#adpilot">AD Pilot 조정 후보</a> : null}

@@ -9,7 +9,7 @@ import {
   feeCalc, isBlank, onboardingBrief, onboardingPlan, onDutyFor, opsSummary, ownershipStatus, parseKrwText, parseNum, parseRfpDate, performanceBaseline,
   referenceCheck, referenceRows, rfpBrief, rfpCoverage, rfpSchedule, simulateLeave, tfBrief, tfMarkdown, tfMissing, tfRoster, type OpsInputs,
 } from './engine';
-import { RFP_ITEMS } from './data';
+import { ANNUAL_BUDGET_MAX, clampAnnualBudget, RFP_ITEMS } from './data';
 import { defaultOpsLocal, mergeOpsLocal } from './local';
 
 const FULL_TF = {
@@ -524,5 +524,25 @@ describe('모듈 로컬 입력값 (local.ts)', () => {
     expect(m.fees).toEqual({});
     expect(m.docs.deck).toBe(true);
     expect(mergeOpsLocal({ kickoff: '2027-01-04' }).kickoff).toBe('2027-01-04');
+  });
+});
+
+describe('QA 회귀: 연간 광고비 입력 상한', () => {
+  it('숫자가 아니거나 0 이하면 0, 상한(1조) 초과는 상한으로 — 표시 단위가 깨지지 않는다', () => {
+    expect(clampAnnualBudget(RFP.annualBudget)).toBe(RFP.annualBudget);
+    expect(clampAnnualBudget(0)).toBe(0);
+    expect(clampAnnualBudget(-5)).toBe(0);
+    expect(clampAnnualBudget(NaN)).toBe(0);
+    expect(clampAnnualBudget('abc')).toBe(0);
+    expect(clampAnnualBudget(1e30)).toBe(ANNUAL_BUDGET_MAX);
+    const f = feeCalc({ 구글: { fee: '10', payback: 'no' } }, 1e30);
+    expect(f.annualBudget).toBe(ANNUAL_BUDGET_MAX);
+    expect(Number.isFinite(f.totals.net)).toBe(true);
+    expect(f.totals.net).toBeLessThanOrEqual(ANNUAL_BUDGET_MAX * 0.3);
+  });
+  it('저장본의 비정상 연간 광고비는 상한 또는 기본값으로 되살린다', () => {
+    expect(mergeOpsLocal({ annualBudget: 1e30 }).annualBudget).toBe(ANNUAL_BUDGET_MAX);
+    expect(mergeOpsLocal({ annualBudget: -1 }).annualBudget).toBe(RFP.annualBudget);
+    expect(mergeOpsLocal({ annualBudget: '1e9' }).annualBudget).toBe(RFP.annualBudget);
   });
 });

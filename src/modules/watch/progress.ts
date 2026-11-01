@@ -68,3 +68,6 @@ export function subscribeWatchStore(fn: () => void): () => void {
 export function resetWatchStore() {
   setWatchStore(() => ({ progress: {}, alerts: [], aeNotes: {} }));
 }
+
+/** 앱 전역 '시연 상태 초기화'가 'mildo-os:reset' 이벤트를 보내면 Watch 진행 기록도 처음 상태로 (화면이 열려 있지 않아도) */
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') window.addEventListener('mildo-os:reset', () => resetWatchStore());

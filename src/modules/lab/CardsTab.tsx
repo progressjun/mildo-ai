@@ -35,10 +35,9 @@ function NewCardForm({ m, draft, onDone }: { m: LabModel; draft: CardDraft | nul
   const set = <K extends keyof CardDraft>(k: K, v: CardDraft[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const submit = () => {
-    const e = validateCardInput({ title: f.title, hypothesis: f.hypothesis, variable: f.variable, control: f.control, variant: f.variant, sameTarget, budgetGapPct: gap, start, today: d.today });
+    const e = validateCardInput({ title: f.title, hypothesis: f.hypothesis, variable: f.variable, control: f.control, variant: f.variant, sameTarget, budgetGapPct: gap, start, today: d.today, plannedDays: days });
     if (rv && rv.level === 'block') e.push(`변형안 문안 검수 차단 — ${rv.findings.filter((x) => x.level === 'block').map((x) => x.match).join(' · ')} (수정안: ${rv.suggested})`);
     if (rc && rc.level === 'block') e.push(`기존안 문안 검수 차단 — ${rc.findings.filter((x) => x.level === 'block').map((x) => x.match).join(' · ')} (수정안: ${rc.suggested})`);
-    if (!(days >= 7 && days <= 42)) e.push('기간은 7~42일 사이로 입력하세요 (기준 14일)');
     setErrors(e);
     if (e.length) return;
     const id = nextUserCardId(m.cards, state.changes);
@@ -54,7 +53,14 @@ function NewCardForm({ m, draft, onDone }: { m: LabModel; draft: CardDraft | nul
       reason: `가설: ${card.hypothesis} · 변수 ${card.variable} · ${days}일 또는 최소 표본 · 중단 ${card.stopDay}일 차 CVR −${card.stopDropPct}% · 확대 +${card.expandLiftPct}%`,
       requestedBy: state.role, approver: 'AE',
     });
-    setLab((s) => ({ userCards: [...s.userCards, card] }));
+    // 같은 id의 숨은 기록(시연 상태 초기화로 이력이 지워진 카드 · 결정 · 랩업)은 새 카드로 대체
+    setLab((s) => {
+      const decisions = { ...s.decisions };
+      const wrapups = { ...s.wrapups };
+      delete decisions[id];
+      delete wrapups[id];
+      return { userCards: [...s.userCards.filter((x) => x.id !== id), card], decisions, wrapups, library: s.library.filter((x) => x.id !== `pt_${id}`) };
+    });
     actions.toast({ tone: 'good', title: `테스트 카드 ${id} 등록 요청`, body: `담당 AE 승인 후 ${fmtDate(start)} 집행 시작 · 요청 ${ch.id}`, route: 'flow' });
     setF(EMPTY_DRAFT);
     setErrors([]);
@@ -151,7 +157,12 @@ function TestCardView({ card, m }: { card: TestCard; m: LabModel }) {
       module: 'lab', kind: 'test', target: `${card.id} ${card.title}`, targetId: `labcard:${card.id}:decision`, before: '테스트 진행', after,
       reason: `${j.badge} — ${j.basis}`, requestedBy: state.role, approver: verdict === 'expand' ? 'PM' : 'AE',
     });
-    setLab((s) => ({ decisions: { ...s.decisions, [card.id]: { verdict, at: d.today, by: state.role, note: j.badge, changeId: ch.id } } }));
+    // 새 결정은 이전(반려 · 롤백된) 결정의 랩업 · 라이브러리 기록을 이어받지 않는다
+    setLab((s) => {
+      const wrapups = { ...s.wrapups };
+      delete wrapups[card.id];
+      return { decisions: { ...s.decisions, [card.id]: { verdict, at: d.today, by: state.role, note: j.badge, changeId: ch.id } }, wrapups, library: s.library.filter((x) => x.id !== `pt_${card.id}`) };
+    });
     actions.toast({ tone: verdict === 'stop' ? 'warning' : 'good', title: `${card.id} ${CARD_VERDICT_META[verdict].label} 결정 요청`, body: `2주 후 랩업 ${fmtDate(nextBusinessDay(addDays(d.today, CARD_RULES.wrapupDays)))}`, route: 'flow' });
   };
   const decidable = j.verdict === 'expand' || j.verdict === 'stop' || j.verdict === 'monitor';
@@ -209,6 +220,7 @@ function TestCardView({ card, m }: { card: TestCard; m: LabModel }) {
         </div>
       ) : decidable ? (
         <div className="row" style={{ gap: 6 }}>
+          {lab.rejectedDecisions[card.id] ? <span className="lab-sub" style={{ flexBasis: '100%' }}>직전 결정 요청({CARD_VERDICT_META[lab.rejectedDecisions[card.id].verdict].label}) 반려 · 롤백 — 근거 확인 후 다시 결정할 수 있습니다</span> : null}
           <Button size="sm" variant={j.verdict === 'stop' ? 'danger' : 'primary'} icon="send" onClick={() => decide(j.verdict as CardDecision['verdict'])}>{CARD_VERDICT_META[j.verdict].label} 결정 · 승인 요청</Button>
           {j.verdict !== 'monitor' ? <Button size="sm" onClick={() => decide('monitor')}>모니터링 지속</Button> : null}
         </div>

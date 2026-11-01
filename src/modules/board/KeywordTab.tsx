@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import type { Dataset, IntentId } from '@/core/types';
 import { INTENT_IDS, SA_CAMPAIGNS } from '@/data/constants';
 import { fmt, fmtDate, metrics } from '@/core/util';
-import { Button, Card, DataTable, Drawer, DownloadButton, Field, Pill, Segmented, Src, Stat, type Column } from '@/ui/primitives';
+import { Button, Card, CopyButton, DataTable, Drawer, DownloadButton, Field, Pill, Segmented, Src, Stat, type Column } from '@/ui/primitives';
 import { HBarChart, LineChart, Sparkline } from '@/ui/charts';
 import {
   filterKeywords, groupRollup, intentRollup, keywordCsv, keywordRows, keywordScope, keywordSummary, productGroups, SIGNAL_LABEL,
@@ -57,7 +57,8 @@ export function KeywordTab({ d }: { d: Dataset }) {
         </div>
       ),
     },
-    { key: 'intent', label: '구매 의도', sort: (r) => r.intent, render: (r) => <span className="small nowrap">{r.intentName}</span> },
+    // 제안서 p.35 구매 의도 순서(브랜드 방어 → 생활 상황)로 정렬 — 내부 id 알파벳 순이 아니라 화면 표기 순서
+    { key: 'intent', label: '구매 의도', sort: (r) => INTENT_IDS.indexOf(r.intent), render: (r) => <span className="small nowrap">{r.intentName}</span> },
     { key: 'cost', label: '광고비', align: 'right', sort: (r) => r.cur.cost, render: (r) => <NumCell value={fmt.krw(r.cur.cost)} delta={r.costDelta} neutral sub={r.isNew ? '신규' : undefined} /> },
     { key: 'conv', label: '전환', align: 'right', sort: (r) => r.cur.conversions, render: (r) => <NumCell value={fmt.dec1(r.cur.conversions)} delta={r.convDelta} /> },
     { key: 'revenue', label: '매출', align: 'right', sort: (r) => r.cur.revenue, render: (r) => <NumCell value={fmt.krw(r.cur.revenue)} /> },
@@ -69,7 +70,8 @@ export function KeywordTab({ d }: { d: Dataset }) {
       render: (r) => <Sparkline values={r.daily.map((x) => x[spark])} width={96} height={28} colorVar={INTENT_COLOR[r.intent]} ariaLabel={`${r.text} 일별 ${spark === 'cost' ? '광고비' : spark === 'revenue' ? '매출' : '전환'}`} />,
     },
     { key: 'lost', label: '노출 손실 · 순위', align: 'right', sort: (r) => r.lost, render: (r) => <NumCell value={fmt.ratio(r.lost, 0)} sub={`${fmt.dec1(r.rank)}위`} /> },
-    { key: 'signals', label: '신호', sort: (r) => -r.signals.filter((x) => x.id !== 'new').length, render: (r) => <SignalPills signals={r.signals} showBasis max={2} /> },
+    // 첫 클릭(내림차순)에 신호가 많은 키워드가 위로 오도록 양수 개수로 정렬
+    { key: 'signals', label: '신호', sort: (r) => r.signals.filter((x) => x.id !== 'new').length, render: (r) => <SignalPills signals={r.signals} showBasis max={2} /> },
   ];
 
   return (
@@ -77,7 +79,7 @@ export function KeywordTab({ d }: { d: Dataset }) {
       <Card
         title="키워드 성과 필터"
         sub={`네이버 SA ${all.length}개 키워드 · 최근 ${win}일 vs 직전 ${win}일 · 구매 의도(p.35) · 제품군 묶음 조회(p.13)`}
-        actions={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.13 · p.14 · p.35" /><DownloadButton filename={`mildo-board-keywords-${d.today}.csv`} data={() => keywordCsv(rows, win)} mime="text/csv;charset=utf-8" label={`CSV 내보내기 (${rows.length})`} /></>}
+        actions={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.13 · p.14 · p.35" /><DownloadButton filename={`mildo-board-keywords-${d.today}.csv`} data={() => keywordCsv(rows, win)} mime="text/csv;charset=utf-8" label={`CSV 내보내기 (${rows.length})`} /><CopyButton text={() => keywordCsv(rows, win).replace(/^\uFEFF/, '')} label="CSV 복사" /></>}
       >
         <div className="stack">
           <div className="stack-sm">

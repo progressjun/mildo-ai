@@ -14,7 +14,7 @@ import {
   defaultPilots, equalizeMarginal, evaluateAllocation, fitLogLog, fitResponseCurves, funnelDiagnosis, funnelRates, growthFormula, growthPrompt, growthSignals,
   holdoutChange, holdoutDesign, keywordCpcSpikes, landingFindings, landingType, marginalCurvePoints, normInv, normalizeShares, ols, pilotChange, pilotPlan,
   reallocationChange, rebalanceShares, requiredConversions, rfpSegmentSummary, saCampaignPerformance, sameWeekdayAdjust, scoreNewMedia, skuExpansionSummary,
-  targetGroupView, type ResponseCurve, type Shares,
+  targetGroupView, guardrailIssues, pctInt, type ResponseCurve, type Shares,
 } from './engine';
 import { allocationBrief, campaignBrief, daSaBrief, funnelBrief, newMediaBrief, overviewBrief } from './briefs';
 import { paceCampaigns, resolveConfig } from '@/modules/adpilot/engine';
@@ -828,5 +828,34 @@ describe('성장 공식 · 캘린더 · 신호 · 프롬프트 · 브리프', ()
         noBad(all);
       }
     }
+  });
+});
+
+describe('화면 입력 경계값 (기능 점검 회귀)', () => {
+  it('pctInt: 계산 불가 값은 "—" ("—%"로 표시하지 않음) — 예산 1조처럼 모든 매체가 볼륨 한계를 넘을 때', () => {
+    expect(pctInt(89.4)).toBe('89%');
+    expect(pctInt(NaN)).toBe('—');
+    expect(pctInt(Infinity)).toBe('—');
+    const huge = allocationModel(DEMO, { budget: 1e12 });
+    expect(pctInt(huge.scenario.spread.gapPct)).not.toContain('—%');
+  });
+
+  it('guardrailIssues: 최소 > 최대 · 최소 합계 > 100% · 최대 합계 < 100%를 알려 준다 · 기본 가드레일은 문제 없음', () => {
+    expect(guardrailIssues(ALLOCATION_GUARDRAILS)).toEqual([]);
+    const inverted = { ...ALLOCATION_GUARDRAILS, naver_sa: { min: 0.9, max: 0.5 } };
+    const issues = guardrailIssues(inverted);
+    expect(issues[0]).toContain(`${MEDIA.naver_sa.short} 최소 > 최대`);
+    expect(issues.some((x) => x.startsWith('최소 합계'))).toBe(true);
+    const tight = Object.fromEntries(MEDIA_IDS.map((m) => [m, { min: 0, max: 0.1 }])) as typeof ALLOCATION_GUARDRAILS;
+    expect(guardrailIssues(tight)).toEqual(['최대 합계 60% < 100%']);
+    // 최소 > 최대는 최대를 적용하고, 최소 합계 > 100%면 가드레일을 해제해 계산한다 (예외 없음 · 합계 100%)
+    const m = allocationModel(DEMO, { guard: inverted });
+    expect(m.equalize.shares.naver_sa).toBeLessThanOrEqual(0.5 + 1e-6);
+    expect(sumShares(m.equalize.shares)).toBeCloseTo(1, 6);
+    const over = Object.fromEntries(MEDIA_IDS.map((x) => [x, { min: 0.2, max: 0.6 }])) as typeof ALLOCATION_GUARDRAILS;
+    expect(guardrailIssues(over)).toEqual(['최소 합계 120% > 100%']);
+    const m2 = allocationModel(DEMO, { guard: over });
+    expect(m2.equalize.relaxed).toContain('guard');
+    expect(sumShares(m2.equalize.shares)).toBeCloseTo(1, 6);
   });
 });

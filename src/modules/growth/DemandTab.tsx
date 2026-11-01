@@ -73,7 +73,7 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
                     </td>
                   ))}
                   <td className="r"><strong>{fmt.int(r.total)}</strong></td>
-                  <td className="r">{r.rank === 1 ? <Pill tone="accent">1순위</Pill> : `${r.rank}`}</td>
+                  <td className="r">{!Number.isFinite(r.total) ? <span className="muted">—</span> : r.rank === 1 ? <Pill tone="accent">1순위</Pill> : `${r.rank}`}</td>
                 </tr>
               ))}
             </tbody>
@@ -109,7 +109,7 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
             <tbody>
               {plan.rows.map((r) => (
                 <tr key={r.name}>
-                  <td><strong>{r.name}</strong><div className="xs muted">순위 {ranked.find((x) => x.name === r.name)?.rank ?? '—'}</div></td>
+                  <td><strong>{r.name}</strong><div className="xs muted">순위 {Number.isFinite(ranked.find((x) => x.name === r.name)?.total ?? NaN) ? ranked.find((x) => x.name === r.name)?.rank : '—'}</div></td>
                   <td className="r growth-pilot-budget" style={{ minWidth: 170 }}>
                     {r.requested
                       ? <span className="stack-sm" style={{ gap: 0, alignItems: 'flex-end' }}><strong className="num">{fmt.krw(r.budget)}</strong><span className="xs muted">승인 흐름 · 금액 고정</span></span>

@@ -1828,6 +1828,10 @@ const SCENARIO_RULES: Record<TestScenarioId, string[]> = {
   creative: ['creative_rejected'],
 };
 /** 주입 데이터로 엔진을 다시 돌려 새로 생긴 이슈만 반환 (isTest = true) */
+/** 테스트 주입 이슈 id의 원래 탐지 id (…:test-<n> 접미사 제거) — 같은 시나리오 중복 주입 판정용 */
+export function testBaseId(id: string): string {
+  return id.replace(/:test-\d+$/, '');
+}
 export function detectTestIncidents(data: Dataset, kind: TestScenarioId, opts: DetectOptions & { atIso?: string; seq?: number } = {}): AlertIncident[] {
   const creatives = opts.creatives ?? DEMO_CREATIVES;
   const base = new Set(detectIncidents(data, { ...opts, creatives }).map((i) => i.id));
@@ -1853,8 +1857,45 @@ export function detectTestIncidents(data: Dataset, kind: TestScenarioId, opts: D
 export function typeOf(i: Incident | AlertIncident): string {
   return (i as AlertIncident).typeId ?? RULES[i.ruleId]?.typeId ?? 'external';
 }
-export function heldMedia(incidents: readonly Incident[]): MediaId[] {
-  return Array.from(new Set(incidents.filter((i) => i.status !== 'resolved').map((i) => (i as AlertIncident).holdMedia).filter((m): m is MediaId => !!m)));
+/**
+ * 반영(applied)된 충전 요청 합계 — targetId 'alert:account:<계정 id>:topup'
+ * (이전 형식 'alert:<이슈 id>:topup'은 대상 계정명으로 매칭) · AD Pilot appliedTopup · Flow effectiveBalance와 같은 규칙
+ */
+export function appliedTopupFor(changes: readonly ChangeRequest[] | undefined, account: Pick<AdAccount, 'id' | 'name'>): number {
+  let total = 0;
+  for (const c of changes ?? []) {
+    if (c.status !== 'applied' || typeof c.targetId !== 'string' || !/^alert:.+:topup$/.test(c.targetId)) continue;
+    const mine = c.targetId === `alert:account:${account.id}:topup` || (!c.targetId.startsWith('alert:account:') && String(c.target ?? '').startsWith(`${account.name} `));
+    if (!mine) continue;
+    const add = Number(c.after) - Number(c.before);
+    if (Number.isFinite(add) && add > 0) total += add;
+  }
+  return total;
+}
+/** 반영된 충전을 계정 잔액에 더한 데이터 (충전 반영이 없으면 같은 객체를 그대로 돌려준다 — 메모 · 인덱스 재사용) */
+export function withAppliedTopups(data: Dataset, changes: readonly ChangeRequest[] | undefined): Dataset {
+  let touched = false;
+  const accounts = data.accounts.map((a) => {
+    const add = a.balance >= 0 ? appliedTopupFor(changes, a) : 0;
+    if (!add) return a;
+    touched = true;
+    return { ...a, balance: a.balance + add };
+  });
+  return touched ? { ...data, accounts } : data;
+}
+
+/** 보류 해제 요청(alert:<이슈>:release)이 반영(applied)된 이슈 id — AD Pilot openHoldIncidents와 같은 규칙 */
+export function releasedIncidentIds(changes: readonly ChangeRequest[] = []): Set<string> {
+  return new Set(
+    changes
+      .filter((c) => c.status === 'applied' && typeof c.targetId === 'string' && c.targetId.startsWith('alert:') && c.targetId.endsWith(':release'))
+      .map((c) => c.targetId!.slice('alert:'.length, -':release'.length)),
+  );
+}
+/** 자동 조정 보류 매체 — 열린 이슈 중 보류 해제가 반영되지 않은 것 (changes 생략 시 해제 반영을 보지 않음) */
+export function heldMedia(incidents: readonly Incident[], changes?: readonly ChangeRequest[]): MediaId[] {
+  const released = releasedIncidentIds(changes);
+  return Array.from(new Set(incidents.filter((i) => i.status !== 'resolved' && !released.has(i.id)).map((i) => (i as AlertIncident).holdMedia).filter((m): m is MediaId => !!m)));
 }
 export function incidentRecurrence(i: Pick<AlertIncident, 'ruleId' | 'media'>, today: string): { count: number; dates: string[] } {
   const h = SLA_HISTORY.filter((x) => x.ruleId === i.ruleId && x.media === i.media && dayDiff(today, x.date) <= 30 && dayDiff(today, x.date) > 0);

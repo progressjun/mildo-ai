@@ -22,6 +22,7 @@ export default function View() {
   const w = useWatch();
   const [tab, setTab] = useState<TabId>('tracking');
   const [openId, setOpenId] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
   const d = w.state.data;
   const weekArc = w.archive.filter((r) => r.date >= w.brief.period.from);
   return (
@@ -31,7 +32,12 @@ export default function View() {
         title="MILDO Watch"
         sub="신규 상품 · 광고 지면 · 노출 로직 변화를 먼저 잡아 24시간 안에 영향을 진단하고, 주간 리포트 실행안과 소액 테스트로 연결합니다. 경쟁 6개사와 외부 변수는 오가닉 · 페이드 구분 없이 아카이빙합니다."
         sources={<><Src kind="PROPOSAL" page="p.21 · p.24–25 · p.28" /><Src kind="DEMO" /><span className="xs muted">데이터 기준 {fmtDate(d.today)} {String(d.currentHour).padStart(2, '0')}:30 · 매체 공지 이벤트 · 경쟁사 스냅샷은 시연용 가상 데이터 · 판정 기준은 초기값 (온보딩 중 확정)</span></>}
-        actions={<Button size="sm" icon="rollback" variant="ghost" onClick={w.reset}>시연 초기화</Button>}
+        actions={confirmReset ? (
+          <>
+            <Button size="sm" icon="rollback" variant="danger" onClick={() => { w.reset(); setConfirmReset(false); setOpenId(null); }}>Watch 진행 기록 초기화 확정</Button>
+            <Button size="sm" variant="ghost" onClick={() => setConfirmReset(false)}>취소</Button>
+          </>
+        ) : <Button size="sm" icon="rollback" variant="ghost" title="파이프라인 진행 · AE 코멘트를 처음 상태로 (Lab 등록 요청 · Alert 이슈는 각 화면 이력에 유지)" onClick={() => setConfirmReset(true)}>시연 초기화</Button>}
       />
       <WatchStrip w={w} onTab={setTab} onOpen={setOpenId} />
       <Tabs<TabId>

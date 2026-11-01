@@ -1,7 +1,7 @@
 import type { ModuleAgentKit } from '../types';
 import { generateBidProposals } from '@/modules/adpilot/engine';
 import { MEDIA } from '@/data/constants';
-import { hhmmOf, morningBrief, operatingSummary, timetableProgress } from './engine';
+import { hhmmOf, homeTimetable, morningBrief, operatingSummary } from './engine';
 
 export const agentKit: ModuleAgentKit = {
   tools: (ctx) => [
@@ -29,12 +29,15 @@ export const agentKit: ModuleAgentKit = {
     },
     {
       name: 'home_timetable',
-      description: '데이터 제공 시간표(07:00 수집 ~ 17:00 일 마감) 항목별 완료/다음 상태를 반환한다.',
-      execute: () => timetableProgress(ctx.state.data.currentHour, 30).map((t) => ({ time: t.time, title: t.title, state: t.state, channel: t.channel })),
+      description: '데이터 제공 시간표(07:00 수집 ~ 17:00 일 마감) 항목별 완료/다음 상태를 반환한다. 주말 · 공휴일에는 다음 영업일로 이동하는 항목과 처리 규칙을 함께 반환한다.',
+      execute: () => {
+        const t = homeTimetable(ctx.state.data, { offHours: ctx.state.offHoursMode, incidents: ctx.state.incidents, changes: ctx.state.changes });
+        return { offDay: t.off ? t.offLabel : null, nextBusinessDay: t.nextBusinessDay, items: t.items.map((i) => ({ time: i.time, title: i.title, state: i.state, status: i.label, channel: i.channel, offRule: i.offNote ?? null })) };
+      },
     },
     {
       name: 'navigate',
-      description: '사용자 화면을 특정 모듈로 이동한다. route: home, board, adpilot, reports, watch, lab, geo, growth, flow, alert, ops, agent 중 하나.',
+      description: '답변 아래에 특정 모듈 화면으로 이동하는 버튼을 붙인다(답변을 다 읽은 뒤 사용자가 눌러 이동). route: home, board, adpilot, reports, watch, lab, geo, growth, flow, alert, ops, agent 중 하나.',
       inputSchema: { type: 'object', properties: { route: { type: 'string' } }, required: ['route'] },
       execute: (input) => {
         const route = String(input.route ?? '');

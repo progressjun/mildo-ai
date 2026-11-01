@@ -4,7 +4,7 @@ import { fmt, fmtDate } from '@/core/util';
 import { Button, Callout, Card, CopyButton, Pill, Segmented, Src, Stat, type Tone as UiTone } from '@/ui/primitives';
 import { ShareBar } from '@/ui/charts';
 import { Icon } from '@/ui/Icon';
-import { aboutHours, automationRollout, computeSavings, measuredVerdict, reinvestPlan, type PhaseStatus, type SavingsMode, type SavingsResult } from './engine';
+import { aboutHours, automationRollout, computeSavings, fmtCut, measuredVerdict, reinvestPlan, type PhaseStatus, type SavingsMode, type SavingsResult } from './engine';
 import { KICKOFF_ASSUMED, REFERENCE_BRANDS, REINVEST_DEFAULT, ROLLOUT_SUB, SAVINGS_CONFIRM_DAYS, SAVINGS_FLOOR_PCT, WEEK_MINUTES_PER_FTE } from './data';
 
 export interface SavingsInputs {
@@ -37,27 +37,34 @@ function DraftNumber({ id, value, onCommit, label, step, max, className, placeho
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const shown = draft ?? (value === null || !Number.isFinite(value) ? '' : String(value));
+  // 음수 등 반영하지 않는 값은 입력칸에 그대로 두되 오류로 표시한다 (포커스가 빠지면 마지막 반영값으로 되돌아감)
+  const invalid = draft !== null && draft !== '' && !(Number.isFinite(Number(draft)) && Number(draft) >= 0);
+  const errId = `${id}-err`;
   return (
-    <input id={id} className={className} type="number" min={0} max={max} step={step} aria-label={label} placeholder={placeholder} value={shown}
-      onChange={(e) => {
-        const raw = e.target.value;
-        setDraft(raw);
-        if (raw === '') { if (allowEmpty) onCommit(''); return; }
-        const v = Number(raw);
-        if (Number.isFinite(v) && v >= 0) onCommit(raw);
-      }}
-      onBlur={() => setDraft(null)} />
+    <>
+      <input id={id} className={`${className}${invalid ? ' invalid' : ''}`} type="number" min={0} max={max} step={step} aria-label={label} placeholder={placeholder} value={shown}
+        aria-invalid={invalid || undefined} aria-describedby={invalid ? errId : undefined}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setDraft(raw);
+          if (raw === '') { if (allowEmpty) onCommit(''); return; }
+          const v = Number(raw);
+          if (Number.isFinite(v) && v >= 0) onCommit(raw);
+        }}
+        onBlur={() => setDraft(null)} />
+      {invalid ? <div id={errId} className="xs reports-input-err" role="alert">0 이상 숫자만 반영</div> : null}
+    </>
   );
 }
 
 /** 절감표 마크다운 (복사용) */
 function savingsMarkdown(s: SavingsResult): string {
   const head = '| 업무 | 자동화 방식 | 기존 (분/주) | 자동화 후 목표 | 절감률 | 실측 |\n| --- | --- | ---: | ---: | ---: | ---: |';
-  const body = s.rows.map((r) => `| ${r.task} | ${r.how} | ${fmt.int(r.before)}${r.edited ? ' (수정)' : ''} | ${fmt.int(r.after)} | −${Math.round(r.reductionPct)}% | ${r.measured !== null ? fmt.int(r.measured) : '—'} |`).join('\n');
-  const total = `| 합계 | | ${fmt.int(s.before)} | ${fmt.int(s.after)} | −${Math.round(s.reductionPct)}% | ${s.measured ? `${fmt.int(s.measured.after)} (${s.measured.tasks}개 업무)` : '—'} |`;
+  const body = s.rows.map((r) => `| ${r.task} | ${r.how} | ${fmt.int(r.before)}${r.edited ? ' (수정)' : ''} | ${fmt.int(r.after)} | ${fmtCut(r.reductionPct)} | ${r.measured !== null ? fmt.int(r.measured) : '—'} |`).join('\n');
+  const total = `| 합계 | | ${fmt.int(s.before)} | ${fmt.int(s.after)} | ${fmtCut(s.reductionPct)} | ${s.measured ? `${fmt.int(s.measured.after)} (${s.measured.tasks}개 업무)` : '—'} |`;
   return [
     '## SA 업무 자동화 범위 · 절감 목표 (제안서 p.19)',
-    `주간 합계 ${fmt.int(s.before)}분 → ${fmt.int(s.after)}분 (−${Math.round(s.reductionPct)}%, 약 ${aboutHours(s.before)}시간 → 약 ${aboutHours(s.after)}시간) · 판정 ${s.verdict.label} — ${s.verdict.basis}`,
+    `주간 합계 ${fmt.int(s.before)}분 → ${fmt.int(s.after)}분 (${fmtCut(s.reductionPct)}, 약 ${fmt.int(aboutHours(s.before))}시간 → 약 ${fmt.int(aboutHours(s.after))}시간) · 판정 ${s.verdict.label} — ${s.verdict.basis}`,
     head, body, total,
     `기존 소요는 가정값이며 온보딩 ${SAVINGS_CONFIRM_DAYS}일 내 실측으로 확정합니다. 도입 브랜드 실적(최소 ${SAVINGS_FLOOR_PCT}%)을 하한으로 둔 목표입니다.`,
   ].join('\n\n');
@@ -97,8 +104,8 @@ export function SavingsTab({ today, inputs, setInputs }: { today: string; inputs
           <div className="reports-sv-head">
             <div className="stack-sm" style={{ gap: 4 }}>
               <span className="xs muted">주간 합계 · 목표</span>
-              <span className="reports-big accent">−{Math.round(s.reductionPct)}%</span>
-              <span className="small num">{min(s.before)} → {min(s.after)} / 주 · 약 {aboutHours(s.before)}시간 → 약 {aboutHours(s.after)}시간</span>
+              <span className="reports-big accent">{fmtCut(s.reductionPct)}</span>
+              <span className="small num">{min(s.before)} → {min(s.after)} / 주 · 약 {fmt.int(aboutHours(s.before))}시간 → 약 {fmt.int(aboutHours(s.after))}시간</span>
               <span className="row" style={{ gap: 6 }}>
                 <Pill tone={s.verdict.tone as UiTone} icon={s.meetsFloor ? 'check' : 'alert'}>{s.verdict.label}</Pill>
                 <span className="xs muted">{s.verdict.basis}</span>
@@ -122,7 +129,7 @@ export function SavingsTab({ today, inputs, setInputs }: { today: string; inputs
                 <div className="reports-total-bar">
                   <span>실측 ({s.measured.tasks}개 업무)</span>
                   <div className="track"><span style={{ width: `${s.measured.before > 0 ? (s.measured.after / s.measured.before) * 100 : 0}%`, background: 'var(--series-1)' }} /></div>
-                  <span className="num">−{Math.round(s.measured.reductionPct)}%</span>
+                  <span className="num">{fmtCut(s.measured.reductionPct)}</span>
                 </div>
               ) : null}
               <div className="xs muted">세로선: 하한 −{SAVINGS_FLOOR_PCT}% = 자동화 후 {min(floorAfter)} 이하 · 막대 길이는 기존 합계 대비</div>
@@ -174,7 +181,7 @@ export function SavingsTab({ today, inputs, setInputs }: { today: string; inputs
                     </td>
                     <td className="r num">{fmt.int(r.after)}{r.edited ? <div className="xs muted">제안서 {fmt.int(r.defaultAfter)}</div> : null}</td>
                     <td className="r num">{fmt.int(r.saved)}</td>
-                    <td className="r num"><strong>−{Math.round(r.reductionPct)}%</strong></td>
+                    <td className="r num"><strong>{fmtCut(r.reductionPct)}</strong></td>
                     <td>
                       <div className="reports-sbar" aria-hidden>
                         <div className="reports-sbar-row" style={{ width: `${(r.before / maxBar) * 100}%` }} />
@@ -188,7 +195,7 @@ export function SavingsTab({ today, inputs, setInputs }: { today: string; inputs
                     <td>
                       {v ? (
                         <div className="stack-sm" style={{ gap: 2 }}><Pill tone={v.tone as UiTone}>{v.label}</Pill><span className="xs muted">{v.basis}</span></div>
-                      ) : <span className="xs muted">실측 전 · 목표 −{Math.round(r.reductionPct)}% · 하한 −{SAVINGS_FLOOR_PCT}%</span>}
+                      ) : <span className="xs muted">실측 전 · 목표 {fmtCut(r.reductionPct)} · 하한 −{SAVINGS_FLOOR_PCT}%</span>}
                     </td>
                   </tr>
                 );
@@ -200,8 +207,8 @@ export function SavingsTab({ today, inputs, setInputs }: { today: string; inputs
                 <td className="r num">{fmt.int(s.before)}</td>
                 <td className="r num">{fmt.int(s.after)}</td>
                 <td className="r num">{fmt.int(s.saved)}</td>
-                <td className="r num">−{Math.round(s.reductionPct)}%</td>
-                <td className="small">약 {aboutHours(s.before)}시간 → 약 {aboutHours(s.after)}시간</td>
+                <td className="r num">{fmtCut(s.reductionPct)}</td>
+                <td className="small">약 {fmt.int(aboutHours(s.before))}시간 → 약 {fmt.int(aboutHours(s.after))}시간</td>
                 <td className="r num">{s.measured ? fmt.int(s.measured.after) : '—'}</td>
                 <td>{s.measured ? <div className="stack-sm" style={{ gap: 2 }}><Pill tone={s.measured.verdict.tone as UiTone}>{s.measured.verdict.label}</Pill><span className="xs muted" style={{ fontWeight: 400 }}>{s.measured.verdict.basis}</span></div> : <span className="xs muted" style={{ fontWeight: 400 }}>D+90 실측 보고에서 확정</span>}</td>
               </tr>
@@ -284,7 +291,7 @@ export function SavingsTab({ today, inputs, setInputs }: { today: string; inputs
                 {p.tasks.length ? p.tasks.map((t) => `${t.task} −${fmt.int(t.saved)}분`).join(' · ') : i === 0 ? '없음 — 기존 입찰 로직 유지 · 기존 소요 실측' : '없음'}
               </div>
               <div className="stack-sm" style={{ gap: 3 }}>
-                <div className="row-between xs"><span className="muted">단계 종료 시 주간 SA 업무 (목표 기준)</span><strong className="num">{min(p.weeklyAfter)} · {p.reductionPct >= 0.5 ? `−${Math.round(p.reductionPct)}%` : '기존 유지'}</strong></div>
+                <div className="row-between xs"><span className="muted">단계 종료 시 주간 SA 업무 (목표 기준)</span><strong className="num">{min(p.weeklyAfter)} · {p.reductionPct >= 0.5 ? fmtCut(p.reductionPct) : '기존 유지'}</strong></div>
                 <div className="bar"><span style={{ width: `${s.before > 0 ? (p.weeklyAfter / s.before) * 100 : 0}%`, background: p.id === 'd90' ? 'var(--accent)' : 'var(--ink)' }} /><i className="marker" style={{ left: `calc(${100 - SAVINGS_FLOOR_PCT}% - 1px)` }} /></div>
               </div>
               <div className="reports-metric"><span className="muted">측정 기준 · </span><strong>{p.metric}</strong>{p.id === 'd30' ? ` · 기존 소요 실측 확정 ${fmtDate(ro.confirmDate)}` : ''}</div>

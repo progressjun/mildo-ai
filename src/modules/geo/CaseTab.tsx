@@ -6,6 +6,7 @@ import { GEO_CASE_BLANK, GEO_PRINCIPLE } from './data';
 import { caseMetrics, dateLabel, demoCaseFromSnapshot, EMPTY_CASE, parseNumInput, visibilitySummary, type CaseInput, type GeoSnapshot } from './engine';
 
 type NumKey = 'beforeRate' | 'afterRate' | 'beforeCites' | 'afterCites';
+const NUM_LABEL: Record<NumKey, string> = { beforeRate: '진단 전 언급률', afterRate: '진단 후 언급률', beforeCites: '진단 전 인용 수', afterCites: '진단 후 인용 수' };
 
 export function CaseTab({ value, onChange, snap }: { value: CaseInput; onChange: (v: CaseInput) => void; snap: GeoSnapshot }) {
   const m = caseMetrics(value);
@@ -17,6 +18,8 @@ export function CaseTab({ value, onChange, snap }: { value: CaseInput; onChange:
     if (dr !== undefined && parseNumInput(dr) === value[id]) return dr;
     return value[id] === null ? '' : String(value[id]);
   };
+  // 칸에 글자가 있는데 숫자로 읽히지 않는 값 ('abc' 등) — '미입력'과 구분해 알려 준다
+  const nonNumeric = (Object.keys(NUM_LABEL) as NumKey[]).filter((k) => (draft[k] ?? '').trim() !== '' && parseNumInput(draft[k] ?? '') === null && value[k] === null);
   const ref = useMemo(() => snap.rounds.map((r, i) => {
     const v = visibilitySummary(snap, i);
     return { date: r.date, rate: v.overall.rate, owned: v.overall.ownedCitations, citations: v.overall.citations, sov: v.overall.sov };
@@ -57,7 +60,8 @@ export function CaseTab({ value, onChange, snap }: { value: CaseInput; onChange:
         </div>
         <div className="geo-case-out" aria-label="제안서 삽입 문구">{m.text}</div>
         {m.missing.length ? <Callout tone="warning" title={`미입력 ${m.missing.length}개`}>{m.missing.join(' · ')} — 비어 있는 칸은 [입력]으로 남깁니다.</Callout> : null}
-        {m.invalid.length ? <Callout tone="warning" title={`범위 확인 ${m.invalid.length}개`}>{m.invalid.join(' · ')} 범위를 벗어난 값입니다.</Callout> : null}
+        {nonNumeric.length ? <Callout tone="warning" title={`숫자 아님 ${nonNumeric.length}개`}>{nonNumeric.map((k) => NUM_LABEL[k]).join(' · ')} — 숫자만 입력하세요 (예: 41.5). 삽입 문구에는 [입력]으로 남깁니다.</Callout> : null}
+        {m.invalid.length ? <Callout tone="warning" title={`범위 확인 ${m.invalid.length}개`}>{m.invalid.join(' · ')} 범위를 벗어난 값입니다. 삽입 문구에는 [범위 확인]으로 표시하고 변화량을 계산하지 않습니다.</Callout> : null}
         {m.demo ? <Callout tone="warning" title="TEST DATA 값">데모 스냅샷으로 채운 값입니다. 삽입 문구에도 TEST DATA로 표기됩니다. 제안서 적용 사례에는 실제 집행 브랜드의 진단 전후 수치만 넣습니다.</Callout> : null}
         <div className="row">
           <CopyButton text={m.text} label="문구 복사" />

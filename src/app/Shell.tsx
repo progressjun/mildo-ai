@@ -12,6 +12,7 @@ import { seedChanges } from '@/modules/flow/engine';
 import { SettingsDialog } from './SettingsDialog';
 import { DemoBar } from './DemoBar';
 import { Toasts } from './Toasts';
+import { ModuleErrorBoundary } from './ErrorBoundary';
 import { fmtDate } from '@/core/util';
 
 const ICON: Record<string, string> = {
@@ -118,9 +119,11 @@ export function Shell() {
           <Button size="sm" icon="gear" onClick={() => setSettings(true)}>설정</Button>
         </header>
         <main className="content" ref={contentRef} id="main">
-          <Suspense fallback={<div className="page muted">불러오는 중…</div>}>
-            <mod.Component />
-          </Suspense>
+          <ModuleErrorBoundary key={mod.id} title={mod.title}>
+            <Suspense fallback={<div className="page muted">불러오는 중…</div>}>
+              <mod.Component />
+            </Suspense>
+          </ModuleErrorBoundary>
         </main>
       </div>
       {settings ? <SettingsDialog onClose={() => setSettings(false)} /> : null}

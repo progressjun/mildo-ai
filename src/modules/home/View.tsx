@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useActions, useStore } from '@/core/store';
 import { navigate } from '@/core/router';
-import { AI_ENGINES, AD_PILOT, GFA_DELEGATION, LIVE_DEMO, OS_SCENARIO, RFP, SA_CAMPAIGNS, SKU_EXPANSION } from '@/data/constants';
+import { AI_ENGINES, AD_PILOT, LIVE_DEMO, OS_SCENARIO, RFP, SA_CAMPAIGNS, SKU_EXPANSION } from '@/data/constants';
 import { dailySeries, rangeOf } from '@/core/selectors';
 import { fmt, fmtDate, metrics, sum } from '@/core/util';
 import { generateBidProposals } from '@/modules/adpilot/engine';
@@ -10,7 +10,7 @@ import { Sparkline } from '@/ui/charts';
 import { Icon } from '@/ui/Icon';
 import { AiInsight } from '@/ui/AiInsight';
 import { ddayLabel, rfpSchedule } from '@/modules/ops/engine';
-import { hhmmOf, morningBrief, operatingSummary, timetableProgress } from './engine';
+import { hhmmOf, homeTimetable, morningBrief, operatingSummary, scenarioBudget, scenarioPending, scenarioRequests, SCENARIO_BUDGET_PCT } from './engine';
 import './styles.css';
 
 const OS_MODULES = [
@@ -26,7 +26,8 @@ export default function View() {
   const d = state.data;
   const proposals = useMemo(() => generateBidProposals(d), [d]);
   const s = useMemo(() => operatingSummary(d, state.incidents, state.changes), [d, state.incidents, state.changes]);
-  const slots = timetableProgress(d.currentHour, 30);
+  const tt = useMemo(() => homeTimetable(d, { offHours: state.offHoursMode, incidents: state.incidents, changes: state.changes }), [d, state.offHoursMode, state.incidents, state.changes]);
+  const slots = tt.items;
   const r30 = rangeOf(d, 'last30');
   const spark = (field: 'cost' | 'revenue' | 'roas' | 'cpa') => dailySeries(d, r30.from, r30.to, field).map((p) => p.value);
   const salesSpark = d.dates.filter((x) => x >= r30.from && x <= r30.to).map((date) => sum(d.salesDaily.filter((r) => r.date === date), (r) => r.revenue));
@@ -92,16 +93,16 @@ export default function View() {
           </div>
         </Card>
 
-        <Card title="데이터 제공 시간표" sub="수면밀도 업무시간 08–17시 맞춤" actions={<Src kind="PROPOSAL" page="p.18" />}>
+        <Card title="데이터 제공 시간표" sub={tt.off ? `수면밀도 업무시간 08–17시 맞춤 · ${tt.offLabel} — 주말 · 공휴일 규칙` : '수면밀도 업무시간 08–17시 맞춤'} actions={<Src kind="PROPOSAL" page="p.18" />}>
           <ol className="stack-sm" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {slots.map((t) => (
-              <li key={t.time} className="row" style={{ gap: 10, flexWrap: 'nowrap', opacity: t.state === 'next' ? 0.7 : 1 }}>
+              <li key={t.time} className="row" style={{ gap: 10, flexWrap: 'nowrap', opacity: t.state === 'next' ? 0.7 : 1 }} title={t.offNote}>
                 <span className="num small bold" style={{ width: 44 }}>{t.time}</span>
                 <span style={{ width: 18, display: 'inline-flex', color: t.state === 'done' ? 'var(--good-ink)' : t.state === 'now' ? 'var(--accent-ink)' : 'var(--muted)' }}>
                   <Icon name={t.state === 'done' ? 'check' : 'clock'} size={15} stroke={2.2} />
                 </span>
                 <span className="small" style={{ flex: 1 }}>{t.title}</span>
-                <span className="xs muted nowrap">{t.state === 'done' ? '완료' : t.state === 'now' ? `${Math.floor(t.minutesUntil / 60) ? `${Math.floor(t.minutesUntil / 60)}시간 ` : ''}${t.minutesUntil % 60}분 후` : t.channel}</span>
+                <span className="xs muted nowrap">{t.label}</span>
               </li>
             ))}
           </ol>
@@ -208,7 +209,9 @@ function ScenarioPlayer() {
   const actions = useActions();
   const d = state.data;
   const [step, setStep] = useState(-1);
-  const [created, setCreated] = useState(false);
+  // 시나리오 요청이 승인 대기 중이면 다시 만들지 않는다 (화면을 떠났다 돌아와도 같은 판단)
+  const created = scenarioPending(state.changes);
+  const creating = useRef(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
 
@@ -221,14 +224,15 @@ function ScenarioPlayer() {
     const lifeCpc = metrics.cpc(sum(life, (k) => k.last14.cost), sum(life, (k) => k.last14.clicks));
     const candidates = SKU_EXPANSION.criteria.map((c) => `신혼 매트리스 ${c.split(' · ')[0]}`).concat(['신혼집 매트리스 사이즈']);
     const gfa = d.campaigns.find((c) => c.name.includes('쇼핑 고객 확장'));
-    const pct = 12;
-    const route = GFA_DELEGATION.find((g) => pct <= g.maxPct)!;
+    const pct = SCENARIO_BUDGET_PCT;
+    const budget = scenarioBudget(gfa?.dailyBudget ?? 0, pct);
+    const up = cur > prev;
     return [
-      `'신혼' 포함 키워드 클릭 최근 14일 ${fmt.int(cur)} (직전 14일 ${fmt.int(prev)}, ${fmt.delta(metrics.pctChange(cur, prev))}). 검색어 보고서 신혼 관련 ${terms.length}건 감지.`,
+      `'신혼' 포함 키워드 클릭 최근 14일 ${fmt.int(cur)} (직전 14일 ${fmt.int(prev)}, ${fmt.delta(metrics.pctChange(cur, prev))}) · 검색어 보고서 신혼 관련 ${terms.length}건.${up ? '' : ' 현재 테스트 데이터는 증가 신호가 아니므로 이후 단계는 수요 증가를 가정한 진행입니다.'}`,
       `확장 후보 ${candidates.length}개: ${candidates.join(' · ')}. 테스트 그룹 입찰 시작가 ${fmt.won(Math.round(lifeCpc / 10) * 10)} (생활 상황 캠페인 평균 CPC), 상한 ${fmt.won(Math.round((lifeCpc * 1.3) / 10) * 10)}.`,
       `생활 상황 캠페인 랜딩(기획전 · 자사몰) 진단: 제목에 '신혼' 의도 포함 여부, 사이즈 FAQ · Product 구조화 데이터 점검 항목 3개.`,
       `메시지 후보: "${SA_CAMPAIGNS.life.message}" · "신혼집 사이즈별 매트리스 비교" · "신혼 매트리스, 경도부터 고르세요" (검수 통과 문안만 사용).`,
-      `${gfa?.name ?? 'GFA_쇼핑 고객 확장'} 일 예산 +${pct}% (${fmt.krw(gfa?.dailyBudget ?? 0)} → ${fmt.krw(Math.round(((gfa?.dailyBudget ?? 0) * (1 + pct / 100)) / 10000) * 10000)}) 변경안 → 위임 범위상 ${route.label} 승인.`,
+      `${gfa?.name ?? 'GFA_쇼핑 고객 확장'} 일 예산 +${budget.changePct}% (${fmt.won(budget.before)} → ${fmt.won(budget.after)}) 변경안 → 위임 범위상 ${budget.approverLabel} 승인.`,
       `테스트 카드: 14일 또는 최소 클릭 100 도달 시 판정. 목표 ROAS ${AD_PILOT.targetRoas}% 대비 100% 이상 확장 · 70~100% 유지 · 70% 미만 제외. 2주 후 랩업.`,
     ];
   }, [d]);
@@ -245,15 +249,15 @@ function ScenarioPlayer() {
   };
 
   const createRequests = () => {
-    const gfa = d.campaigns.find((c) => c.name.includes('쇼핑 고객 확장'));
-    actions.addChange({ module: 'lab', kind: 'keyword_add', target: '생활 상황_TEST (신혼 구문형 4개)', before: '-', after: '테스트 그룹 등록', reason: "작동 시나리오: '신혼' 수요 증가 감지 → 구문형 후보 테스트", requestedBy: 'AD Pilot', approver: 'AE' });
-    if (gfa) {
-      const after = Math.round((gfa.dailyBudget * 1.12) / 10000) * 10000;
-      actions.addChange({ module: 'gfa', kind: 'budget', target: gfa.name, targetId: gfa.id, before: gfa.dailyBudget, after, changePct: 12, reason: "작동 시나리오: 신혼 수요 환기 — 쇼핑 고객 확장 예산 증액", requestedBy: 'GFA Control', approver: 'PM' });
-    }
-    setCreated(true);
-    actions.toast({ tone: 'good', title: '승인 요청 2건을 만들었습니다', body: 'MILDO Flow에서 승인 · 반영 이력을 확인하세요.', route: 'flow' });
+    if (created || creating.current) return;
+    creating.current = true;
+    const reqs = scenarioRequests(d);
+    reqs.forEach((r) => actions.addChange(r));
+    actions.toast({ tone: 'good', title: `승인 요청 ${reqs.length}건을 만들었습니다`, body: 'MILDO Flow에서 승인 · 반영 이력을 확인하세요.', route: 'flow' });
   };
+  useEffect(() => {
+    if (!created) creating.current = false;
+  }, [created]);
 
   return (
     <Card title="MILDO OS 작동 시나리오" sub="'신혼 매트리스' 검색 수요가 늘어날 때 데이터 → 분석 → 실행 → 승인 → 측정" tone="dark"

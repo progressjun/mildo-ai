@@ -310,8 +310,14 @@ export function DownloadButton({ filename, data, mime, label = '내보내기', s
   const { toast } = useActions();
   return (
     <Button size={size} icon="download" onClick={async () => {
-      const r = await saveFile(filename, typeof data === 'function' ? data() : data, mime);
+      const body = typeof data === 'function' ? data() : data;
+      if (!body) {
+        toast({ tone: 'warning', title: '내보낼 내용이 없습니다', body: '조건을 바꿔 표시되는 항목이 있을 때 다시 시도하세요.' });
+        return;
+      }
+      const r = await saveFile(filename, body, mime);
       if (r === 'unavailable') toast({ tone: 'warning', title: '이 화면에서는 파일 저장을 지원하지 않습니다', body: '복사 버튼을 사용하세요.' });
+      if (r === 'failed') toast({ tone: 'warning', title: '파일을 저장하지 못했습니다', body: `${filename} · 복사 버튼을 사용하세요.` });
     }}>{label}</Button>
   );
 }

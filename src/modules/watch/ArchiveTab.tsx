@@ -139,7 +139,7 @@ export function ArchiveTab({ w }: { w: WatchCtx }) {
                   </div>
                   <div className="watch-tl-side">
                     {r.alertable ? (
-                      exists ? <a className="xs" href="#alert"><Pill tone="good" icon="check">Alert P3 생성됨</Pill></a> : (
+                      exists ? <a className="xs" href="#alert" onClick={(e) => { if (w.justActed()) e.preventDefault(); }}><Pill tone="good" icon="check">Alert P3 생성됨</Pill></a> : (
                         <Button size="sm" icon="bell" variant={r.impact.level === 'high' ? 'primary' : 'default'} onClick={() => w.createAlert(r)}>Alert P3 생성</Button>
                       )
                     ) : <span className="xs muted">주간 브리프 반영</span>}

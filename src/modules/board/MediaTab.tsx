@@ -5,7 +5,7 @@ import { MEDIA } from '@/data/constants';
 import { fmt, fmtDate, metrics, sum } from '@/core/util';
 import { Card, DataTable, Delta, Pill, Segmented, Src, Swatch, Toggle, type Column } from '@/ui/primitives';
 import { LineChart, ShareBar } from '@/ui/charts';
-import { mediaComparison, mediaTrend, TREND_METRICS, type MediaRow, type PeriodWindow, type TrendMetric } from './engine';
+import { FLAG_SEVERITY, mediaComparison, mediaTrend, TREND_METRICS, type MediaRow, type PeriodWindow, type TrendMetric } from './engine';
 import { FlagBadge, MediaChips, metricFormat, NeutralDelta, NumCell } from './parts';
 import { BOARD_RULES } from './data';
 
@@ -61,7 +61,7 @@ export function MediaTab({ d, win }: { d: Dataset; win: PeriodWindow }) {
         </div>
       ),
     },
-    { key: 'flag', label: `직전 대비 변동`, sort: (r) => ({ danger: 0, warn: 1, ok: 2, na: 3 }[r.flag.level]), render: (r) => <FlagBadge flag={r.flag} /> },
+    { key: 'flag', label: `직전 대비 변동`, sort: (r) => FLAG_SEVERITY[r.flag.level], render: (r) => <FlagBadge flag={r.flag} /> },
   ];
 
   const footer = (

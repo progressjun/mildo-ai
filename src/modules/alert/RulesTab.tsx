@@ -39,15 +39,21 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
     return !(v.warn >= f.min && v.danger <= f.max && v.danger >= v.warn);
   });
   const changed = CONFIG_FIELDS.filter((f) => enc(draft[f.key], f.unit) !== enc(draftOf(cfg)[f.key], f.unit));
+  const ruleChanges = state.changes.filter((c) => c.kind === 'alert_rule');
+  /** 같은 기준 · 같은 변경안이 이미 승인 대기 · 반영 대기면 다시 요청하지 않는다 (중복 요청 방지) */
+  const openSame = (f: (typeof CONFIG_FIELDS)[number]) => ruleChanges.find((c) => c.targetId === `alert_rule:${f.key}` && (c.status === 'pending' || c.status === 'approved') && String(c.after) === enc(draft[f.key], f.unit));
+  const dupes = changed.filter((f) => openSame(f));
+  const toSubmit = changed.filter((f) => !openSame(f));
+  const canSubmit = toSubmit.length > 0 && invalid.length === 0 && reason.trim().length > 0;
   const nowCount = useMemo(() => detectIncidents(data, { config: cfg, creatives: DEMO_CREATIVES }).filter((i) => ANOMALY_RULES.includes(i.ruleId)).length, [data, cfg]);
   const draftCount = useMemo(() => (invalid.length ? NaN : detectIncidents(data, { config: draftCfg, creatives: DEMO_CREATIVES }).filter((i) => ANOMALY_RULES.includes(i.ruleId)).length), [data, draftCfg, invalid.length]);
 
-  const ruleChanges = state.changes.filter((c) => c.kind === 'alert_rule');
   const canPm = canApprove(state.role, 'PM');
 
   const submit = () => {
     const cur = draftOf(cfg);
-    for (const f of changed) {
+    if (!canSubmit) return;
+    for (const f of toSubmit) {
       const before = enc(cur[f.key], f.unit);
       const after = enc(draft[f.key], f.unit);
       const bv = typeof cur[f.key] === 'number' ? (cur[f.key] as number) : (cur[f.key] as Threshold).danger;
@@ -59,7 +65,7 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
         requestedBy: state.role, approver: 'PM',
       });
     }
-    actions.toast({ tone: 'info', title: `탐지 기준 변경 요청 ${changed.length}건`, body: '승인 주체 PM (p.53 알림 · 시스템 기준: 개발자 + PM) · MILDO Flow에서도 처리 가능', route: 'flow' });
+    actions.toast({ tone: 'info', title: `탐지 기준 변경 요청 ${toSubmit.length}건`, body: '승인 주체 PM (p.53 알림 · 시스템 기준: 개발자 + PM) · MILDO Flow에서도 처리 가능', route: 'flow' });
     setReason('');
   };
 
@@ -194,6 +200,7 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
           </table>
         </div>
         {invalid.length ? <Callout tone="warning">입력 범위 확인: {invalid.map((f) => f.label).join(', ')} (위험 ≥ 주의, 허용 범위 내)</Callout> : null}
+        {dupes.length ? <div className="xs muted">같은 변경안이 이미 승인 · 반영 대기 중이라 다시 요청하지 않습니다: {dupes.map((f) => f.label).join(', ')} (아래 이력 · MILDO Flow에서 처리)</div> : null}
         <div className="grid g-3">
           <div className="stack-sm">
             <span className="xs muted">미리보기 · 같은 데이터로 엔진 재실행</span>
@@ -201,10 +208,10 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
             <span className="xs muted">오탐률은 10월 이력(DEMO) 기준 · 기준을 낮추면 감지는 늘고 오탐도 늘어남</span>
           </div>
           <Field id="cfg-reason" label="변경 사유 (필수)">
-            <input id="cfg-reason" className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="예: 광고비 주의 기준 오탐 40% · 집계 지연 반복" />
+            <input id="cfg-reason" className="input" value={reason} onChange={(e) => setReason(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && canSubmit) submit(); }} placeholder="예: 광고비 주의 기준 오탐 40% · 집계 지연 반복" />
           </Field>
           <div className="row" style={{ alignItems: 'flex-end' }}>
-            <Button variant="primary" icon="send" disabled={!changed.length || !!invalid.length || !reason.trim()} onClick={submit}>기준 변경 요청 {changed.length ? `${changed.length}건` : ''} (승인 PM)</Button>
+            <Button variant="primary" icon="send" disabled={!canSubmit} onClick={submit}>기준 변경 요청 {toSubmit.length ? `${toSubmit.length}건` : ''} (승인 PM)</Button>
             <Button variant="ghost" onClick={() => setDraft(draftOf(cfg))}>현재값으로</Button>
           </div>
         </div>

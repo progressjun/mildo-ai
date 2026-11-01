@@ -1,7 +1,7 @@
 /**
  * MILDO Watch 화면 상태 훅 — 스토어(state.data · changes · incidents) + 모듈 진행 기록 + 데이터 기준 시계.
  */
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useActions, useStore } from '@/core/store';
 import { computeWatch, type WatchSnapshot } from './briefs';
 import { advanceProgress, competitorIncident, fmtKst, kstIso, testChangePayload, type ArchiveRow, type EvaluatedEvent, type StepAction } from './engine';
@@ -40,6 +40,8 @@ export interface WatchCtx extends WatchSnapshot {
   alertExists: (row: ArchiveRow) => boolean;
   reset: () => void;
   byId: (id: string) => EvaluatedEvent | undefined;
+  /** 방금(500ms 안) 진행 · 생성 동작이 있었는지 — 더블클릭의 두 번째 클릭이 새로 나타난 링크를 누르지 않게 */
+  justActed: () => boolean;
 }
 
 export function useWatch(): WatchCtx {
@@ -56,8 +58,20 @@ export function useWatch(): WatchCtx {
   );
   const by = state.role;
   const at = () => kstIso(nowMs);
+  // 설정 '시연 상태 초기화' 직후(승인 이력 · 이슈가 모두 비는 순간) Watch 진행 기록도 처음 상태로
+  const emptyGlobal = state.changes.length === 0 && state.incidents.length === 0;
+  useEffect(() => { if (emptyGlobal) resetWatchStore(); }, [emptyGlobal]);
+  // 연속 클릭 방지 — 단계를 진행하면 이벤트가 다시 정렬돼 같은 자리에 다른 이벤트의 버튼이 들어온다.
+  // 더블클릭의 두 번째 클릭이 다른 이벤트를 진행 · 종료하지 않도록 직후 500ms 안의 진행 호출은 무시한다.
+  const lastAct = useRef(0);
+  const settle = () => {
+    if (Date.now() - lastAct.current < 500) return false;
+    lastAct.current = Date.now();
+    return true;
+  };
 
   const advance = (ev: EvaluatedEvent, action: StepAction, note?: string) => {
+    if (!settle()) return;
     // 버튼이 비활성인 단계(보류 · 진행 중 테스트)는 어떤 경로로 호출돼도 진행하지 않는다
     if (ev.next.disabled || ev.next.action !== action) {
       actions.toast({ tone: 'warning', title: `${ev.next.label} 보류`, body: ev.next.disabled ?? '현재 단계에서 진행할 수 없는 작업입니다.' });
@@ -65,7 +79,7 @@ export function useWatch(): WatchCtx {
     }
     if (action === 'test') {
       const ch = actions.addChange(testChangePayload(ev, by));
-      setWatchStore((s) => ({ ...s, progress: advanceProgress(s.progress, ev, 'test', by, at(), { testStart: state.data.today, note: note ?? `${ch.id} · 승인 ${ev.design.approverLabel} 대기`, changes: state.changes }) }));
+      setWatchStore((s) => ({ ...s, progress: advanceProgress(s.progress, ev, 'test', by, at(), { testStart: state.data.today, testChangeId: ch.id, note: note ?? `${ch.id} · 승인 ${ev.design.approverLabel} 대기`, changes: state.changes }) }));
       actions.toast({ tone: 'info', title: 'MILDO Lab 테스트 등록 요청', body: `${ev.design.arms} · 일 ${Math.round(ev.design.perDay / 10_000)}만원 × ${ev.design.days}일 · 승인 ${ev.design.approverLabel} (MILDO Flow)`, route: 'flow' });
       return;
     }
@@ -79,12 +93,14 @@ export function useWatch(): WatchCtx {
   };
 
   const close = (ev: EvaluatedEvent, note?: string) => {
+    if (!settle()) return;
     setWatchStore((s) => ({ ...s, progress: advanceProgress(s.progress, ev, 'close', by, at(), { note: note ?? `${ev.diag.label} — ${ev.diag.basis}`, changes: state.changes }) }));
   };
 
   const alertId = (row: ArchiveRow) => `watch_competitor:${row.id}:${state.data.today}`;
   const alertExists = (row: ArchiveRow) => state.incidents.some((i) => i.id === alertId(row));
   const createAlert = (row: ArchiveRow) => {
+    if (!settle()) return;
     if (alertExists(row)) {
       actions.toast({ tone: 'info', title: '이미 MILDO Alert에 등록된 이슈입니다', route: 'alert' });
       return;
@@ -100,7 +116,8 @@ export function useWatch(): WatchCtx {
     ...snap,
     state,
     actions,
-    alerts: store.alerts,
+    // 이 화면에서 만든 이슈 중 MILDO Alert 이력에 남아 있는 것만 (시연 상태 초기화로 지워진 이슈는 제외)
+    alerts: store.alerts.filter((id) => state.incidents.some((i) => i.id === id)),
     aeNote: store.aeNotes?.[snap.brief.period.from] ?? null,
     setAeNote: (text: string) => {
       const key = snap.brief.period.from;
@@ -115,5 +132,6 @@ export function useWatch(): WatchCtx {
       actions.toast({ tone: 'info', title: 'MILDO Watch 시연 상태를 처음으로 되돌렸습니다', body: 'Lab 등록 요청 · Alert 이슈는 각 화면 이력에 남습니다.' });
     },
     byId: (id: string) => snap.events.find((e) => e.id === id),
+    justActed: () => Date.now() - lastAct.current < 500,
   };
 }

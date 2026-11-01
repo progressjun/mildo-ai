@@ -19,6 +19,7 @@ import { keywordAnomaly } from '@/modules/adpilot/engine';
 import type { ChangeRequest } from '@/core/types';
 import { COMPETITOR_COLOR } from './data';
 import { CAUSE_CANDIDATES } from '@/data/constants';
+import { seedChanges } from '@/modules/flow/engine';
 import { addDays } from '@/core/util';
 
 const fresh = (): Dataset => generateDemoData();
@@ -569,6 +570,20 @@ describe('진단 전후 지표 (p.29 공란)', () => {
     expect(bad.invalid).toEqual(['진단 후 언급률(0~100%)', '진단 전 인용 수(0 이상 정수)', '진단 후 인용 수(0 이상 정수)']);
   });
 
+  it('범위를 벗어난 값은 변화량 · 삽입 문구에 쓰지 않고 [범위 확인]으로 표시 (회귀: 140% · -2건이 문구에 그대로 들어가던 문제)', () => {
+    const bad = caseMetrics({ brand: 'A', beforeLabel: '', afterLabel: '', engines: '', beforeRate: 41.5, afterRate: 140, beforeCites: -2, afterCites: 5 });
+    expect(bad.rateDeltaPp).toBeNull();
+    expect(bad.citeDelta).toBeNull();
+    expect(bad.citeDeltaPct).toBeNull();
+    expect(bad.text).toContain('41.5% → [범위 확인]');
+    expect(bad.text).toContain('[범위 확인] → 5건');
+    expect(bad.text).not.toMatch(/140|-2건|pp\)/);
+    // 경계값 0 · 100 은 정상
+    const edge = caseMetrics({ brand: 'A', beforeLabel: '', afterLabel: '', engines: '', beforeRate: 0, afterRate: 100, beforeCites: 0, afterCites: 0 });
+    expect(edge.text).toContain('0% → 100% (+100.0pp)');
+    expect(edge.text).toContain('0건 → 0건 (0건)');
+  });
+
   it('숫자 입력 파싱: 소수점 입력 중 · 콤마 · 단위 · 빈 값 · 비수치', () => {
     expect(parseNumInput('41.')).toBe(41);
     expect(parseNumInput('41.5')).toBe(41.5);
@@ -792,6 +807,20 @@ describe('SA 테스트 그룹 등록 요청 — 모듈 간 중복 방지 · 승�
     expect(findRegistration([ch({ kind: 'bid', target: t })], t)).toBeUndefined();
     expect(findRegistration(undefined, t)).toBeUndefined();
     expect(findRegistration([ch({ target: t })], '')).toBeUndefined();
+  });
+
+  it('MILDO Flow 시연 이력(seed:term:… · "… 테스트 그룹 등록")도 같은 검색어로 본다 — 중복 요청 방지 (회귀)', () => {
+    const seeds = seedChanges(DEMO);
+    const seedReg = seeds.find((c) => c.kind === 'keyword_add' && String(c.targetId).startsWith('seed:term:'))!;
+    expect(seedReg).toBeTruthy();
+    const term = String(seedReg.target).replace(/\s*테스트 그룹 등록$/, '');
+    // 페이드 지면 표의 같은 검색어 행이 '등록 요청' 대신 기존 요청으로 표시되어야 한다
+    expect(rows.some((r) => r.requestable && r.term?.term === term)).toBe(true);
+    expect(findRegistration(seeds, term)?.id).toBe(seedReg.id);
+    expect(findRegistration([ch({ module: 'lab', target: `${term} 테스트 그룹 등록`, targetId: 'seed:x' })], term)?.module).toBe('lab');
+    expect(findRegistration([ch({ module: 'lab', target: 'x', targetId: `seed:term:${term.replace(/\s+/g, '_')}` })], term)?.module).toBe('lab');
+    // 다른 검색어의 시연 이력은 제외
+    expect(findRegistration(seeds, '매트리스 경도 고르는 법')).toBeUndefined();
   });
 
   it('페이로드: AD Pilot 형식(term:… · <의도>_TEST) · 일반 검색어는 담당 AE, 브랜드 검색어는 PM · 후보 아니면 null', () => {

@@ -45,7 +45,8 @@ describe('growth agentKit', () => {
         if (t.inputSchema?.required?.length) continue;
         const r = await t.execute({});
         const s = JSON.stringify(r);
-        expect(s.length, t.name).toBeLessThan(32_000);
+        // 계약 한도는 바이트(32KB) — 한글은 UTF-8 3바이트라 문자 수가 아니라 바이트로 잰다
+        expect(new TextEncoder().encode(s).length, t.name).toBeLessThan(32_768);
         expect(s, t.name).not.toMatch(/NaN|undefined/);
       }
     }

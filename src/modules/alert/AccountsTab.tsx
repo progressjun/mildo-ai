@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { MEDIA_IDS, OWNERSHIP } from '@/data/constants';
 import { fmt, sum } from '@/core/util';
 import { Button, Card, DataTable, Pill, ProgressBar, Src, Stat, type Column } from '@/ui/primitives';
-import { checkAccounts, dayDiff, fmtStamp, type AccountCheck } from './engine';
+import { appliedTopupFor, checkAccounts, dayDiff, fmtStamp, type AccountCheck } from './engine';
 import { LevelPill, MediaTag } from './parts';
 import type { AlertCtx } from './hooks';
 
@@ -19,7 +19,7 @@ export function AccountsTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: strin
     { key: 'n', label: '계정', render: (c) => <div><strong className="small">{c.account.name}</strong><div><MediaTag media={c.account.media} /></div></div> },
     { key: 'o', label: '소유', render: (c) => (c.account.owner === '수면밀도' ? <Pill tone="good" icon="check">수면밀도</Pill> : <Pill tone="warning">{c.account.owner}</Pill>) },
     { key: 'pay', label: '결제', render: (c) => <span className="xs">{c.account.paymentMethod}</span> },
-    { key: 'b', label: '잔액', align: 'right', render: (c) => <span className="num">{c.prepaid ? `${fmt.krw(c.account.balance)}원` : '후불'}</span>, sort: (c) => (c.prepaid ? c.account.balance : -1) },
+    { key: 'b', label: '잔액', align: 'right', render: (c) => { const add = c.prepaid ? appliedTopupFor(state.changes, c.account) : 0; return <span className="num">{c.prepaid ? `${fmt.krw(c.account.balance)}원` : '후불'}{add ? <span className="xs muted" title="MILDO Flow에서 반영된 충전 요청 포함"><br />충전 반영 +{fmt.krw(add)}원</span> : null}</span>; }, sort: (c) => (c.prepaid ? c.account.balance : -1) },
     { key: 'a', label: '일 평균 소진', align: 'right', render: (c) => <span className="num">{fmt.krw(c.account.avgDailySpend)}원</span>, sort: (c) => c.account.avgDailySpend },
     {
       key: 'r', label: `소진 예상 (기준 1일 · 권장 ${cfg.runwayWarnDays}일)`, sort: (c) => (Number.isFinite(c.runwayDays) ? c.runwayDays : 1e9),

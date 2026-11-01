@@ -5,7 +5,7 @@
  */
 import { RFP } from '@/data/constants';
 import { isDateStr, type ContractInput, type FeeInput, type RefInputs } from './engine';
-import { DEFAULT_KICKOFF } from './data';
+import { clampAnnualBudget, DEFAULT_KICKOFF } from './data';
 
 export interface OpsLocal {
   kickoff: string;
@@ -36,7 +36,7 @@ export function mergeOpsLocal(raw: unknown): OpsLocal {
     kickoff: isDateStr(raw.kickoff) ? raw.kickoff : base.kickoff,
     refs: isObj(raw.refs) ? (raw.refs as RefInputs) : base.refs,
     fees: isObj(raw.fees) ? (raw.fees as Record<string, FeeInput>) : base.fees,
-    annualBudget: typeof raw.annualBudget === 'number' && Number.isFinite(raw.annualBudget) && raw.annualBudget > 0 ? raw.annualBudget : base.annualBudget,
+    annualBudget: typeof raw.annualBudget === 'number' && clampAnnualBudget(raw.annualBudget) > 0 ? clampAnnualBudget(raw.annualBudget) : base.annualBudget,
     contract: isObj(raw.contract) ? (raw.contract as ContractInput) : base.contract,
     backupOverrides: isObj(raw.backupOverrides) ? (raw.backupOverrides as Record<string, string>) : base.backupOverrides,
     docs: isObj(raw.docs) ? (raw.docs as Record<string, boolean>) : base.docs,

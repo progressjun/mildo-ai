@@ -14,7 +14,7 @@ import {
   sortIssues, termCandidates, bidCandidates, kst, clockOf, blockToMarkdown, upcomingOffBlocks, measuredVerdict, type Report,
   automationRollout, cadenceStatus, daysBetween, mediaDayShifts, merOf,
   adPilotSummary, aeTarget, commentTarget, offDayOf, scopeOf, spikeCause, weekdayPattern, won,
-  isBusinessDay, keywordTests, reportRules, sendSchedule, DEFAULT_TEST_CRITERIA,
+  isBusinessDay, keywordTests, reportRules, sendSchedule, DEFAULT_TEST_CRITERIA, fmtCut, isClientAuthor,
 } from './engine';
 import { generateBidProposals } from '@/modules/adpilot/engine';
 import { buildPipeline } from '@/modules/lab/engine';
@@ -888,5 +888,47 @@ describe('리뷰 보강: 판정 색 · 프로모션 표기 · 문구', () => {
       expect(line).not.toContain('이 중');
       expect(line).toContain('모두 판단 지표가 ROAS가 아니므로');
     }
+  });
+});
+
+describe('QA 회귀 — 절감률 표기 · 0분 판정 · 코멘트 상태', () => {
+  it('fmtCut: 감소 −n% · 0은 부호 없이 · 증가는 +n% 증가 (−-n% 금지)', () => {
+    expect(fmtCut(59.3)).toBe('−59%');
+    expect(fmtCut(0)).toBe('0%');
+    expect(fmtCut(0.3)).toBe('0%');
+    expect(fmtCut(-33233)).toBe('+33,233% 증가');
+    expect(fmtCut(Number.NaN)).toBe('—');
+  });
+  it('실측이 기존보다 크면 판정 근거에 이중 부호가 없다', () => {
+    const task = SA_AUTOMATION_SCOPE[0].task;
+    const s = computeSavings({ measured: { [task]: SA_AUTOMATION_SCOPE[0].before * 3 } });
+    const v = measuredVerdict(s.rows[0].measuredReductionPct, s.rows[0].reductionPct)!;
+    expect(v.label).toBe('하한 미달');
+    expect(v.basis).not.toMatch(/−-|--/);
+    expect(v.basis).toContain('증가');
+    expect(s.measured!.verdict.basis).not.toMatch(/−-|--/);
+  });
+  it('기존 소요 합계 0분이면 하한 미달이 아니라 판정 불가', () => {
+    const before = Object.fromEntries(SA_AUTOMATION_SCOPE.map((t) => [t.task, 0]));
+    const s = computeSavings({ before });
+    expect(s.before).toBe(0);
+    expect(s.meetsFloor).toBe(false);
+    expect(s.verdict.label).toBe('판정 불가');
+    expect(s.verdict.basis).not.toMatch(/NaN|−0%/);
+  });
+  it('마크다운: AE · PM 섹션 코멘트에는 반영 대기 상태를 붙이지 않는다', () => {
+    const r = buildDailyReport(DEMO);
+    const md = reportToMarkdown(r, {
+      feedback: [
+        { sectionTitle: '매체별 성과', author: '수면밀도 담당자', text: '피드백 A', resolved: true },
+        { sectionTitle: '매체별 성과', author: '담당 AE', text: '답변 B', resolved: false },
+        { sectionTitle: '매체별 성과', author: '수면밀도', text: '피드백 C' },
+      ],
+    });
+    expect(md).toContain('피드백 A — 수면밀도 담당자 · 반영 완료');
+    expect(md).toContain('답변 B — 담당 AE · 코멘트');
+    expect(md).not.toMatch(/답변 B[^\n]*반영 대기/);
+    expect(md).toContain('피드백 C — 수면밀도 · 반영 대기');
+    expect(isClientAuthor('PM')).toBe(false);
   });
 });

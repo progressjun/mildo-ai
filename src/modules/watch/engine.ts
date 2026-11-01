@@ -841,6 +841,8 @@ export interface EventProgress {
   closed?: boolean;
   log: ProgressLog[];
   testStart?: string;
+  /** 이 화면에서 만든 Lab 테스트 등록 요청 id — 요청이 이력에서 사라지면(시연 상태 초기화) 실행안 단계로 되돌린다 */
+  testChangeId?: string;
   wrapup?: { verdict: TestVerdict; label: string };
 }
 export type ProgressMap = Record<string, EventProgress>;
@@ -866,6 +868,8 @@ export function stageOf(ev: WatchEvent, overrides: ProgressMap, changes: readonl
   if (!testChange) {
     testRejected = changes.find((c) => c.kind === 'test' && c.targetId === ev.id && (c.status === 'rejected' || c.status === 'rolled_back'));
     if (testRejected && stage === 'test') stage = 'plan';
+    // 이 화면에서 등록한 요청이 승인 이력에 없으면(시연 상태 초기화) 등록 전 단계로
+    else if (!testRejected && stage === 'test' && progress.testChangeId && !changes.some((c) => c.id === progress.testChangeId)) stage = 'plan';
   }
   return { progress, stage, testChange, testRejected };
 }
@@ -898,7 +902,7 @@ const STEP_LABEL: Record<StepAction, string> = { diagnose: '영향 진단 완료
 
 /** 단계 진행 (불변 갱신). 역행 · 중복 진행은 무시한다 */
 export function advanceProgress(
-  map: ProgressMap, ev: WatchEvent, action: StepAction | 'close', by: string, at: string, opts: { note?: string; testStart?: string; wrapup?: EventProgress['wrapup']; changes?: readonly ChangeRequest[] } = {},
+  map: ProgressMap, ev: WatchEvent, action: StepAction | 'close', by: string, at: string, opts: { note?: string; testStart?: string; testChangeId?: string; wrapup?: EventProgress['wrapup']; changes?: readonly ChangeRequest[] } = {},
 ): ProgressMap {
   const { progress, stage } = stageOf(ev, map, opts.changes ?? []);
   if (progress.closed) return map;
@@ -913,6 +917,7 @@ export function advanceProgress(
       ...progress,
       stage: to,
       testStart: action === 'test' ? (opts.testStart ?? progress.testStart) : progress.testStart,
+      testChangeId: action === 'test' ? (opts.testChangeId ?? progress.testChangeId) : progress.testChangeId,
       wrapup: action === 'wrapup' ? opts.wrapup : progress.wrapup,
       log: [...progress.log, { at, by, action: STEP_LABEL[action], note: opts.note }],
     },

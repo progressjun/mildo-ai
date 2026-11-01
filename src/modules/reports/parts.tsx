@@ -126,7 +126,8 @@ export function SectionComments({ target, title }: { target: string; title: stri
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
   const isClient = state.role === '수면밀도';
-  const openCount = list.filter((c) => !c.resolved).length;
+  // '반영 대기'는 수면밀도 담당자 피드백만 센다 (AE · PM 코멘트는 반영 대상이 아니라 해결 처리 버튼도 없다)
+  const openCount = list.filter((c) => c.author === '수면밀도' && !c.resolved).length;
   const add = () => {
     const t = text.trim();
     if (!t) return;
@@ -206,7 +207,7 @@ export function ReportDocument({ report, interp, aeNotes, aiSlot }: {
             <div key={z} className={`reports-zone ai${interp?.text ? '' : ' reports-noprint'}`}>
               <div className="reports-zone-label">
                 <Icon name="sparkle" size={13} />{zoneLabelOf(report, 'ai')}
-                {interp ? (interp.by === 'ai' ? <Src kind="AI" /> : <Pill tone="neutral">규칙 엔진 · AI 미연결</Pill>) : null}
+                {interp ? (interp.by === 'ai' ? <Src kind="AI" /> : <Pill tone="neutral" title="AI 미연결 또는 AI 호출 실패 시 규칙 엔진이 같은 형식으로 작성">규칙 엔진 해석</Pill>) : null}
               </div>
               {interp?.text ? <Markdown text={interp.text} /> : null}
               {aiSlot}

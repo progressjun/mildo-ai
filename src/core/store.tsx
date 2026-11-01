@@ -52,6 +52,42 @@ export type Action =
 
 const STORAGE_KEY = 'mildo-os/v1';
 
+const ROLES: readonly AppState['role'][] = ['담당 AE', 'PM', '수면밀도'];
+const AI_MODES: readonly AiSettings['mode'][] = ['auto', 'artifact', 'anthropic', 'offline'];
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const str = (v: unknown) => typeof v === 'string';
+
+/**
+ * 저장본 검증 — 이전 버전 · 손상된 저장본(형식이 다른 JSON)이 있어도 화면이 깨지지 않게
+ * 형식이 맞는 항목만 되살린다. 맞지 않는 필드는 기본값으로 둔다.
+ */
+export function sanitizeSaved(saved: unknown): Partial<Pick<AppState, 'changes' | 'incidents' | 'comments' | 'ai' | 'role' | 'tf'>> {
+  if (!isObj(saved)) return {};
+  const out: Partial<Pick<AppState, 'changes' | 'incidents' | 'comments' | 'ai' | 'role' | 'tf'>> = {};
+  if (Array.isArray(saved.changes)) {
+    out.changes = saved.changes.filter((c): c is ChangeRequest => isObj(c) && str(c.id) && str(c.status) && str(c.target) && str(c.approver) && Array.isArray(c.history));
+  }
+  if (Array.isArray(saved.incidents)) {
+    out.incidents = saved.incidents.filter((i): i is Incident => isObj(i) && str(i.id) && str(i.status) && str(i.severity) && str(i.title) && Array.isArray(i.timeline) && Array.isArray(i.causeCandidates) && isObj(i.impact));
+  }
+  if (Array.isArray(saved.comments)) {
+    out.comments = saved.comments.filter((c): c is Comment => isObj(c) && str(c.id) && str(c.target) && str(c.text));
+  }
+  if (isObj(saved.ai)) {
+    const a = saved.ai;
+    const ai: Partial<AiSettings> = {};
+    if (AI_MODES.includes(a.mode as AiSettings['mode'])) ai.mode = a.mode as AiSettings['mode'];
+    if (str(a.apiKey)) ai.apiKey = a.apiKey as string;
+    if (str(a.model) && a.model) ai.model = a.model as string;
+    out.ai = ai as AiSettings;
+  }
+  if (ROLES.includes(saved.role as AppState['role'])) out.role = saved.role as AppState['role'];
+  if (isObj(saved.tf)) {
+    out.tf = Object.fromEntries(Object.entries(saved.tf).filter(([, m]) => isObj(m))) as Record<string, TfMember>;
+  }
+  return out;
+}
+
 function initialState(): AppState {
   const base: AppState = {
     data: DEMO,
@@ -68,7 +104,7 @@ function initialState(): AppState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const saved = JSON.parse(raw);
+      const saved = sanitizeSaved(JSON.parse(raw));
       return {
         ...base,
         changes: saved.changes ?? [],

@@ -2,7 +2,7 @@
 import type { Dataset } from '@/core/types';
 import { fmt } from '@/core/util';
 import { SALES_CHANNELS } from '@/data/constants';
-import { Button, Callout, Card, CopyButton, DataTable, DownloadButton, Field, Pill, ProgressBar, Src, type Column } from '@/ui/primitives';
+import { Button, Callout, Card, CopyButton, DataTable, DownloadButton, Empty, Field, Pill, ProgressBar, Src, type Column } from '@/ui/primitives';
 import { AUDIT_RULES } from './data';
 import { auditMarkdown, clip, dateLabel, type AuditCheck, type PageAudit } from './engine';
 import { ReviewHits, StatusPill, VerdictBadge } from './parts';
@@ -48,18 +48,20 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
               <div className="geo-score"><span className="geo-score-num">{audit.empty ? '—' : audit.score}</span><span className="muted">/ 100</span></div>
               <VerdictBadge v={audit.grade} />
             </div>
-            <div className="row" style={{ gap: 6 }}>
-              <Pill tone="critical" icon="alert">실패 {audit.counts.fail}</Pill>
-              <Pill tone="warning" icon="alert">개선 {audit.counts.warn}</Pill>
-              <Pill tone="good" icon="check">통과 {audit.counts.pass}</Pill>
-              {audit.counts.na ? <Pill tone="outline">해당 없음 {audit.counts.na}</Pill> : null}
-            </div>
+            {audit.empty ? <div className="small muted">진단할 HTML이 없습니다 — 항목별 판정은 입력 후 계산합니다.</div> : (
+              <div className="row" style={{ gap: 6 }}>
+                <Pill tone="critical" icon="alert">실패 {audit.counts.fail}</Pill>
+                <Pill tone="warning" icon="alert">개선 {audit.counts.warn}</Pill>
+                <Pill tone="good" icon="check">통과 {audit.counts.pass}</Pill>
+                {audit.counts.na ? <Pill tone="outline">해당 없음 {audit.counts.na}</Pill> : null}
+              </div>
+            )}
             <div className="geo-axis-bars">
               {audit.axes.map((a) => (
                 <div key={a.axis} style={{ display: 'contents' }}>
                   <span className="small">{a.axis}</span>
-                  <ProgressBar value={a.checks ? a.score : 0} tone={!a.checks ? 'ink' : a.score >= AUDIT_RULES.scorePass ? 'good' : a.score >= AUDIT_RULES.scoreWarn ? 'warning' : 'critical'} label={`${a.axis} 점수`} marker={AUDIT_RULES.scorePass} />
-                  <span className="num small" style={{ textAlign: 'right' }}>{a.checks ? `${a.score}점` : '—'}</span>
+                  <ProgressBar value={a.checks && !audit.empty ? a.score : 0} tone={!a.checks || audit.empty ? 'ink' : a.score >= AUDIT_RULES.scorePass ? 'good' : a.score >= AUDIT_RULES.scoreWarn ? 'warning' : 'critical'} label={`${a.axis} 점수`} marker={AUDIT_RULES.scorePass} />
+                  <span className="num small" style={{ textAlign: 'right' }}>{a.checks && !audit.empty ? `${a.score}점` : '—'}</span>
                 </div>
               ))}
             </div>
@@ -80,7 +82,7 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
                   </div>
                 ))}
               </div>
-            ) : <div className="small muted">판매 데이터에 일치하는 상품이 없어 판매가 · 재고 대조를 건너뜁니다 (해당 없음).</div>}
+            ) : <div className="small muted">{audit.empty ? 'HTML 입력 후 JSON-LD 가격 · 재고를 판매 데이터와 대조합니다.' : '판매 데이터에 일치하는 상품이 없어 판매가 · 재고 대조를 건너뜁니다 (해당 없음).'}</div>}
           </Card>
         </div>
       </div>
@@ -93,13 +95,18 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
 
       <Card title="항목별 판정" sub={`${audit.checks.length}개 항목 · ${audit.axes.map((a) => `${a.axis} ${audit.checks.filter((c) => c.axis === a.axis).length}`).join(' · ')}`}
         actions={
-          <>
-            {sampleKind === 'defect' || sampleKind === 'fixed' ? <Src kind="DEMO" title="샘플은 시연용 테스트 데이터의 상품 · 옵션 · 프로모션으로 생성" /> : null}
-            <CopyButton text={() => auditMarkdown(audit, label)} label="진단 결과 복사" />
-            <DownloadButton filename={`searchtune-audit-${d.today}.md`} data={() => auditMarkdown(audit, label)} label=".md 다운로드" />
-          </>
+          audit.empty ? null : (
+            <>
+              {sampleKind === 'defect' || sampleKind === 'fixed' ? <Src kind="DEMO" title="샘플은 시연용 테스트 데이터의 상품 · 옵션 · 프로모션으로 생성" /> : null}
+              <CopyButton text={() => auditMarkdown(audit, label)} label="진단 결과 복사" />
+              <DownloadButton filename={`searchtune-audit-${d.today}.md`} data={() => auditMarkdown(audit, label)} label=".md 다운로드" />
+            </>
+          )
         }>
-        <DataTable rows={audit.checks} columns={columns} rowKey={(c) => c.id} initialSort={{ key: 'status', dir: 'asc' }} />
+        {/* 빈 입력은 '실패'가 아니라 진단 전 — 실패 표 · 0점 리포트를 만들지 않는다 */}
+        {audit.empty
+          ? <Empty icon="search" title="진단할 HTML이 없습니다">제품페이지 소스를 붙여넣거나 '샘플 HTML (결함 포함)' · '개선안 샘플'을 불러오세요.</Empty>
+          : <DataTable rows={audit.checks} columns={columns} rowKey={(c) => c.id} initialSort={{ key: 'status', dir: 'asc' }} />}
       </Card>
 
       <Card title="추출 결과" sub="진단에 쓰인 원본 값" actions={<Src kind="DEMO" />}>

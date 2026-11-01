@@ -30,6 +30,8 @@ export const deltaPct = (cur: number, prev: number): number => (fin(cur) && fin(
 const round = (v: number, digits = 0): number => (fin(v) ? Math.round(v * 10 ** digits) / 10 ** digits : NaN);
 /** 소수 둘째 자리 문자열 (NaN → '—') */
 export const f2 = (v: number): string => (fin(v) ? v.toFixed(2) : '—');
+/** 정수 % 표기 — 계산 불가(NaN)면 '—' ('—%'로 보이지 않게) */
+export const pctInt = (v: number): string => (fin(v) ? `${fmt.int(v)}%` : '—');
 
 /** 기준일(오늘, 부분일)을 뺀 완결 일자 */
 export function completeDates(d: Dataset): string[] {
@@ -241,6 +243,21 @@ export function curveMarginal(c: ResponseCurve, dailySpend: number): number {
 
 export type Shares = Record<MediaId, number>;
 export type Guardrails = Record<MediaId, { min: number; max: number }>;
+
+/**
+ * 가드레일 입력 점검 — 최소 > 최대, 최소 합계 > 100%, 최대 합계 < 100%이면 가드레일 안에서 예산을 모두 배분할 수 없다
+ * (균등화는 가드레일을 해제해 계산하므로 화면에서 입력 오류로 알려 준다).
+ */
+export function guardrailIssues(guard: Guardrails): string[] {
+  const out: string[] = [];
+  const inverted = MEDIA_IDS.filter((m) => (guard[m]?.min ?? 0) > (guard[m]?.max ?? 1) + 1e-9);
+  if (inverted.length) out.push(`${inverted.map((m) => MEDIA[m].short).join(' · ')} 최소 > 최대`);
+  const minSum = sum(MEDIA_IDS, (m) => guard[m]?.min ?? 0);
+  const maxSum = sum(MEDIA_IDS, (m) => guard[m]?.max ?? 1);
+  if (minSum > 1 + 1e-9) out.push(`최소 합계 ${fmt.int(minSum * 100)}% > 100%`);
+  if (maxSum < 1 - 1e-9) out.push(`최대 합계 ${fmt.int(maxSum * 100)}% < 100%`);
+  return out;
+}
 /** p.37 배분 가안 (SA 43% · GFA 18% · Google 12% · Meta 12% · 카카오 8% · 버티컬 7%) */
 export const PROPOSAL_SHARES: Shares = Object.fromEntries(MEDIA_IDS.map((m) => [m, MEDIA[m].share])) as Shares;
 

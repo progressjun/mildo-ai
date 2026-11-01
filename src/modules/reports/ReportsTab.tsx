@@ -1,5 +1,5 @@
 /* 리포트 4종 (p.17) — 문서형 · 메신저형 · AE 코멘트 · 코멘트 단위 피드백 · AI 해석 */
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useActions, useStore, type AppState } from '@/core/store';
 import { useAi } from '@/ai/useAi';
 import { ANALYST_RULES, briefToMarkdown } from '@/ai/prompts';
@@ -9,6 +9,7 @@ import { Button, Callout, Card, CopyButton, DownloadButton, Field, Pill, Segment
 import { aeTarget, aiPrompt, availableMonths, monthPeriod, reportToMarkdown, scopeOf, sortIssues, type IssueLike, type Report, type ReportType } from './engine';
 import { FEEDBACK_HISTORY, REPORT_META } from './data';
 import { MailPreview, MessengerPreview, ReportDocument, fmtAt } from './parts';
+import { Icon } from '@/ui/Icon';
 
 export interface Interp { text: string; by: 'ai' | 'rule'; at: string }
 
@@ -30,6 +31,8 @@ export function ReportsTab({ type, report, genMs, month, setMonth, issueId, setI
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const ctl = useRef<AbortController | null>(null);
+  // 오류 안내는 해당 리포트의 해석 시도에만 붙인다 — 다른 리포트 · 월 · 이슈로 바꾸면 지운다
+  useEffect(() => { setNote(''); }, [interpKey]);
   // 코멘트 범위: 일간 · 주간은 종류, 월간은 대상 월, 이슈 알림은 이슈별 (다른 월 · 다른 이슈 피드백이 섞이지 않음)
   const scope = scopeOf(report);
   const prefix = `reports:${scope}:`;
@@ -42,7 +45,7 @@ export function ReportsTab({ type, report, genMs, month, setMonth, issueId, setI
   const markdown = () => reportToMarkdown(report, {
     interpretation: interp?.text ? { text: interp.text, by: interp.by } : null,
     aeNotes: aeNotes.map((n) => ({ author: n.author, text: n.text, at: fmtAt(n.at) })),
-    feedback: feedback.map((f) => ({ sectionTitle: sectionTitle(f.target), author: f.author === '수면밀도' ? '수면밀도 담당자' : f.author, text: f.text, resolved: f.resolved })),
+    feedback: feedback.map((f) => ({ sectionTitle: sectionTitle(f.target), author: f.author === '수면밀도' ? '수면밀도 담당자' : f.author, text: f.text, resolved: f.resolved, client: f.author === '수면밀도' })),
   });
   const ruleText = () => briefToMarkdown({ ...report.brief, facts: [], patterns: [] });
 
@@ -53,20 +56,27 @@ export function ReportsTab({ type, report, genMs, month, setMonth, issueId, setI
       return;
     }
     ctl.current = new AbortController();
+    // 다시 생성이 중지 · 실패로 끝나고 받은 글자가 없으면 직전 해석을 되살린다 (빈 'AI 해석' 영역이 남지 않게)
+    const prev = interp?.text ? interp : null;
+    let streamed = '';
     setBusy(true);
     setInterp(interpKey, { text: '', by: 'ai', at: nowIso() });
     try {
       const body = reportToMarkdown(report, { aeNotes: aeNotes.map((n) => ({ author: n.author, text: n.text, at: fmtAt(n.at) })) });
       const { text } = await ai.ask(`${ANALYST_RULES}\n\n${aiPrompt(report, body)}`, {
         signal: ctl.current.signal, cache: false,
-        onText: (t) => setInterp(interpKey, { text: t, by: 'ai', at: nowIso() }),
+        onText: (t) => { streamed = t; setInterp(interpKey, { text: t, by: 'ai', at: nowIso() }); },
       });
       setInterp(interpKey, { text, by: 'ai', at: nowIso() });
     } catch (e) {
       const err = e as AiError;
-      if (err.code !== 'cancelled') {
+      const partial = err.partial || streamed;
+      if (err.code === 'cancelled') {
+        // 중지는 오류로 알리지 않는다 — 받은 부분은 유지, 없으면 직전 상태로
+        setInterp(interpKey, partial ? { text: partial, by: 'ai', at: nowIso() } : prev);
+      } else {
         setNote(AI_ERROR_COPY[err.code] ?? err.message);
-        setInterp(interpKey, err.partial ? { text: err.partial, by: 'ai', at: nowIso() } : { text: ruleText(), by: 'rule', at: nowIso() });
+        setInterp(interpKey, partial ? { text: partial, by: 'ai', at: nowIso() } : prev ?? { text: ruleText(), by: 'rule', at: nowIso() });
       }
     } finally {
       setBusy(false);
@@ -76,13 +86,14 @@ export function ReportsTab({ type, report, genMs, month, setMonth, issueId, setI
   const aiSlot = (
     <div className="row reports-noprint" style={{ gap: 8 }}>
       {busy ? (
-        <Button size="sm" icon="stop" onClick={() => ctl.current?.abort()}>중지</Button>
+        // 중지 버튼은 실행 버튼 자리에 바로 나타난다 — 실행 버튼 더블클릭의 두 번째 클릭(detail 2)은 중지로 받지 않는다
+        <button type="button" className="btn sm" onClick={(e) => { if (e.detail > 1) return; ctl.current?.abort(); }}><Icon name="stop" size={13} />중지</button>
       ) : (
         <Button size="sm" variant="accent" icon="sparkle" onClick={run} disabled={ai.backend === 'checking'}>
           {interp?.text ? '해석 다시 생성' : ai.connected ? 'AI 해석 추가' : '규칙 엔진 해석 추가'}
         </Button>
       )}
-      {interp?.text && !busy ? <Button size="sm" variant="ghost" icon="x" onClick={() => setInterp(interpKey, null)}>해석 영역 비우기</Button> : null}
+      {interp?.text && !busy ? <Button size="sm" variant="ghost" icon="x" onClick={() => { setInterp(interpKey, null); setNote(''); }}>해석 영역 비우기</Button> : null}
       <span className="xs muted">
         {busy ? 'Claude가 본문을 읽고 해석 · 전제 조건 · 반례 · 다음 액션을 작성 중입니다.' : ai.connected ? '버튼을 누를 때만 Claude를 호출합니다. 확정 팩트와 분리된 영역에 붙습니다.' : 'AI 미연결 — 규칙 엔진이 같은 형식(해석 · 전제 조건 · 반례 · 다음 액션)으로 채웁니다.'}
       </span>

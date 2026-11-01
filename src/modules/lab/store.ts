@@ -68,6 +68,10 @@ export function resetLab() {
   setLab(initialLab());
 }
 
+/** 앱 전역 '시연 상태 초기화'가 'mildo-os:reset' 이벤트를 보내면 Lab 로컬 기록도 처음 상태로 (화면이 열려 있지 않아도) */
+export const LAB_RESET_EVENT = 'mildo-os:reset';
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') window.addEventListener(LAB_RESET_EVENT, () => resetLab());
+
 function subscribe(f: () => void) {
   subs.add(f);
   return () => {

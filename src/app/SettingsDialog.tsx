@@ -18,7 +18,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           <Segmented<AiSettings['mode']> label="AI 연결 방식" value={state.ai.mode} onChange={(mode) => dispatch({ type: 'ai/set', patch: { mode } })}
             options={[{ id: 'auto', label: '자동' }, { id: 'artifact', label: 'claude.ai' }, { id: 'anthropic', label: 'API 키' }, { id: 'offline', label: '규칙 엔진만' }]} />
         </Field>
-        <div className="small ink2">현재 상태: <strong>{ai.backend === 'checking' ? '확인 중' : BACKEND_LABEL[ai.backend]}</strong>{inArtifact ? ' · claude.ai 아티팩트에서 실행 중 (API 키 없이 보는 사람의 Claude 계정으로 동작)' : ''}</div>
+        <div className="small ink2">현재 상태: <strong>{ai.backend === 'checking' ? '확인 중' : BACKEND_LABEL[ai.backend]}</strong>{inArtifact ? (ai.backend === 'artifact' ? ' · claude.ai 아티팩트에서 실행 중 (API 키 없이 보는 사람의 Claude 계정으로 동작)' : ' · claude.ai 아티팩트에서 실행 중') : ''}</div>
         <Field label="Anthropic API 키 (로컬 · 사내 배포용)" id="api-key" hint="이 브라우저의 localStorage에만 저장되며 api.anthropic.com으로만 전송됩니다. 공용 PC에서는 입력하지 마세요.">
           <input id="api-key" className="input" type="password" autoComplete="off" placeholder="sk-ant-..." value={key} onChange={(e) => setKey(e.target.value)} />
         </Field>

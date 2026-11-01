@@ -4,7 +4,7 @@ import { addDays, fmt } from '@/core/util';
 import { Icon } from '@/ui/Icon';
 import { Button, Callout, Card, DataTable, Pill, Sev, Src, type Column } from '@/ui/primitives';
 import {
-  buildHourIndex, detectTestIncidents, evaluateMedia, fmtClock, fmtDateShort, fmtStamp, kstDate, nextAction, notificationLog, primaryEvidence, slaState, STATUS_LABEL, typeOf,
+  buildHourIndex, detectTestIncidents, evaluateMedia, fmtClock, fmtDateShort, fmtStamp, kstDate, nextAction, notificationLog, primaryEvidence, slaState, STATUS_LABEL, testBaseId, typeOf,
   type AlertIncident, type NotifyEntry,
 } from './engine';
 import { DEMO_CREATIVES, TEST_SCENARIOS, TYPE_LABEL, type TestScenarioId } from './data';
@@ -18,7 +18,8 @@ export function NotifyTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string)
   const cards = [...open].filter((i) => i.severity !== 'P3').sort((a, b) => (a.severity < b.severity ? -1 : a.severity > b.severity ? 1 : toMs(b.detectedAt) - toMs(a.detectedAt))).slice(0, 4);
   const p3 = open.filter((i) => i.severity === 'P3');
   const tests = incidents.filter((i) => i.isTest);
-  const log = useMemo(() => notificationLog(incidents, nowMs, toMs), [incidents, nowMs, toMs]);
+  const openTestBases = new Set(tests.filter((t) => t.status !== 'resolved').map((t) => testBaseId(t.id)));
+  const log =useMemo(() => notificationLog(incidents, nowMs, toMs), [incidents, nowMs, toMs]);
 
   const inject = (kind: TestScenarioId) => {
     const seq = tests.length + 1;
@@ -27,7 +28,13 @@ export function NotifyTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string)
       actions.toast({ tone: 'warning', title: '주입 결과 없음', body: '현재 탐지 기준에서 새 이슈가 생성되지 않았습니다.' });
       return;
     }
-    for (const i of found) {
+    // 같은 시나리오의 테스트 이슈가 아직 열려 있으면 다시 만들지 않는다 (연속 클릭 · 더블 클릭 중복 방지)
+    const fresh = found.filter((f) => !openTestBases.has(testBaseId(f.id)));
+    if (!fresh.length) {
+      actions.toast({ tone: 'info', title: '같은 테스트 이슈가 이미 열려 있습니다', body: `${found[0].title} · 해결 또는 '테스트 이슈 정리' 후 다시 주입할 수 있습니다.`, route: 'alert' });
+      return;
+    }
+    for (const i of fresh) {
       actions.addIncident(i);
       actions.toast({
         tone: i.severity === 'P1' ? 'critical' : 'warning',

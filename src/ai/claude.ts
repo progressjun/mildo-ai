@@ -56,6 +56,22 @@ export function getSample(): Promise<SampleFn | null> {
 
 let sampleDenied = false;
 
+/** 백엔드가 바뀌는 사건(예: 보는 사람이 Claude 사용을 거부) 구독 — 상단 바 · 화면의 연결 상태 표시를 즉시 갱신 */
+const backendListeners = new Set<() => void>();
+export function onBackendChange(fn: () => void): () => void {
+  backendListeners.add(fn);
+  return () => {
+    backendListeners.delete(fn);
+  };
+}
+function markSampleDenied() {
+  if (sampleDenied) return;
+  sampleDenied = true;
+  backendListeners.forEach((fn) => {
+    try { fn(); } catch { /* 구독자 오류 무시 */ }
+  });
+}
+
 /* ---------------- 백엔드 결정 ---------------- */
 
 export async function resolveBackend(settings: AiSettings): Promise<Backend> {
@@ -123,7 +139,7 @@ function toAiError(e: unknown): AiError {
   if (e instanceof AiError) return e;
   const o = e as { code?: string; message?: string; text?: string };
   if (o && typeof o === 'object' && o.code) {
-    if (o.code === 'not_granted' || o.code === 'sampling_disabled') sampleDenied = true;
+    if (o.code === 'not_granted' || o.code === 'sampling_disabled') markSampleDenied();
     return new AiError(o.code, AI_ERROR_COPY[o.code] ?? o.message ?? 'AI 호출 실패', o.text);
   }
   return new AiError('upstream_error', (e as Error)?.message ?? 'AI 호출 실패');
@@ -154,6 +170,8 @@ async function askArtifact(input: string | Turn[], opts: AskOptions): Promise<st
   };
   if (opts.tools?.length) {
     const limits = await sample.limits().catch(() => null);
+    // 런타임이 도구를 지원하지 않으면 도구 없이 보내되, 채팅 캐시 설정(cache:false)은 유지한다
+    if (!limits?.tools && opts.cache === false) options.cache = false;
     if (limits?.tools) {
       options.tools = opts.tools.slice(0, limits.tools.maxCount).map((t) => ({
         name: t.name,
@@ -177,11 +195,21 @@ async function askArtifact(input: string | Turn[], opts: AskOptions): Promise<st
   }
 }
 
-/** 도구 결과를 32KB 안으로 */
-function compact(r: unknown): unknown {
+/** 도구 결과 상한 (런타임 계약 32KB — UTF-8 바이트 기준, 여유분 포함) */
+export const TOOL_RESULT_MAX_BYTES = 30000;
+
+/** 도구 결과를 32KB 안으로 (한글은 글자당 3바이트이므로 글자 수가 아니라 UTF-8 바이트로 잰다) */
+export function compact(r: unknown): unknown {
   const s = typeof r === 'string' ? r : JSON.stringify(r);
-  if (s.length <= 30000) return r;
-  return s.slice(0, 30000) + '…(생략)';
+  if (s === undefined) return r;
+  const enc = new TextEncoder();
+  const bytes = enc.encode(s);
+  if (bytes.length <= TOOL_RESULT_MAX_BYTES) return r;
+  const suffix = '…(생략)';
+  const room = TOOL_RESULT_MAX_BYTES - enc.encode(suffix).length;
+  // 잘린 멀티바이트 문자는 TextDecoder가 U+FFFD로 바꾸므로 끝의 대체 문자를 지운다
+  const cut = new TextDecoder().decode(bytes.slice(0, room)).replace(/\uFFFD+$/, '');
+  return cut + suffix;
 }
 
 /* ---------------- Anthropic SDK (브라우저 직접 호출) ---------------- */

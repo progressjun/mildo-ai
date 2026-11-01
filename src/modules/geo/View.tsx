@@ -67,7 +67,7 @@ export default function View() {
 
   const tabs: { id: GeoTabId; label: ReactNode; badge?: ReactNode }[] = [
     { id: 'monitor', label: 'GEO 모니터링', badge: vis.gaps.length ? <Pill tone="serious">{vis.gaps.length}</Pill> : undefined },
-    { id: 'audit', label: '제품페이지 진단', badge: audit.counts.fail ? <Pill tone="critical">{audit.counts.fail}</Pill> : undefined },
+    { id: 'audit', label: '제품페이지 진단', badge: audit.counts.fail && !audit.empty ? <Pill tone="critical">{audit.counts.fail}</Pill> : undefined },
     { id: 'faq', label: 'AEO FAQ 생성기', badge: cov.needsInput ? <Pill tone="warning">{cov.needsInput}</Pill> : undefined },
     { id: 'paid', label: '페이드 AI 지면 → SA', badge: paid.register + paid.landing ? <Pill tone="accent">{paid.register + paid.landing}</Pill> : undefined },
     { id: 'case', label: '진단 전후 기록' },

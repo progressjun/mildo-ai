@@ -147,6 +147,14 @@ export const FEE_MEDIA_MAP: Record<string, MediaId[]> = {
 };
 /** 수수료율 입력 검증 범위 (%) */
 export const FEE_INPUT_RANGE = { min: 0, max: 30 } as const;
+/** 연간 광고비 입력 상한 (원) — RFP 약 50억(운영 방향에 따라 변동)의 200배 · 표시 단위(억) 범위를 넘는 오입력 방지 (운영 가정) */
+export const ANNUAL_BUDGET_MAX = 1_000_000_000_000;
+/** 연간 광고비 입력값 정규화 — 숫자가 아니거나 0 이하면 0, 상한 초과는 상한으로 (계산기 · 저장본 공통) */
+export function clampAnnualBudget(v: unknown): number {
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.round(n), ANNUAL_BUDGET_MAX);
+}
 
 /* ============================== RFP 커버리지 ============================== */
 
