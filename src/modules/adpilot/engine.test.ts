@@ -10,6 +10,7 @@ import {
   holdsBrief, keywordAnomaly, mediaGuards, officialConfig, paceCampaigns, planGfaRequest, resolveConfig, routeByPct,
   routeGfaChange, simulateBidChange, testCandidates, validateGfaExecution, verifyBidChange, DEFAULT_CONFIG,
   adpilotProposals, explainBidDown, incidentHoldMap, matchingIncident, openHoldIncidents, validateAdpilotExecution, canNotify, holdIncident,
+  canOperate, fmtChangeValue, rollbackAllPlan, settingChangeInputs, splitSettingInputs,
 } from './engine';
 
 const demo = generateDemoData();
@@ -775,5 +776,71 @@ describe('보류 알림 범위', () => {
     expect(sev('soldout')).toBe('P2');
     const p = ps.find((x) => x.holdKind === 'keyword_anomaly')!;
     expect(holdIncident(demo, p, at).id).toBe(holdIncident(demo, p, '2026-10-31T07:00:00.000Z').id);
+  });
+});
+
+describe('기능 점검 회귀 — 승인 이후 단계 권한 · 일괄 롤백 · 기준 요청 중복 · 값 표기', () => {
+  it('canOperate: 반영 · 롤백도 승인 주체 범위 안의 역할만 (AE는 PM 건 반영 불가)', () => {
+    expect(canOperate('담당 AE', { approver: 'PM' }).ok).toBe(false);
+    expect(canOperate('담당 AE', { approver: 'AE' }).ok).toBe(true);
+    expect(canOperate('PM', { approver: 'CLIENT' }).ok).toBe(false);
+    expect(canOperate('수면밀도', { approver: 'CLIENT' }).ok).toBe(true);
+  });
+  it('rollbackAllPlan: 역할 범위 밖 반영 건과, 같은 대상의 그 이전 건은 건너뛴다', () => {
+    const at = (h: number) => `2026-10-31T0${h}:00:00.000Z`;
+    const applied = (id: string, targetId: string, approver: ChangeRequest['approver'], h: number) => change({
+      id, module: 'adpilot', kind: 'bid', targetId, approver, status: 'applied', createdAt: at(h), history: [{ at: at(h), by: 'PM', action: '반영' }],
+    });
+    const list = [applied('a1', 'kw_1', 'AE', 1), applied('a2', 'kw_1', 'PM', 2), applied('b1', 'kw_2', 'AE', 3), change({ id: 's1', module: 'adpilot', kind: 'setting', status: 'applied', approver: 'AE' })];
+    const ae = rollbackAllPlan(list, '담당 AE');
+    expect(ae.list.map((c) => c.id)).toEqual(['b1']);
+    expect(ae.skipped.map((c) => c.id).sort()).toEqual(['a1', 'a2']);
+    const pm = rollbackAllPlan(list, 'PM');
+    expect(pm.list.map((c) => c.id)).toEqual(['b1', 'a2', 'a1']);
+    expect(pm.skipped).toEqual([]);
+  });
+  it('splitSettingInputs: 같은 기준 항목에 열린 요청이 있으면 다시 만들지 않는다', () => {
+    const official = resolveConfig();
+    const inputs = settingChangeInputs(official, resolveConfig({ ...official, targetRoas: 600, bulkWarnCount: 6 }), 'PM');
+    expect(inputs).toHaveLength(2);
+    const first = splitSettingInputs(inputs, []);
+    expect(first.fresh).toHaveLength(2);
+    const pending = inputs.map((i, k) => change({ ...i, id: `p${k}`, status: k === 0 ? 'pending' : 'rejected' }));
+    const second = splitSettingInputs(inputs, pending);
+    expect(second.fresh.map((i) => i.targetId)).toEqual(['adpilot.cfg.bulkWarnCount']);
+    expect(second.duplicate.map((i) => i.targetId)).toEqual(['adpilot.cfg.targetRoas']);
+  });
+  it('fmtChangeValue: 입찰 원 · 예산 만 단위 · ON/OFF · 기준값 원값', () => {
+    expect(fmtChangeValue('bid', 1160)).toBe('1,160원');
+    expect(fmtChangeValue('budget', 1_200_000)).toBe('120만');
+    expect(fmtChangeValue('gfa', 500_000)).toBe('50만');
+    expect(fmtChangeValue('status', 'off')).toBe('OFF');
+    expect(fmtChangeValue('setting', 0.25)).toBe('0.25');
+  });
+});
+
+describe('기능 점검 회귀 — 반영 직후 최소 조정 폭 미만 재제안 방지', () => {
+  it('일 조정 폭 상한에 잘려 5% 미만이 되면 상향을 제안하지 않고 상한 도달로 판정', () => {
+    const k = demo.keywords.find((x) => x.text === '허리 아플때 매트리스')!;
+    const before = diagnoseKeywords(demo).find((d) => d.id === k.id)!;
+    expect(before.verdict).toBe('up');
+    const after = diagnoseKeywords(demo, { currentBids: { [k.id]: before.proposedBid! } }).find((d) => d.id === k.id)!;
+    expect(after.verdict).toBe('capped');
+    expect(after.proposedBid).toBeNull();
+  });
+});
+
+describe('기능 점검 회귀 — GFA 일 예산 감액 후 0원', () => {
+  it('-99.9% 처럼 만 원 단위 반올림 후 0원이 되는 감액은 요청 불가', () => {
+    const views = gfaOverview(demo, []);
+    const acc = views.find((v) => v.campaigns.length)!;
+    const cmp = acc.campaigns[0].campaign;
+    const bad = planGfaRequest(views, { type: 'budget', accountId: acc.account.id, campaignId: cmp.id, pct: -99.9 });
+    expect(bad.after).toBe(0);
+    expect(bad.ok).toBe(false);
+    expect(bad.errors.join(' ')).toMatch(/0원이 됩니다/);
+    const ok = planGfaRequest(views, { type: 'budget', accountId: acc.account.id, campaignId: cmp.id, pct: -50 });
+    expect(ok.ok).toBe(true);
+    expect(ok.after).toBeGreaterThan(0);
   });
 });

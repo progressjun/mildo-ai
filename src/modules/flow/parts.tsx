@@ -1,5 +1,5 @@
 /* MILDO Flow 공용 조각 — 상태 배지 · 판정 배지(기준값 병기) · 2단계 확인 버튼 */
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import type { ApprovalLevel, ChangeRequest } from '@/core/types';
 import { fmt } from '@/core/util';
 import { Icon } from '@/ui/Icon';
@@ -71,15 +71,31 @@ export function LeadBadge({ l, compact }: { l: LeadState; compact?: boolean }) {
   return <Pill tone="outline" icon="clock" title={l.text}>{compact ? l.text.split(' · ')[0] : l.text}</Pill>;
 }
 
-/** 화면 안 2단계 확인 버튼 (window.confirm 대신) */
+/**
+ * 더블 클릭 방지 — 처리 버튼을 누른 직후 SETTLE_MS 동안은 다음 처리 클릭을 무시한다.
+ * 승인 직후 목록이 다시 정렬되면 다음 요청의 [승인]이 같은 자리로 밀려 오므로 화면 전체에서 한 번만 받는다.
+ */
+export const SETTLE_MS = 600;
+let lockUntil = 0;
+export function settled<A extends unknown[]>(fn: (...a: A) => void): (...a: A) => void {
+  return (...a: A) => {
+    const now = Date.now();
+    if (now < lockUntil) return;
+    lockUntil = now + SETTLE_MS;
+    fn(...a);
+  };
+}
+
+/** 화면 안 2단계 확인 버튼 (window.confirm 대신) — 확인 버튼은 펼친 직후 SETTLE_MS 동안 눌리지 않는다 (더블 클릭으로 2단계가 한 번에 통과되지 않게) */
 export function ConfirmButton({ label, confirmLabel, onConfirm, icon, variant = 'default', disabled, title, size = 'sm' }: {
   label: ReactNode; confirmLabel?: ReactNode; onConfirm: () => void; icon?: string; variant?: 'default' | 'primary' | 'accent' | 'danger' | 'ghost'; disabled?: boolean; title?: string; size?: 'sm' | 'lg';
 }) {
   const [armed, setArmed] = useState(false);
-  if (!armed) return <Button size={size} icon={icon} variant={variant === 'danger' ? 'default' : variant} disabled={disabled} title={title} onClick={() => setArmed(true)}>{label}</Button>;
+  const armedAt = useRef(0);
+  if (!armed) return <Button size={size} icon={icon} variant={variant === 'danger' ? 'default' : variant} disabled={disabled} title={title} onClick={() => { armedAt.current = Date.now(); setArmed(true); }}>{label}</Button>;
   return (
     <span className="row" style={{ gap: 4 }}>
-      <Button size={size} variant={variant === 'default' ? 'primary' : variant} icon="check" onClick={() => { setArmed(false); onConfirm(); }}>{confirmLabel ?? <>확인 · {label}</>}</Button>
+      <Button size={size} variant={variant === 'default' ? 'primary' : variant} icon="check" onClick={() => { if (Date.now() - armedAt.current < SETTLE_MS) return; setArmed(false); onConfirm(); }}>{confirmLabel ?? <>확인 · {label}</>}</Button>
       <Button size={size} variant="ghost" onClick={() => setArmed(false)}>취소</Button>
     </span>
   );

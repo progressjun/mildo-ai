@@ -2,7 +2,7 @@
  * MILDO Flow 화면 렌더 스모크 테스트 (SSR) — 기본 화면과 모든 탭 · 상세 드로어가 시연 이력 · 빈 이력 · 대량 변경 상황에서
  * 예외 없이 렌더되고, 첫 화면에 의미 있는 상태(내가 처리할 것 · 상태별 보드 · 출처 태그 · 대량 변경 감시)가 보이는지 확인한다.
  */
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createElement as h, type ComponentType, type ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
 import type { ChangeRequest, Incident } from '@/core/types';
@@ -128,5 +128,21 @@ describe('MILDO Flow 화면 렌더', () => {
     expect(html).toContain('대량 변경');
     const d = await wrap(h(await harness('drawer', 'burst_0')));
     expect(d).toContain('대량 변경 실수 감지 대상');
+  });
+});
+
+describe('기능 점검 회귀 — 더블 클릭 방지 잠금', () => {
+  it('settled: 첫 클릭 직후 SETTLE_MS 동안 다른 처리 클릭(다른 행으로 밀려 온 버튼 포함)은 무시', async () => {
+    const { settled, SETTLE_MS } = await import('./parts');
+    let now = 1_000_000;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const hits: string[] = [];
+    const a = settled(() => hits.push('a'));
+    const b = settled(() => hits.push('b'));
+    a(); now += 80; b(); now += 80; a();
+    expect(hits).toEqual(['a']);
+    now += SETTLE_MS; b();
+    expect(hits).toEqual(['a', 'b']);
+    spy.mockRestore();
   });
 });

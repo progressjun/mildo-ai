@@ -5,7 +5,7 @@ import { AiInsight } from '@/ui/AiInsight';
 import { Button, Callout, Card, type Column, DataTable, Pill, Segmented, Src } from '@/ui/primitives';
 import { type AdPilotProposal, type BulkCheck, adpilotBrief, canNotify, proposalsSnapshot, resolveConfig } from './engine';
 import { ACTIVE, type AdPilotCtx } from './useAdPilot';
-import { ActionPill, ApproverPill, BeforeAfter, ProposalDrawer, StatusPill, targetSub } from './parts';
+import { ActionPill, ApproverPill, BeforeAfter, ProposalDrawer, SETTLE_STYLE, StatusPill, settledClick, targetSub, useJustChanged } from './parts';
 import { SafetyPanel } from './SafetyPanel';
 
 export type ActionFilter = 'all' | 'bid_up' | 'bid_down' | 'budget' | 'test_candidate' | 'hold';
@@ -18,26 +18,34 @@ export function matchesFilter(p: AdPilotProposal, f: ActionFilter) {
 
 /** 변경 요청 상태별 버튼 (승인 · 반려 · 반영/실행 · 롤백 · 재실행) — 권한 없으면 비활성 + 이유 */
 export function ChangeButtons({ ap, c }: { ap: AdPilotCtx; c: ChangeRequest }) {
+  const settling = useJustChanged(c);
+  // 잠금 중에는 클릭을 버튼이 받아 무시한다 (disabled 로 두면 클릭이 행으로 새어 상세 창이 열림)
+  const guard = (fn: () => void) => { const s = settledClick(fn); return () => { if (!settling) s(); }; };
+  const st = settling ? SETTLE_STYLE : undefined;
   if (c.status === 'pending') {
     const perm = ap.canApprove(c);
     return (
       <>
-        <Button size="sm" variant="accent" icon="check" disabled={!perm.ok} title={perm.reason} onClick={() => ap.approve(c)}>승인</Button>
-        <Button size="sm" icon="x" disabled={!perm.ok} title={perm.reason} onClick={() => ap.reject(c)}>반려</Button>
+        <Button size="sm" variant="accent" icon="check" disabled={!perm.ok} title={perm.reason} style={st} onClick={guard(() => ap.approve(c))}>승인</Button>
+        <Button size="sm" icon="x" disabled={!perm.ok} title={perm.reason} style={st} onClick={guard(() => ap.reject(c))}>반려</Button>
         {!perm.ok ? <span className="xs muted" title={perm.reason}>권한 없음 · {c.approver === 'CLIENT' ? '수면밀도' : c.approver === 'PM' ? 'PM' : '담당 AE'} 승인 건</span> : null}
       </>
     );
   }
-  if (c.status === 'approved') return <Button size="sm" variant="primary" icon="zap" onClick={() => ap.apply(c)}>{c.module === 'gfa' ? '실행' : '반영'}</Button>;
+  // 승인 이후 단계(반영 · 실행 · 롤백 · 재실행 · 실행 취소)도 승인 주체 범위 안의 역할만 (MILDO Flow 와 같은 규칙)
+  const op = ap.canOperate(c);
+  const noPerm = !op.ok ? <span className="xs muted" title={op.reason}>권한 없음 · {c.approver === 'CLIENT' ? '수면밀도' : c.approver === 'PM' ? 'PM' : '담당 AE'} 승인 건</span> : null;
+  if (c.status === 'approved') return <><Button size="sm" variant="primary" icon="zap" disabled={!op.ok} title={op.ok ? undefined : op.reason} style={st} onClick={guard(() => ap.apply(c))}>{c.module === 'gfa' ? '실행' : '반영'}</Button>{noPerm}</>;
   if (c.status === 'applied') {
     const r = ap.canRollback(c);
-    return <Button size="sm" icon="rollback" disabled={!r.ok} title={r.reason} onClick={() => ap.rollback(c)}>롤백</Button>;
+    return <><Button size="sm" icon="rollback" disabled={!r.ok || !op.ok} title={!op.ok ? op.reason : r.reason} style={st} onClick={guard(() => ap.rollback(c))}>롤백</Button>{noPerm}</>;
   }
   if (c.status === 'held') {
     return (
       <>
-        <Button size="sm" icon="refresh" title={c.module === 'gfa' ? '충전 확인 후 재실행' : '보류 해제 확인 후 재실행'} onClick={() => ap.retry(c)}>재실행</Button>
-        <Button size="sm" icon="x" onClick={() => ap.cancel(c)}>실행 취소</Button>
+        <Button size="sm" icon="refresh" disabled={!op.ok} title={!op.ok ? op.reason : c.module === 'gfa' ? '충전 확인 후 재실행' : '보류 해제 확인 후 재실행'} style={st} onClick={guard(() => ap.retry(c))}>재실행</Button>
+        <Button size="sm" icon="x" disabled={!op.ok} title={op.ok ? undefined : op.reason} style={st} onClick={guard(() => ap.cancel(c))}>실행 취소</Button>
+        {noPerm}
       </>
     );
   }
@@ -48,13 +56,14 @@ export function ProposalActions({ ap, p }: { ap: AdPilotCtx; p: AdPilotProposal 
   const c = ap.changeOf(p);
   const active = c && ACTIVE.has(c.status);
   const inc = p.action === 'hold' ? ap.linkedIncident(p) : undefined;
+  const settling = useJustChanged(c);
   return (
     <span className="adpilot-row-actions" onClick={(e) => e.stopPropagation()}>
       {p.action === 'hold' && inc ? <a className="btn sm" href="#alert" title={`${inc.severity} · ${inc.title} (${inc.id})`}>Alert 이슈 {inc.severity}</a> : null}
       {!inc && canNotify(p) ? <Button size="sm" icon="bell" onClick={() => ap.notify(p)}>알림 발송</Button> : null}
       {!inc && p.action === 'hold' && !canNotify(p) ? <span className="xs muted" title={p.approverReason}>{p.approver === 'CLIENT' ? '수면밀도 협의 안건' : 'PM 검토 안건'}</span> : null}
       {ap.requestable(p) ? (
-        <Button size="sm" variant="primary" icon={p.holdKind === 'soldout' ? 'pause' : 'send'} onClick={() => ap.request(p)}>
+        <Button size="sm" variant="primary" icon={p.holdKind === 'soldout' ? 'pause' : 'send'} style={settling ? SETTLE_STYLE : undefined} onClick={settledClick(() => { if (!settling) ap.request(p); })}>
           {p.holdKind === 'soldout' ? '일시 중지 요청' : c ? '재요청' : '승인 요청'}
         </Button>
       ) : null}
@@ -78,7 +87,7 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
     const c = ap.changeOf(p);
     if (a === 'request') return ap.requestable(p);
     if (a === 'approve') return c?.status === 'pending' && ap.canApprove(c).ok;
-    return c?.status === 'approved';
+    return c?.status === 'approved' && ap.canOperate(c).ok;
   });
   const counts = { request: forAction('request', sel).length, approve: forAction('approve', sel).length, apply: forAction('apply', sel).length };
 
@@ -91,7 +100,16 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
       if (a === 'approve' && c && ap.approve(c, true)) n++;
       if (a === 'apply' && c && ap.apply(c, true)) n++;
     }
-    ap.actions.toast({ tone: 'good', title: `일괄 ${BULK_LABEL[a]} ${n}건`, body: a === 'request' ? '승인 대기로 MILDO Flow에 기록했습니다' : a === 'apply' ? '모든 건은 개별 롤백 가능합니다' : undefined, route: 'flow' });
+    const short = ps.length - n;
+    ap.actions.toast({
+      tone: short ? 'warning' : 'good',
+      title: short ? `일괄 ${BULK_LABEL[a]} ${n}/${ps.length}건` : `일괄 ${BULK_LABEL[a]} ${n}건`,
+      body: [
+        a === 'request' ? '승인 대기로 MILDO Flow에 기록했습니다' : a === 'apply' ? '반영된 건은 개별 롤백 가능합니다' : '',
+        short ? `${short}건은 ${a === 'apply' ? '실행 점검에서 보류' : '처리되지 않음'} — 건별 상태를 확인하세요` : '',
+      ].filter(Boolean).join(' · ') || undefined,
+      route: 'flow',
+    });
     setSelected(new Set());
     setConfirm(null);
     setBlocked(null);
@@ -211,7 +229,7 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
         fallback={() => adpilotBrief(ap.data, ap.state.changes, ap.cfg, ap.state.incidents)}
       />
       {open ? (
-        <ProposalDrawer p={open} change={ap.changeOf(open)} onClose={() => setOpen(null)} actions={<ProposalActions ap={ap} p={open} />} />
+        <ProposalDrawer key={open.id} p={open} change={ap.changeOf(open)} onClose={() => setOpen(null)} actions={<ProposalActions ap={ap} p={open} />} />
       ) : null}
     </div>
   );

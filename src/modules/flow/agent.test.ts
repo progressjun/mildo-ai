@@ -31,7 +31,8 @@ function makeCtx(changes: ChangeRequest[] = [], role: AppState['role'] = 'PM') {
   const tool = (name: string) => agentKit.tools(ctx).find((t) => t.name === name)!;
   return { ctx, created, tool };
 }
-const size = (v: unknown) => JSON.stringify(v).length;
+/** 계약은 UTF-8 바이트 기준 32KB (한글은 3바이트) */
+const size = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).length;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
 

@@ -9,7 +9,7 @@ import {
   APPROVER_LABEL, bulkGuard, canAct, executionCheck, filterChanges, fmtDuration, fmtStamp, fmtValue, groupByStatus, kindLabel, leadState, moduleLabel,
   pendingBrief, roleScopeLabel, sortByCreatedDesc, type ChangeFilter,
 } from './engine';
-import { ApproverBadge, ChangeValue, ConfirmButton, LeadBadge, ModuleTag, SeedTag, StatusPill } from './parts';
+import { ApproverBadge, ChangeValue, ConfirmButton, LeadBadge, ModuleTag, SeedTag, StatusPill, settled } from './parts';
 import type { FlowCtx } from './useFlow';
 
 export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: string) => void; onNew: () => void }) {
@@ -72,9 +72,9 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
                       {ex && !ex.ok ? <span className="xs" style={{ color: 'var(--critical-ink)' }}>반영 시 보류 예상 · {ex.blocks[0]}</span> : null}
                     </button>
                     <div className="row" style={{ gap: 4, flexWrap: 'nowrap' }}>
-                      {a === 'approve' ? <Button size="sm" variant="primary" icon="check" onClick={() => act(c, 'approve')}>승인</Button> : null}
-                      {a === 'apply' ? <Button size="sm" variant="accent" icon="zap" onClick={() => act(c, 'apply')}>반영</Button> : null}
-                      {a === 'resume' ? <Button size="sm" icon="play" onClick={() => act(c, 'resume')}>보류 해제</Button> : null}
+                      {a === 'approve' ? <Button size="sm" variant="primary" icon="check" onClick={settled(() => act(c, 'approve'))}>승인</Button> : null}
+                      {a === 'apply' ? <Button size="sm" variant="accent" icon="zap" onClick={settled(() => act(c, 'apply'))}>반영</Button> : null}
+                      {a === 'resume' ? <Button size="sm" icon="play" onClick={settled(() => act(c, 'resume'))}>보류 해제</Button> : null}
                       <Button size="sm" variant="ghost" onClick={() => onOpen(c.id)}>상세</Button>
                     </div>
                   </div>

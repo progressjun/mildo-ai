@@ -1,5 +1,5 @@
 /* 변경 요청 상세 — 누가 · 언제 · 왜, 승인 근거, 실행 점검, 액션 (권한 체크 · 2단계 확인) */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { DECISION_MATRIX, GFA_DELEGATION } from '@/data/constants';
 import { Callout, Drawer, Field, Pill, Src } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
@@ -8,14 +8,17 @@ import {
   ACTION_META, APPROVER_LABEL, availableActions, canAct, decisionOf, delegationIndexByPct, executionCheck, fmtStamp, isSeed, leadState,
   linkedChanges, mediaName, mediaOfChange, moduleLabel, roleScopeLabel, type FlowAction,
 } from './engine';
-import { ApproverBadge, ChangeValue, ConfirmButton, KV, LeadBadge, ModuleTag, SeedTag, StatusPill } from './parts';
+import { ApproverBadge, ChangeValue, ConfirmButton, KV, LeadBadge, ModuleTag, SETTLE_MS, SeedTag, StatusPill, settled } from './parts';
 import type { FlowCtx } from './useFlow';
 import { Button } from '@/ui/primitives';
 
-export function ChangeDrawer({ ctx, id, onClose }: { ctx: FlowCtx; id: string; onClose: () => void }) {
+export function ChangeDrawer({ ctx, id, onClose: close }: { ctx: FlowCtx; id: string; onClose: () => void }) {
   const { changes, state, data, incidents, clock, act, bulkAlerts } = ctx;
   const c = changes.find((x) => x.id === id);
   const [note, setNote] = useState('');
+  // [승인 요청 생성] 더블 클릭의 두 번째 클릭이 막 열린 상세 창의 바깥(오버레이)을 눌러 바로 닫지 않게, 열린 직후 잠깐은 닫기를 무시
+  const openedAt = useRef(Date.now());
+  const onClose = () => { if (Date.now() - openedAt.current < SETTLE_MS) return; close(); };
   if (!c) return <Drawer title="요청 없음" onClose={onClose}><div className="small muted">요청을 찾지 못했습니다 (초기화되었을 수 있음).</div></Drawer>;
   const lead = leadState(c, clock.nowMs, clock.toMs);
   const dec = decisionOf(c);
@@ -27,7 +30,7 @@ export function ChangeDrawer({ ctx, id, onClose }: { ctx: FlowCtx; id: string; o
   const media = mediaOfChange(data, c);
   const related = incidents.filter((i) => linkedChanges(data, i, [c], clock.toMs).length > 0);
   const bulkHits = bulkAlerts.filter((b) => b.related.includes(c.id));
-  const run = (a: FlowAction) => { if (act(c, a, note)) setNote(''); };
+  const run = settled((a: FlowAction) => { if (act(c, a, note)) setNote(''); });
 
   return (
     <Drawer title={<span className="row" style={{ gap: 8 }}><StatusPill status={c.status} /><ModuleTag module={c.module} /><SeedTag c={c} /></span>} onClose={onClose}>

@@ -836,3 +836,24 @@ describe('교차 모듈 정합성 · 경계 사례', () => {
     expect(meta.exhaustHour!).toBeLessThan(sa.exhaustHour!);
   });
 });
+
+describe('기능 점검 회귀 — 신규 요청 예산 감액 후 0원', () => {
+  it('-99.9% 감액은 만 원 단위 반올림 후 0원이므로 제출 불가, -50%는 가능', () => {
+    const cmp = cmpByName(DEMO, 'SA_일반 제품');
+    const bad = planRequest(DEMO, [], [], draft({ type: 'budget', media: 'naver_sa', targetId: cmp.id, pct: -99.9 }), 'PM');
+    expect(bad.ok).toBe(false);
+    expect(bad.errors.join(' ')).toMatch(/0원이 됩니다/);
+    const ok = planRequest(DEMO, [], [], draft({ type: 'budget', media: 'naver_sa', targetId: cmp.id, pct: -50 }), 'PM');
+    expect(ok.ok).toBe(true);
+  });
+});
+
+describe('기능 점검 회귀 — 보류 매체 증액 원클릭 요청 차단', () => {
+  it('Meta 데이터 급변 중 Meta_넓은 타겟 조기 소진 이슈 → 증액 요청 버튼 없음, SA 는 그대로', () => {
+    const meta = INCIDENTS.find((x) => x.ruleId === 'budget_forecast' && x.target === 'Meta_넓은 타겟');
+    expect(meta).toBeTruthy();
+    expect(incidentFix(DEMO, meta!, [], INCIDENTS)).toBeNull();
+    const sa = INCIDENTS.find((x) => x.ruleId === 'budget_forecast' && x.target === 'SA_일반 제품')!;
+    expect(incidentFix(DEMO, sa, [], INCIDENTS)?.input.kind).toBe('budget');
+  });
+});

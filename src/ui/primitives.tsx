@@ -288,7 +288,7 @@ function useEsc(onClose: () => void) {
 export function Modal({ title, onClose, children, wide, footer }: { title: ReactNode; onClose: () => void; children: ReactNode; wide?: boolean; footer?: ReactNode }) {
   useEsc(onClose);
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && e.detail < 2 && onClose()}>
       <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true">
         <div className="row-between">
           <h2 style={{ fontSize: 'var(--fs-xl)' }}>{title}</h2>
@@ -303,7 +303,7 @@ export function Modal({ title, onClose, children, wide, footer }: { title: React
 export function Drawer({ title, onClose, children }: { title: ReactNode; onClose: () => void; children: ReactNode }) {
   useEsc(onClose);
   return (
-    <div className="drawer-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="drawer-overlay" onMouseDown={(e) => e.target === e.currentTarget && e.detail < 2 && onClose()}>
       <aside className="drawer" role="dialog" aria-modal="true">
         <div className="row-between">
           <h2 style={{ fontSize: 'var(--fs-xl)' }}>{title}</h2>

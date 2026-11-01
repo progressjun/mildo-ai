@@ -7,10 +7,10 @@ import type { ChangeRequest } from '@/core/types';
 import { useActions, useStore } from '@/core/store';
 import { nowIso } from '@/core/util';
 import {
-  type AdPilotConfig, type AdPilotProposal, type BulkCheck, type ChangeInput, CONFIG_FIELDS, applyIncidentHolds, canApprove, canNotify, canRollback, checkBulk, configDiff,
+  type AdPilotConfig, type AdPilotProposal, type BulkCheck, type ChangeInput, CONFIG_FIELDS, applyIncidentHolds, canApprove, canNotify, canOperate, canRollback, checkBulk, configDiff,
   diagnoseKeywords, effectiveBids, effectiveCampaigns, effectiveKeywordStatus, explainBidDown, generateBidProposals, gfaOverview, holdIncident,
   latestChangeFor, matchingIncident, mediaGuards, officialConfig, paceCampaigns, proposalChangeInput, settingChangeInputs, validateAdpilotExecution,
-  validateGfaExecution, type BulkItem,
+  validateGfaExecution, type BulkItem, fmtChangeValue, rollbackAllPlan, splitSettingInputs,
 } from './engine';
 
 export const ACTIVE = new Set<ChangeRequest['status']>(['pending', 'approved', 'applied', 'held']);
@@ -71,7 +71,7 @@ export function useAdPilot() {
   };
   const requestInput = (input: ChangeInput, silent = false) => {
     const c = actions.addChange(input.kind === 'bid' && input.module === 'adpilot' ? { ...input, reason: `${input.reason}${simNote()}` } : input);
-    if (!silent) actions.toast({ tone: 'info', title: '승인 요청을 만들었습니다', body: `${c.target} · ${c.before} → ${c.after}`, route: 'flow' });
+    if (!silent) actions.toast({ tone: 'info', title: '승인 요청을 만들었습니다', body: `${c.target} · ${fmtChangeValue(c.kind, c.before)} → ${fmtChangeValue(c.kind, c.after)} · 승인 주체 ${c.approver === 'CLIENT' ? '수면밀도' : c.approver === 'PM' ? 'PM' : '담당 AE'}`, route: 'flow' });
     return c;
   };
   const approve = (c: ChangeRequest, silent = false) => {
@@ -87,8 +87,16 @@ export function useAdPilot() {
     actions.updateChange(c.id, { status: 'rejected' }, '반려', `${state.role} 반려`);
     return true;
   };
+  /** 승인 이후 단계도 승인 주체 범위 안의 역할만 (MILDO Flow 와 같은 규칙) */
+  const operable = (c: ChangeRequest, silent: boolean) => {
+    const perm = canOperate(state.role, c);
+    if (!perm.ok && !silent) actions.toast({ tone: 'warning', title: '처리 권한이 없습니다', body: perm.reason });
+    return perm.ok;
+  };
+  const val = (c: ChangeRequest, v: ChangeRequest['before']) => fmtChangeValue(c.kind, v);
   const apply = (c: ChangeRequest, silent = false) => {
     if (c.status !== 'approved') return false;
+    if (!operable(c, silent)) return false;
     if (c.module === 'gfa') {
       const v = validateGfaExecution(gfa, c);
       if (!v.ok) {
@@ -97,7 +105,7 @@ export function useAdPilot() {
         return false;
       }
       actions.updateChange(c.id, { status: 'applied' }, '실행 · 반영', v.reason);
-      if (!silent) actions.toast({ tone: 'good', title: 'GFA 변경을 실행했습니다', body: `${c.target}: ${c.before} → ${c.after}` });
+      if (!silent) actions.toast({ tone: 'good', title: 'GFA 변경을 실행했습니다', body: `${c.target}: ${val(c, c.before)} → ${val(c, c.after)}` });
       return true;
     }
     // 승인 뒤 보류(매체 급변 · 전환 추적 단절 · MILDO Alert 이슈)가 생긴 대상은 반영하지 않는다
@@ -108,11 +116,12 @@ export function useAdPilot() {
       return false;
     }
     actions.updateChange(c.id, { status: 'applied' }, '반영', ex.reason);
-    if (!silent) actions.toast({ tone: 'good', title: '반영했습니다', body: `${c.target}: ${c.before} → ${c.after} · 롤백 가능` });
+    if (!silent) actions.toast({ tone: 'good', title: '반영했습니다', body: `${c.target}: ${val(c, c.before)} → ${val(c, c.after)} · 롤백 가능` });
     return true;
   };
   const retry = (c: ChangeRequest) => {
     if (c.status !== 'held') return;
+    if (!operable(c, false)) return;
     const v = c.module === 'gfa' ? validateGfaExecution(gfa, { ...c, status: 'approved' }) : validateAdpilotExecution(data, { ...c, status: 'approved' }, proposals);
     if (!v.ok) {
       actions.updateChange(c.id, {}, '재실행 보류', v.reason);
@@ -120,23 +129,32 @@ export function useAdPilot() {
       return;
     }
     actions.updateChange(c.id, { status: 'applied' }, '재실행 · 반영', v.reason);
+    actions.toast({ tone: 'good', title: c.module === 'gfa' ? 'GFA 변경을 재실행했습니다' : '재실행 · 반영했습니다', body: `${c.target}: ${val(c, c.before)} → ${val(c, c.after)} · 롤백 가능` });
   };
   const cancel = (c: ChangeRequest) => {
     if (c.status !== 'held' && c.status !== 'approved') return;
+    if (!operable(c, false)) return;
     actions.updateChange(c.id, { status: 'rejected' }, '실행 취소', `${state.role} 취소 — 실행하지 않고 종료`);
+    actions.toast({ tone: 'info', title: '실행을 취소했습니다', body: `${c.target} — 실행하지 않고 종료 (반려 상태)` });
   };
   const rollback = (c: ChangeRequest, silent = false) => {
     const r = canRollback(state.changes, c);
     if (!r.ok) { if (!silent) actions.toast({ tone: 'warning', title: '롤백할 수 없습니다', body: r.reason }); return false; }
-    actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', `직전 상태로 복원: ${c.after} → ${c.before}`);
-    if (!silent) actions.toast({ tone: 'info', title: '롤백했습니다', body: `${c.target}: ${c.before}로 복원` });
+    if (!operable(c, silent)) return false;
+    actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', `직전 상태로 복원: ${val(c, c.after)} → ${val(c, c.before)}`);
+    if (!silent) actions.toast({ tone: 'info', title: '롤백했습니다', body: `${c.target}: ${val(c, c.before)}로 복원` });
     return true;
   };
+  const rollbackPlan = useMemo(() => rollbackAllPlan(state.changes, state.role), [state.changes, state.role]);
   const rollbackAll = () => {
-    const applied = changes.filter((c) => c.status === 'applied' && c.kind !== 'setting');
-    applied.forEach((c) => actions.updateChange(c.id, { status: 'rolled_back' }, '일괄 롤백', `직전 상태로 복원: ${c.after} → ${c.before}`));
-    actions.toast({ tone: 'info', title: `반영 ${applied.length}건을 롤백했습니다`, body: '모든 대상이 직전 입찰 · 예산 상태로 돌아갔습니다' });
-    return applied.length;
+    const { list, skipped } = rollbackPlan;
+    list.forEach((c) => actions.updateChange(c.id, { status: 'rolled_back' }, '일괄 롤백', `직전 상태로 복원: ${val(c, c.after)} → ${val(c, c.before)}`));
+    actions.toast({
+      tone: skipped.length ? 'warning' : 'info',
+      title: `반영 ${list.length}건을 롤백했습니다`,
+      body: skipped.length ? `현재 역할(${state.role}) 승인 범위 밖 ${skipped.length}건은 그대로 둡니다 — 승인 주체가 롤백하세요` : '모든 대상이 직전 입찰 · 예산 상태로 돌아갔습니다',
+    });
+    return list.length;
   };
   const notify = (p: AdPilotProposal) => {
     if (!canNotify(p)) return null;
@@ -154,16 +172,26 @@ export function useAdPilot() {
   const bulkItems = (ps: AdPilotProposal[]): BulkItem[] => ps.map((p) => ({ kind: p.kind, changePct: p.action === 'test_candidate' || p.action === 'hold' ? 0 : p.changePct, costDelta: p.costDelta }));
   const bulkCheck = (ps: AdPilotProposal[]): BulkCheck => checkBulk(bulkItems(ps), cfg, saDailyBudget);
 
+  const settingSplit = splitSettingInputs(settingChangeInputs(official, draft, state.role), state.changes);
   const submitSettings = () => {
-    const inputs = settingChangeInputs(official, draft, state.role);
-    inputs.forEach((i) => actions.addChange(i));
-    actions.toast({ tone: 'info', title: `기준 변경 승인 요청 ${inputs.length}건`, body: '반영되면 공식 기준이 바뀝니다 (MILDO Flow)', route: 'flow' });
+    const { fresh, duplicate } = settingSplit;
+    if (!fresh.length) {
+      actions.toast({ tone: 'warning', title: '이미 승인 요청한 기준입니다', body: `${duplicate.map((d) => d.target.replace('AD Pilot 기준 · ', '')).join(' · ')} — MILDO Flow에서 승인 · 반려 후 다시 요청하세요`, route: 'flow' });
+      return 0;
+    }
+    fresh.forEach((i) => actions.addChange(i));
+    actions.toast({
+      tone: 'info', title: `기준 변경 승인 요청 ${fresh.length}건`,
+      body: `반영되면 공식 기준이 바뀝니다 (MILDO Flow)${duplicate.length ? ` · 이미 열린 요청 ${duplicate.length}건은 제외` : ''}`, route: 'flow',
+    });
+    return fresh.length;
   };
 
   return {
     state, data, actions, cfg, official, draft, setDraft, dirty, baseProposals, proposals, downInfo, bids, kwStatus, diag, guards, paces, gfa, changes, saDailyBudget,
-    changeOf, statusOf, requestable, request, requestInput, approve, reject, apply, retry, cancel, rollback, rollbackAll, notify, bulkCheck, submitSettings,
+    changeOf, statusOf, requestable, request, requestInput, approve, reject, apply, retry, cancel, rollback, rollbackAll, rollbackPlan, notify, bulkCheck, submitSettings, settingSplit,
     canApprove: (c: ChangeRequest) => canApprove(state.role, c.approver),
+    canOperate: (c: ChangeRequest) => canOperate(state.role, c),
     canRollback: (c: ChangeRequest) => canRollback(state.changes, c),
     linkedIncident: (p: AdPilotProposal) => matchingIncident(p, state.incidents, data),
   };

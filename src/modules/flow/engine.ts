@@ -944,6 +944,8 @@ export function planRequest(data: Dataset, changes: readonly ChangeRequest[], in
         warnings.push(np.exhaustHour === null ? `증액 후 예상: 일 예산 내 소진 (${fmt.ratio(np.ratio, 0)})` : `증액 후 예상 마감 ${fmtHour(np.exhaustHour)} (현재 ${fmtHour(pace.exhaustHour)})`);
       }
     }
+    // 만 원 단위 반올림 후 0원이 되는 감액(-99.6% 등)도 0 이하 감액과 같이 차단
+    if (finite(pct) && pct < 0 && pct > -100 && typeof after === 'number' && after <= 0) errors.push('변경 후 일 예산이 0원이 됩니다 (만 원 단위) — ON/OFF 요청으로 바꾸세요');
     changePct = finite(pct) ? pct : undefined;
   } else if (d.type === 'bid') {
     module = 'adpilot';
@@ -1821,7 +1823,7 @@ export function incidentStagePatch(i: Incident, step: 'ack' | 'action' | 'report
   return { patch: { sla } as Partial<Incident>, log: '결과 보고 · MILDO Flow 운영 보고 생성' };
 }
 /** 이슈 → 바로 만들 수 있는 조치 요청 (계정 충전 · 품절 키워드 중지 · 조기 소진 예산) */
-export function incidentFix(data: Dataset, i: Incident, changes: readonly ChangeRequest[] = []): { label: string; input: ChangeInput; state: { id: string; status: FlowStatus } | null } | null {
+export function incidentFix(data: Dataset, i: Incident, changes: readonly ChangeRequest[] = [], incidents: readonly Incident[] = []): { label: string; input: ChangeInput; state: { id: string; status: FlowStatus } | null } | null {
   const t = i.target ?? '';
   // MILDO Alert 이슈 드로어에서 같은 조치를 이미 요청했으면 그 진행 상태를 보여 준다 (중복 요청 방지)
   const viaAlert = (suffix: string) => fixStateOf(changes, `alert:${i.id}:${suffix}`);
@@ -1843,7 +1845,9 @@ export function incidentFix(data: Dataset, i: Incident, changes: readonly Change
   const cmp = data?.campaigns?.find((c) => c.name === t);
   if (cmp) {
     const pace = paceCampaign(data, cmp, changes);
-    if (pace.level === 'before_peak') {
+    // 전환 추적 단절 · 데이터 급변으로 보류 중인 매체는 증액 원클릭 요청을 내지 않는다 (AD Pilot 보류와 같은 판단 · 반영해도 실행 점검에서 보류)
+    const held = guardsFor(data, incidents, cmp.media).length > 0;
+    if (pace.level === 'before_peak' && !held) {
       const need = Math.ceil(((pace.ratio - 1) * 100) / 5) * 5;
       const input = budgetFix(cmp, need, pace.budget, `${i.severity} ${i.title} · ${pace.basis}`);
       return { label: `일 예산 +${need}% 요청 (${APPROVER_LABEL[input.approver]})`, input, state: fixStateOf(changes, input.targetId!, 'budget') };

@@ -8,7 +8,7 @@ import {
   canAct, caseReport, fmtStamp, incidentDraft, incidentFix, opsBrief, opsEvents, OPS_STAGES, STAGE_LABEL, stageCounts, type OpsCase, type OpsStage, type RequestDraft,
 } from './engine';
 import { STATUS_META } from './data';
-import { ChangeValue, StatusPill } from './parts';
+import { ChangeValue, StatusPill, settled } from './parts';
 import type { FlowCtx } from './useFlow';
 
 export function TimelineTab({ ctx, onOpen, onDraft }: { ctx: FlowCtx; onOpen: (id: string) => void; onDraft: (d: RequestDraft) => void }) {
@@ -87,7 +87,7 @@ function CaseCard({ ctx, c, onOpen, onDraft }: { ctx: FlowCtx; c: OpsCase; onOpe
   const { data, changes, state, act, incidentStep, createRequest } = ctx;
   const [note, setNote] = useState('');
   const i = c.incident;
-  const fix = incidentFix(data, i, changes);
+  const fix = incidentFix(data, i, changes, ctx.incidents);
   return (
     <section className={`card flow-case sev-${i.severity}`}>
       <div className="row-between" style={{ alignItems: 'flex-start' }}>
@@ -123,8 +123,8 @@ function CaseCard({ ctx, c, onOpen, onDraft }: { ctx: FlowCtx; c: OpsCase; onOpe
                 <button type="button" className="flow-link-main" onClick={() => onOpen(x.id)}>
                   <StatusPill status={x.status} /><strong className="small">{x.target}</strong><ChangeValue c={x} />{inferred ? <span className="xs muted">관련 추정</span> : null}
                 </button>
-                {x.status === 'pending' ? <Button size="sm" variant="primary" disabled={!ok} title={ok ? '승인' : '현재 역할 승인 범위 밖'} onClick={() => act(x, 'approve')}>승인</Button> : null}
-                {x.status === 'approved' ? <Button size="sm" variant="accent" disabled={!ok} title={ok ? '반영' : '현재 역할 승인 범위 밖'} onClick={() => act(x, 'apply')}>반영</Button> : null}
+                {x.status === 'pending' ? <Button size="sm" variant="primary" disabled={!ok} title={ok ? '승인' : '현재 역할 승인 범위 밖'} onClick={settled(() => act(x, 'approve'))}>승인</Button> : null}
+                {x.status === 'approved' ? <Button size="sm" variant="accent" disabled={!ok} title={ok ? '반영' : '현재 역할 승인 범위 밖'} onClick={settled(() => act(x, 'apply'))}>반영</Button> : null}
               </div>
             );
           })}

@@ -1,5 +1,5 @@
 /* AD Pilot 화면 공용 조각 — 배지 · 값 표기 · 후보 상세 */
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ApprovalLevel, ChangeRequest } from '@/core/types';
 import { MEDIA, SA_CAMPAIGNS } from '@/data/constants';
 import { fmt, hhmm } from '@/core/util';
@@ -7,6 +7,35 @@ import { Delta, Drawer, Pill, Src } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
 import { APPROVER_LABEL, VERDICT_META, type AdPilotProposal, type KeywordDiagnosis } from './engine';
 import { STATUS_LABEL, STATUS_TONE } from './useAdPilot';
+
+/**
+ * 상태가 막 바뀐 직후에는 같은 자리에 새로 나타난 버튼을 잠깐 잠근다 — 더블 클릭의 두 번째 클릭이
+ * [승인 요청] 직후의 [반려], [반려] 직후의 [재요청] 등으로 이어지는 실수 방지.
+ */
+export const SETTLE_MS = 600;
+export const SETTLE_STYLE = { opacity: 0.55, cursor: 'wait' } as const;
+/** 화면 전체 처리 클릭 잠금 — 이력 표처럼 처리 직후 행이 밀리면 다른 요청의 버튼이 같은 자리로 오므로 */
+let lockUntil = 0;
+export function settledClick(fn: () => void): () => void {
+  return () => {
+    const now = Date.now();
+    if (now < lockUntil) return;
+    lockUntil = now + SETTLE_MS;
+    fn();
+  };
+}
+export function useJustChanged(c: ChangeRequest | undefined): boolean {
+  const last = c?.history?.[c.history.length - 1]?.at;
+  const age = last ? Date.now() - Date.parse(last) : Infinity;
+  const fresh = age >= 0 && age < SETTLE_MS;
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!fresh) return undefined;
+    const t = setTimeout(() => force((x) => x + 1), SETTLE_MS - age + 30);
+    return () => clearTimeout(t);
+  }, [fresh, last, age]);
+  return fresh;
+}
 
 export const ACTION_META: Record<AdPilotProposal['action'], { label: string; tone: 'good' | 'serious' | 'neutral' | 'outline' | 'warning'; icon: string }> = {
   bid_up: { label: '입찰 상향', tone: 'good', icon: 'up' },
@@ -68,7 +97,10 @@ export function Dl({ items }: { items: [ReactNode, ReactNode][] }) {
 }
 
 /** 후보 상세 드로어 — 근거 · SAFETY · 원인 후보 · 시뮬레이션 · 변경 이력 */
-export function ProposalDrawer({ p, change, onClose, actions }: { p: AdPilotProposal; change?: ChangeRequest; onClose: () => void; actions?: ReactNode }) {
+export function ProposalDrawer({ p, change, onClose: close, actions }: { p: AdPilotProposal; change?: ChangeRequest; onClose: () => void; actions?: ReactNode }) {
+  // 행 더블 클릭의 두 번째 클릭이 막 열린 상세 창 바깥(오버레이)을 눌러 바로 닫지 않게, 열린 직후 잠깐은 닫기를 무시
+  const openedAt = useRef(Date.now());
+  const onClose = () => { if (Date.now() - openedAt.current < SETTLE_MS) return; close(); };
   return (
     <Drawer title={<span className="row" style={{ gap: 8 }}><ActionPill p={p} />{p.keyword}</span>} onClose={onClose}>
       <div className="row" style={{ gap: 6 }}>

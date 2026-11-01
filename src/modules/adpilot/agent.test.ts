@@ -40,6 +40,8 @@ describe('agentKit', () => {
       const r = await t.execute(input);
       const s = JSON.stringify(r);
       expect(s.length).toBeLessThan(32_000);
+      // 계약은 UTF-8 바이트 기준 32KB (한글은 3바이트)
+      expect(new TextEncoder().encode(s).length).toBeLessThanOrEqual(32_768);
       expect(s).not.toMatch(/NaN/);
     }
   });

@@ -99,7 +99,7 @@ export default function View() {
       {tab === 'request' ? <RequestTab ctx={ctx} draft={draft} setDraft={setDraft} onCreated={(id) => { setTab('board'); setOpenId(id); }} /> : null}
       {tab === 'system' ? <SystemTab ctx={ctx} onTab={(t) => setTab(t as FlowTab)} /> : null}
 
-      {openId ? <ChangeDrawer ctx={ctx} id={openId} onClose={() => setOpenId(null)} /> : null}
+      {openId ? <ChangeDrawer key={openId} ctx={ctx} id={openId} onClose={() => setOpenId(null)} /> : null}
     </div>
   );
 }

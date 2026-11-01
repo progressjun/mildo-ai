@@ -506,7 +506,10 @@ function planUp(start: number, current: number, maxBid: number, wanted: number, 
   if (after > capAbs) { after = capAbs; limitedBy.push(`일 조정 폭 상한 ${cfg.dailyChangeCapPct}%`); }
   if (after > maxBid) { after = floor10(maxBid); limitedBy.push(`최대 입찰가 ${fmt.won(maxBid)}`); }
   if (after <= current) return { capped: '조정 여유 없음' };
-  return { after, pct: round1((after / current - 1) * 100), limitedBy };
+  const pct = round1((after / current - 1) * 100);
+  // 상한 · 최대 입찰가에 잘려 최소 조정 폭보다 작아진 조정은 제안하지 않는다 (반영 직후 +1% 재제안 방지)
+  if (limitedBy.length && pct < cfg.minStepPct) return { capped: `남은 조정 여유 ${fmt.delta(pct, 1)} < 최소 조정 폭 ${cfg.minStepPct}% (${limitedBy.join(' · ')})` };
+  return { after, pct, limitedBy };
 }
 
 function planDown(start: number, current: number, wanted: number, cfg: AdPilotConfig): { after: number; pct: number; limitedBy: string[] } | { capped: string } {
@@ -518,7 +521,9 @@ function planDown(start: number, current: number, wanted: number, cfg: AdPilotCo
   const limitedBy: string[] = [];
   if (after < floorAbs) { after = floorAbs; limitedBy.push(`일 조정 폭 상한 ${cfg.dailyChangeCapPct}%`); }
   if (after >= current) return { capped: '조정 여유 없음' };
-  return { after, pct: round1((after / current - 1) * 100), limitedBy };
+  const pct = round1((after / current - 1) * 100);
+  if (limitedBy.length && -pct < cfg.minStepPct) return { capped: `남은 조정 여유 ${fmt.delta(pct, 1)} < 최소 조정 폭 ${cfg.minStepPct}% (${limitedBy.join(' · ')})` };
+  return { after, pct, limitedBy };
 }
 
 /** 전 키워드 판정 — 판정마다 기준값 · 근거 수치를 함께 반환 */
@@ -1488,7 +1493,58 @@ export function canRollback(changes: readonly ChangeRequest[], c: ChangeRequest)
   if (c.status !== 'applied') return { ok: false, reason: '반영된 건만 롤백할 수 있습니다' };
   const later = (changes ?? []).filter((x) => x.id !== c.id && x.module === c.module && x.targetId === c.targetId && x.kind === c.kind && x.status === 'applied' && appliedAt(x) > appliedAt(c));
   if (later.length) return { ok: false, reason: '이후 반영된 변경이 있어 최신 건부터 롤백해야 합니다' };
-  return { ok: true, reason: `직전 상태(${c.before})로 복원` };
+  return { ok: true, reason: `직전 상태(${fmtChangeValue(c.kind, c.before)})로 복원` };
+}
+
+/**
+ * 승인 이후 단계(반영 · 실행 · 재실행 · 실행 취소 · 롤백)도 승인 주체 범위 안의 역할만 처리한다
+ * — MILDO Flow canAct 와 같은 규칙 (AE는 AE 건, PM은 AE · PM 건, 수면밀도는 전부).
+ */
+export function canOperate(role: Role | string, c: Pick<ChangeRequest, 'approver'>): { ok: boolean; reason: string } {
+  return canApprove(role, c.approver);
+}
+
+/**
+ * SAFETY '반영분 전체 롤백' 대상 — 현재 역할 범위 안의 반영 건만, 최신 건부터.
+ * 같은 대상에 범위 밖 최신 반영 건이 있으면 그 이전 건도 건너뛴다 (최신 건부터 롤백 원칙).
+ */
+export function rollbackAllPlan(changes: readonly ChangeRequest[], role: Role | string): { list: ChangeRequest[]; skipped: ChangeRequest[] } {
+  const applied = (changes ?? [])
+    .filter((c) => (c.module === 'adpilot' || c.module === 'gfa') && c.status === 'applied' && c.kind !== 'setting')
+    .sort((a, b) => appliedAt(b).localeCompare(appliedAt(a)));
+  const blocked = new Set<string>();
+  const list: ChangeRequest[] = [];
+  const skipped: ChangeRequest[] = [];
+  for (const c of applied) {
+    const key = `${c.module}|${c.kind}|${c.targetId ?? c.target}`;
+    if (blocked.has(key) || !canOperate(role, c).ok) { blocked.add(key); skipped.push(c); continue; }
+    list.push(c);
+  }
+  return { list, skipped };
+}
+
+/** 토스트 · 이력 메모용 값 표기 — 입찰은 원, 예산 · GFA는 만 단위, ON/OFF, 기준값은 그대로 */
+export function fmtChangeValue(kind: ChangeKind, v: string | number): string {
+  if (v === 'on') return 'ON';
+  if (v === 'off') return 'OFF';
+  if (typeof v !== 'number' || !Number.isFinite(v)) return String(v ?? '—');
+  if (kind === 'bid') return fmt.won(v);
+  if (kind === 'budget' || kind === 'gfa') return fmt.krw(v);
+  return String(v);
+}
+
+/**
+ * 기준 변경 승인 요청 중복 방지 — 같은 기준 항목에 아직 열린(승인 대기 · 승인 · 보류) 기준 변경 요청이 있으면 새로 만들지 않는다.
+ * fresh: 새로 만들 요청, duplicate: 이미 열린 요청이 있는 항목
+ */
+export function splitSettingInputs(inputs: readonly ChangeInput[], changes: readonly ChangeRequest[]): { fresh: ChangeInput[]; duplicate: ChangeInput[] } {
+  const open = new Set((changes ?? [])
+    .filter((c) => c.module === 'adpilot' && c.kind === 'setting' && (c.status === 'pending' || c.status === 'approved' || c.status === 'held'))
+    .map((c) => c.targetId));
+  const fresh: ChangeInput[] = [];
+  const duplicate: ChangeInput[] = [];
+  for (const i of inputs) (open.has(i.targetId) ? duplicate : fresh).push(i);
+  return { fresh, duplicate };
 }
 
 /** 반영된 예산 변경을 캠페인에 적용 (AD Pilot 재배분 + GFA 일 예산 변경) */
@@ -1712,6 +1768,8 @@ export function planGfaRequest(views: GfaAccountView[], d: GfaRequestDraft): Gfa
     if (cv && Number.isFinite(pct) && pct < 0 && cv.pace.earlyExhaust) warnings.push('조기 소진 예상 캠페인을 감액하면 마감이 더 빨라집니다');
     const before = cv?.campaign.dailyBudget ?? 0;
     const after = Math.round((before * (1 + (Number.isFinite(pct) ? pct : 0) / 100)) / 10000) * 10000;
+    // 만 원 단위 반올림 후 0원이 되는 감액(-99.6% 등)도 0 이하 감액과 같이 차단
+    if (cv && Number.isFinite(pct) && pct < 0 && pct > -100 && after <= 0) errors.push(`변경 후 일 예산이 0원이 됩니다 (${fmt.krw(before)} × ${fmt.delta(pct, 1)}, 만 원 단위) — 캠페인 OFF로 요청하세요`);
     return { ok: !errors.length, errors, warnings, route, kind: 'budget', target: cv ? `${cv.campaign.name} 일 예산` : '—', targetId: `gfa:budget:${d.campaignId ?? ''}`, before, after, changePct: Number.isFinite(pct) ? pct : undefined };
   }
   if (d.type === 'adgroup') {

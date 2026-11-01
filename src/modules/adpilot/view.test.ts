@@ -2,7 +2,7 @@
  * 화면 스모크 테스트 — 서버 렌더로 View 와 모든 탭이 데모 데이터에서 예외 없이 그려지는지,
  * 핵심 시나리오 문구와 출처 태그가 화면에 나오는지 확인한다. (DOM 없는 node 환경)
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createElement as h } from 'react';
 import { renderToString } from 'react-dom/server';
 import type { ChangeRequest, Incident } from '@/core/types';
@@ -112,5 +112,21 @@ describe('AD Pilot 화면 렌더', () => {
     } finally {
       stored = before;
     }
+  });
+});
+
+describe('기능 점검 회귀 — 더블 클릭 방지 잠금', () => {
+  it('settledClick: 처리 직후 같은 자리 버튼의 두 번째 클릭은 무시 (승인 요청 → 반려 오작동 방지)', async () => {
+    const { settledClick, SETTLE_MS } = await import('./parts');
+    let now = 2_000_000;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const hits: string[] = [];
+    const request = settledClick(() => hits.push('request'));
+    const reject = settledClick(() => hits.push('reject'));
+    request(); now += 120; reject();
+    expect(hits).toEqual(['request']);
+    now += SETTLE_MS; reject();
+    expect(hits).toEqual(['request', 'reject']);
+    spy.mockRestore();
   });
 });

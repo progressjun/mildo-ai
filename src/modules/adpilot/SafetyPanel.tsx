@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { hhmm } from '@/core/util';
 import { Button, Card, Pill, Src } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
 import { CONFIG_FIELDS, type NumericConfigKey, resolveConfig } from './engine';
 import { SAFETY_ITEMS } from './data';
 import type { AdPilotCtx } from './useAdPilot';
+import { SETTLE_MS } from './parts';
 
 /** 입력 중에는 문자열로 두고 blur · Enter 에서 확정 (확정 시 범위 보정) */
 function CommitNumber({ id, value, step, min, max, suffix, onCommit }: { id: string; value: number; step: number; min: number; max: number; suffix: string; onCommit: (v: number) => void }) {
@@ -43,7 +44,9 @@ function CfgInput({ ap, k, pct = false }: { ap: AdPilotCtx; k: NumericConfigKey;
 /** SAFETY 패널 (p.14) — 일 조정 폭 상한 · 브랜드 별도 기준 · 변경 이력 · 즉시 롤백 + 판정 기준 편집 */
 export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () => void }) {
   const [confirmRb, setConfirmRb] = useState(false);
+  const armedAt = useRef(0);
   const applied = ap.changes.filter((c) => c.status === 'applied' && c.kind !== 'setting');
+  const rb = ap.rollbackPlan;
   const log = useMemo(() => ap.changes
     .flatMap((c) => c.history.map((h) => ({ ...h, target: c.target })))
     .sort((a, b) => b.at.localeCompare(a.at))
@@ -82,7 +85,9 @@ export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () =
             <div className="stack-sm">
               <div className="xs">미승인 기준 {ap.dirty.length}건으로 화면 판정을 시뮬레이션 중입니다. 공식 기준은 승인 · 반영 후 바뀝니다 (목표 ROAS · 상한은 수면밀도 승인).</div>
               <div className="row" style={{ gap: 6 }}>
-                <Button size="sm" variant="accent" icon="send" onClick={ap.submitSettings}>기준 변경 승인 요청 {ap.dirty.length}건</Button>
+                {ap.settingSplit.fresh.length
+                  ? <Button size="sm" variant="accent" icon="send" onClick={ap.submitSettings}>기준 변경 승인 요청 {ap.settingSplit.fresh.length}건</Button>
+                  : <Button size="sm" icon="check" disabled title="같은 기준 항목의 열린 요청이 있습니다 — MILDO Flow에서 승인 · 반려 후 다시 요청">승인 요청됨 {ap.settingSplit.duplicate.length}건</Button>}
                 <Button size="sm" icon="refresh" onClick={() => ap.setDraft(ap.official)}>공식 기준으로</Button>
               </div>
             </div>
@@ -109,13 +114,14 @@ export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () =
           <div className="adpilot-kv">
             <span>반영 중인 변경 (입찰 · 예산 · 상태)</span><strong className="num">{applied.length}건</strong>
           </div>
-          {confirmRb ? (
+          {rb.skipped.length ? <div className="xs adpilot-dim">현재 역할({ap.state.role}) 승인 범위 밖 {rb.skipped.length}건은 일괄 롤백에서 제외됩니다.</div> : null}
+          {confirmRb && rb.list.length ? (
             <div className="row" style={{ gap: 6 }}>
-              <Button size="sm" variant="danger" icon="rollback" onClick={() => { ap.rollbackAll(); setConfirmRb(false); }}>{applied.length}건 모두 복원 확정</Button>
+              <Button size="sm" variant="danger" icon="rollback" onClick={() => { if (Date.now() - armedAt.current < SETTLE_MS) return; ap.rollbackAll(); setConfirmRb(false); }}>{rb.list.length}건 모두 복원 확정</Button>
               <Button size="sm" onClick={() => setConfirmRb(false)}>취소</Button>
             </div>
           ) : (
-            <Button size="sm" icon="rollback" disabled={!applied.length} onClick={() => setConfirmRb(true)}>반영분 전체 롤백</Button>
+            <Button size="sm" icon="rollback" disabled={!rb.list.length} onClick={() => { armedAt.current = Date.now(); setConfirmRb(true); }}>반영분 전체 롤백</Button>
           )}
         </div>
       </div>
