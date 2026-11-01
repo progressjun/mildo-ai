@@ -116,7 +116,7 @@ export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () =
           {confirmRb && rb.list.length ? (
             <div className="row" style={{ gap: 6 }}>
               <Button size="sm" variant="danger" icon="rollback" onClick={(e) => { if (e.detail > 1) return; ap.rollbackAll(); setConfirmRb(false); }}>{rb.list.length}건 모두 복원 확정</Button>
-              <Button size="sm" onClick={() => setConfirmRb(false)}>취소</Button>
+              <Button size="sm" onClick={(e) => { if (e.detail > 1) return; setConfirmRb(false); }}>취소</Button>
             </div>
           ) : (
             <Button size="sm" icon="rollback" disabled={!rb.list.length} onClick={() => setConfirmRb(true)}>반영분 전체 롤백</Button>

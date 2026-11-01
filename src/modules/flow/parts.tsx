@@ -94,7 +94,7 @@ export function ConfirmButton({ label, confirmLabel, onConfirm, icon, variant = 
   return (
     <span className="row" style={{ gap: 4 }}>
       <Button size={size} variant={variant === 'default' ? 'primary' : variant} icon="check" onClick={(e) => { if (e.detail > 1) return; setArmed(false); onConfirm(); }}>{confirmLabel ?? <>확인 · {label}</>}</Button>
-      <Button size={size} variant="ghost" onClick={() => setArmed(false)}>취소</Button>
+      <Button size={size} variant="ghost" onClick={(e) => { if (e.detail > 1) return; setArmed(false); }}>취소</Button>
     </span>
   );
 }
