@@ -9,8 +9,13 @@ import { briefToMarkdown, type Brief } from '@/ai/prompts';
 import { headline } from '@/core/selectors';
 import { fmt } from '@/core/util';
 
+/**
+ * 전 모듈 도구 목록 — 모듈별 첫 번째 도구부터 돌아가며 배치(라운드 로빈)한다.
+ * claude.ai 런타임은 호출당 도구 수 상한(limits().tools.maxCount)을 두므로, 앞에서부터 잘려도
+ * 모든 모듈의 대표(조회) 도구가 먼저 남게 한다. 각 모듈 kit은 첫 도구를 대표 조회 도구로 둔다.
+ */
 export function collectTools(ctx: ToolContext): { module: string; tool: AgentTool }[] {
-  const out: { module: string; tool: AgentTool }[] = [];
+  const perModule: { module: string; tools: AgentTool[] }[] = [];
   const seen = new Set<string>();
   for (const m of MODULES) {
     if (!m.agent) continue;
@@ -20,11 +25,16 @@ export function collectTools(ctx: ToolContext): { module: string; tool: AgentToo
     } catch {
       tools = [];
     }
-    for (const t of tools) {
-      if (seen.has(t.name) || !/^[A-Za-z0-9_-]{1,128}$/.test(t.name)) continue;
+    const valid = tools.filter((t) => {
+      if (seen.has(t.name) || !/^[A-Za-z0-9_-]{1,128}$/.test(t.name)) return false;
       seen.add(t.name);
-      out.push({ module: m.id, tool: t });
-    }
+      return true;
+    });
+    if (valid.length) perModule.push({ module: m.id, tools: valid });
+  }
+  const out: { module: string; tool: AgentTool }[] = [];
+  for (let round = 0; perModule.some((p) => p.tools.length > round); round++) {
+    for (const p of perModule) if (p.tools[round]) out.push({ module: p.module, tool: p.tools[round] });
   }
   return out;
 }
