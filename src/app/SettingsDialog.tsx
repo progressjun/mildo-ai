@@ -34,7 +34,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         </Callout>
         <div className="row">
           {confirmReset ? (
-            <Button variant="danger" size="sm" icon="refresh" onClick={() => { dispatch({ type: 'reset' }); broadcastReset(); onClose(); }}>정말 초기화</Button>
+            <Button variant="danger" size="sm" icon="refresh" onClick={(e) => { if (e.detail > 1) return; /* 더블클릭의 두 번째 클릭이 같은 자리에 나타난 확인 버튼을 누르지 않게 */ dispatch({ type: 'reset' }); broadcastReset(); onClose(); }}>정말 초기화</Button>
           ) : (
             <Button size="sm" icon="refresh" onClick={() => setConfirmReset(true)}>시연 상태 초기화</Button>
           )}

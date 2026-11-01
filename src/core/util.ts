@@ -48,6 +48,7 @@ export const fmt = {
     if (!Number.isFinite(n)) return '—';
     const sign = n < 0 ? '-' : '';
     const a = Math.abs(n);
+    if (a >= 1e12) return `${sign}${(a / 1e12).toFixed(a >= 1e13 ? 0 : 1).replace(/\.0$/, '')}조`;
     if (a >= 1e8) return `${sign}${(a / 1e8).toFixed(a >= 1e10 ? 0 : a >= 1e9 ? 1 : 2).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')}억`;
     if (a >= 1e4) return `${sign}${nf0.format(Math.round(a / 1e4))}만`;
     return `${sign}${nf0.format(Math.round(a))}`;
