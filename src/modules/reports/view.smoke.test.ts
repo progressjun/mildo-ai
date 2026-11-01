@@ -164,6 +164,22 @@ describe('리포트 화면 렌더', () => {
     expect(tt).toMatch(/리포트별 리드타임[\s\S]*?제안서 p\.17 · p\.18/);
   });
 
+  it('이슈 알림: MILDO Alert에 등록된 이슈가 없으면 재탐지 미리보기 + Alert 안내 (대상 이슈 선택 없음)', async () => {
+    mem['mildo-os/v1'] = JSON.stringify({ incidents: [], comments: [], changes: [], role: '담당 AE' });
+    const { ReportsTab } = await import('./ReportsTab');
+    const report = generateReport('issue', DEMO, { incidents: [] });
+    const html = await wrap(h(ReportsTab, {
+      type: 'issue', report, genMs: 1, month: '2026-10', setMonth: () => undefined, issueId: null, setIssueId: () => undefined,
+      interpKey: 'issue', interp: null, setInterp: () => undefined, sendLabel: '감지 즉시',
+    }));
+    expect(html).toContain('MILDO Alert에 등록된 이슈가 없습니다');
+    expect(html).toContain('href="#alert"');
+    expect(html).not.toContain('id="reports-issue"');
+    expect(html).toContain('카카오');
+    expect(html).not.toMatch(/NaN|undefined/);
+    delete mem['mildo-os/v1'];
+  });
+
   it('빈 데이터에서도 예외 없음', async () => {
     const { ReportsTab } = await import('./ReportsTab');
     const { SavingsTab, DEFAULT_SAVINGS_INPUTS } = await import('./SavingsTab');

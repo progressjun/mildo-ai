@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useStore } from '@/core/store';
+import { broadcastReset, useStore } from '@/core/store';
 import { Button, Callout, Field, Modal, Segmented } from '@/ui/primitives';
 import { useAi } from '@/ai/useAi';
 import { BACKEND_LABEL } from '@/ai/claude';
@@ -34,7 +34,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         </Callout>
         <div className="row">
           {confirmReset ? (
-            <Button variant="danger" size="sm" icon="refresh" onClick={() => { dispatch({ type: 'reset' }); onClose(); }}>정말 초기화</Button>
+            <Button variant="danger" size="sm" icon="refresh" onClick={() => { dispatch({ type: 'reset' }); broadcastReset(); onClose(); }}>정말 초기화</Button>
           ) : (
             <Button size="sm" icon="refresh" onClick={() => setConfirmReset(true)}>시연 상태 초기화</Button>
           )}

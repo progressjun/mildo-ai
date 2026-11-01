@@ -4,8 +4,8 @@ import { fmt, fmtDate } from '@/core/util';
 import { Button, Callout, Card, CopyButton, Pill, Segmented, Src, Stat, type Tone as UiTone } from '@/ui/primitives';
 import { ShareBar } from '@/ui/charts';
 import { Icon } from '@/ui/Icon';
-import { aboutHours, automationRollout, computeSavings, fmtCut, measuredVerdict, reinvestPlan, type PhaseStatus, type SavingsMode, type SavingsResult } from './engine';
-import { KICKOFF_ASSUMED, REFERENCE_BRANDS, REINVEST_DEFAULT, ROLLOUT_SUB, SAVINGS_CONFIRM_DAYS, SAVINGS_FLOOR_PCT, WEEK_MINUTES_PER_FTE } from './data';
+import { aboutHours, automationRollout, computeSavings, fmtCut, measuredVerdict, parseBoundedInput, reinvestPlan, type PhaseStatus, type SavingsMode, type SavingsResult } from './engine';
+import { KICKOFF_ASSUMED, REFERENCE_BRANDS, REINVEST_DEFAULT, ROLLOUT_SUB, SAVINGS_CONFIRM_DAYS, SAVINGS_FLOOR_PCT, SAVINGS_INPUT_MAX_MIN, WEEK_MINUTES_PER_FTE } from './data';
 
 export interface SavingsInputs {
   before: Record<string, number>;
@@ -30,15 +30,15 @@ const PHASE_PILL: Record<PhaseStatus, { tone: UiTone; label: string }> = {
 
 /**
  * 숫자 입력 — 입력 중에는 문자열 초안을 유지해 값을 지워도 즉시 기본값으로 되돌아가지 않는다.
- * 유효한 값(0 이상)만 반영하고, allowEmpty면 빈 값도 반영(실측 미입력 = null)한다. 포커스가 빠지면 반영된 값으로 표시를 맞춘다.
+ * 유효한 값(0 이상 · max 이하)만 반영하고, allowEmpty면 빈 값도 반영(실측 미입력 = null)한다. 포커스가 빠지면 반영된 값으로 표시를 맞춘다.
  */
 function DraftNumber({ id, value, onCommit, label, step, max, className, placeholder, allowEmpty }: {
   id: string; value: number | null; onCommit: (raw: string) => void; label: string; step: number; max?: number; className: string; placeholder?: string; allowEmpty?: boolean;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const shown = draft ?? (value === null || !Number.isFinite(value) ? '' : String(value));
-  // 음수 등 반영하지 않는 값은 입력칸에 그대로 두되 오류로 표시한다 (포커스가 빠지면 마지막 반영값으로 되돌아감)
-  const invalid = draft !== null && draft !== '' && !(Number.isFinite(Number(draft)) && Number(draft) >= 0);
+  // 음수 · 상한 초과 등 반영하지 않는 값은 입력칸에 그대로 두되 오류로 표시한다 (포커스가 빠지면 마지막 반영값으로 되돌아감)
+  const invalid = draft !== null && draft !== '' && parseBoundedInput(draft, max) === null;
   const errId = `${id}-err`;
   return (
     <>
@@ -48,11 +48,10 @@ function DraftNumber({ id, value, onCommit, label, step, max, className, placeho
           const raw = e.target.value;
           setDraft(raw);
           if (raw === '') { if (allowEmpty) onCommit(''); return; }
-          const v = Number(raw);
-          if (Number.isFinite(v) && v >= 0) onCommit(raw);
+          if (parseBoundedInput(raw, max) !== null) onCommit(raw);
         }}
         onBlur={() => setDraft(null)} />
-      {invalid ? <div id={errId} className="xs reports-input-err" role="alert">0 이상 숫자만 반영</div> : null}
+      {invalid ? <div id={errId} className="xs reports-input-err" role="alert">{max !== undefined ? `0~${fmt.int(max)} 숫자만 반영` : '0 이상 숫자만 반영'}</div> : null}
     </>
   );
 }
@@ -80,18 +79,16 @@ export function SavingsTab({ today, inputs, setInputs }: { today: string; inputs
   const edited = s.edited || Object.values(inputs.measured).some((v) => v !== null && v !== undefined);
   const setBefore = (task: string, raw: string) => setInputs((p) => {
     const next = { ...p.before };
-    const v = Number(raw);
-    if (raw === '' || !Number.isFinite(v) || v < 0) delete next[task];
+    const v = parseBoundedInput(raw, SAVINGS_INPUT_MAX_MIN);
+    if (v === null) delete next[task];
     else next[task] = v;
     return { ...p, before: next };
   });
   const setMeasured = (task: string, raw: string) => setInputs((p) => {
-    const v = Number(raw);
-    return { ...p, measured: { ...p.measured, [task]: raw === '' || !Number.isFinite(v) || v < 0 ? null : v } };
+    return { ...p, measured: { ...p.measured, [task]: parseBoundedInput(raw, SAVINGS_INPUT_MAX_MIN) } };
   });
   const setShare = (id: string, raw: string) => setInputs((p) => {
-    const v = Number(raw);
-    return { ...p, shares: { ...p.shares, [id]: Number.isFinite(v) && v >= 0 ? v : 0 } };
+    return { ...p, shares: { ...p.shares, [id]: parseBoundedInput(raw, 100) ?? 0 } };
   });
   const confirmDate = ro.confirmDate;
   const d90 = ro.phases.find((p) => p.id === 'd90');
@@ -176,7 +173,7 @@ export function SavingsTab({ today, inputs, setInputs }: { today: string; inputs
                     <td><strong>{r.task}</strong><div className="xs muted">{r.how}</div></td>
                     <td><a className="small" href={`#${r.route}`}>{r.moduleLabel || r.route}</a></td>
                     <td className="r">
-                      <DraftNumber id={`reports-sv-before-${ri}`} className={`input num reports-input-sm${r.edited ? ' edited' : ''}`} step={10} label={`${r.task} 기존 분/주`} value={r.before} onCommit={(raw) => setBefore(r.task, raw)} />
+                      <DraftNumber id={`reports-sv-before-${ri}`} className={`input num reports-input-sm${r.edited ? ' edited' : ''}`} step={10} max={SAVINGS_INPUT_MAX_MIN} label={`${r.task} 기존 분/주`} value={r.before} onCommit={(raw) => setBefore(r.task, raw)} />
                       {r.edited ? <div className="xs muted num">제안서 {fmt.int(r.defaultBefore)}</div> : null}
                     </td>
                     <td className="r num">{fmt.int(r.after)}{r.edited ? <div className="xs muted">제안서 {fmt.int(r.defaultAfter)}</div> : null}</td>
@@ -190,7 +187,7 @@ export function SavingsTab({ today, inputs, setInputs }: { today: string; inputs
                       </div>
                     </td>
                     <td className="r">
-                      <DraftNumber id={`reports-sv-measured-${ri}`} className="input num reports-input-sm" step={5} placeholder="—" allowEmpty label={`${r.task} 자동화 후 실측 분/주`} value={r.measured} onCommit={(raw) => setMeasured(r.task, raw)} />
+                      <DraftNumber id={`reports-sv-measured-${ri}`} className="input num reports-input-sm" step={5} max={SAVINGS_INPUT_MAX_MIN} placeholder="—" allowEmpty label={`${r.task} 자동화 후 실측 분/주`} value={r.measured} onCommit={(raw) => setMeasured(r.task, raw)} />
                     </td>
                     <td>
                       {v ? (

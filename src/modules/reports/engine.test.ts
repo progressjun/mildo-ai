@@ -14,13 +14,13 @@ import {
   sortIssues, termCandidates, bidCandidates, kst, clockOf, blockToMarkdown, upcomingOffBlocks, measuredVerdict, type Report,
   automationRollout, cadenceStatus, daysBetween, mediaDayShifts, merOf,
   adPilotSummary, aeTarget, commentTarget, offDayOf, scopeOf, spikeCause, weekdayPattern, won,
-  isBusinessDay, keywordTests, reportRules, sendSchedule, DEFAULT_TEST_CRITERIA, fmtCut, isClientAuthor,
+  isBusinessDay, keywordTests, reportRules, sendSchedule, DEFAULT_TEST_CRITERIA, fmtCut, isClientAuthor, parseBoundedInput, pendingModules,
 } from './engine';
 import { generateBidProposals } from '@/modules/adpilot/engine';
 import { buildPipeline } from '@/modules/lab/engine';
 import { LAB_DEFAULT_CRITERIA } from '@/modules/lab/data';
 import { addDays, isOffDay, KR_HOLIDAYS } from '@/core/util';
-import { REPORT_META, REPORT_TYPES as REPORT_TYPES_ALL, TIMETABLE_META } from './data';
+import { REPORT_META, REPORT_TYPES as REPORT_TYPES_ALL, SAVINGS_INPUT_MAX_MIN, TIMETABLE_META } from './data';
 
 const INCIDENTS = detectIncidents(DEMO);
 
@@ -80,6 +80,20 @@ describe('SA 업무 자동화 절감 (p.19)', () => {
     expect(Number.isFinite(all0.fte)).toBe(true);
   });
 
+  it('입력 상한: 한 주 10,080분을 넘는 기존 · 실측 값은 반영하지 않는다 (회귀: 1e12 입력이 1,000,000,000,769분 합계로 표시)', () => {
+    expect(SAVINGS_INPUT_MAX_MIN).toBe(10_080);
+    expect(parseBoundedInput('600', SAVINGS_INPUT_MAX_MIN)).toBe(600);
+    expect(parseBoundedInput('12.5', SAVINGS_INPUT_MAX_MIN)).toBe(12.5);
+    expect(parseBoundedInput('10080', SAVINGS_INPUT_MAX_MIN)).toBe(10_080);
+    expect(parseBoundedInput('0')).toBe(0);
+    for (const bad of ['', '  ', '-1', 'abc', 'NaN', 'Infinity', '10081', '1e12']) expect(parseBoundedInput(bad, SAVINGS_INPUT_MAX_MIN), bad).toBeNull();
+    expect(parseBoundedInput('101', 100)).toBeNull();
+    const s = computeSavings({ before: { '일간 성과 조회·취합': 1e12 }, measured: { '주간 보고서 작성': 1e12 } });
+    expect(s.before).toBe(1070);
+    expect(s.measured).toBeNull();
+    expect(computeSavings({ before: { '일간 성과 조회·취합': 10_080 } }).before).toBe(1070 - 300 + 10_080);
+  });
+
   it('온보딩 30일 실측 입력 → 목표 달성 / 하한 충족 · 목표 미달 / 하한 미달', () => {
     const hit = computeSavings({ measured: { '일간 성과 조회·취합': 80 } });
     expect(hit.measured?.verdict.label).toBe('목표 달성');
@@ -113,6 +127,14 @@ describe('SA 업무 자동화 절감 (p.19)', () => {
 /* ---------------- 데이터 시간표 (p.18) ---------------- */
 
 describe('데이터 제공 시간표 (p.18)', () => {
+  it('16:30 승인 대기 모듈은 화면 이름으로 표기 (회귀: "lab · alert · adpilot" 내부 id 노출)', () => {
+    expect(pendingModules([{ module: 'lab' }, { module: 'alert' }, { module: 'adpilot' }, { module: 'lab' }, { module: 'gfa' }])).toBe('MILDO Lab · MILDO Alert · AD Pilot · GFA Control');
+    expect(pendingModules([{ module: 'unknown_x' }])).toBe('unknown_x');
+    const pending = ['lab', 'adpilot'].map((module, i) => ({ id: `c${i}`, module, status: 'pending' }) as unknown as ChangeRequest);
+    const row = buildTimetable(DEMO, { changes: pending }).items.find((i) => i.time === '16:30')!;
+    expect(row.output).toContain('승인 대기 2건 (MILDO Lab · AD Pilot)');
+    expect(row.output).not.toMatch(/\((lab|alert|adpilot)( · |\))/);
+  });
   it('기준 시각 15:30 · 토요일 → 이슈 브리핑은 다음 영업일 09:30으로 이동', () => {
     expect(dataNowMinutes(DEMO)).toBe(15 * 60 + 30);
     const t = buildTimetable(DEMO, { incidents: INCIDENTS });

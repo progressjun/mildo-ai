@@ -218,7 +218,8 @@ export function ReportDocument({ report, interp, aeNotes, aiSlot }: {
         return (
           <div key={z} className={`reports-zone ${z}`}>
             <div className="reports-zone-label">{zoneLabelOf(report, z)}</div>
-            {secs.map((s) => <SectionView key={s.id} report={report} s={s} />)}
+            {/* 키는 코멘트 범위 + 섹션 — 섹션 id(summary · patterns)가 리포트 · 월 · 이슈 사이에 겹쳐도 열린 입력칸 · 작성 중 피드백이 다른 리포트로 넘어가지 않게 */}
+            {secs.map((s) => <SectionView key={commentTarget(scopeOf(report), s.id)} report={report} s={s} />)}
           </div>
         );
       })}

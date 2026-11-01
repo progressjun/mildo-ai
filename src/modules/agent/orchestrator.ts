@@ -32,12 +32,21 @@ export function collectTools(ctx: ToolContext): { module: string; tool: AgentToo
     });
     if (valid.length) perModule.push({ module: m.id, tools: valid });
   }
-  const out: { module: string; tool: AgentTool }[] = [];
+  type Entry = { module: string; tool: AgentTool };
+  const rounds: Entry[][] = [];
   for (let round = 0; perModule.some((p) => p.tools.length > round); round++) {
-    for (const p of perModule) if (p.tools[round]) out.push({ module: p.module, tool: p.tools[round] });
+    rounds.push(perModule.filter((p) => p.tools[round]).map((p) => ({ module: p.module, tool: p.tools[round] })));
   }
-  return out;
+  // 화면 이동 버튼 도구(navigate)는 데이터 조회가 아니라 답변 UI 도구다 — 상한에 잘려 '화면 열기' 버튼이
+  // 사라지지 않도록 대표 도구 라운드 바로 뒤에 둔다
+  const head = rounds[0] ?? [];
+  const rest = rounds.slice(1).flat();
+  const pinned = rest.filter((e) => PINNED_TOOLS.has(e.tool.name));
+  return [...head, ...pinned, ...rest.filter((e) => !PINNED_TOOLS.has(e.tool.name))];
 }
+
+/** 도구 수 상한이 있어도 대표 도구 바로 뒤에 남기는 UI 도구 */
+export const PINNED_TOOLS: ReadonlySet<string> = new Set(['navigate']);
 
 /** AI 미연결 시: 질문과 매칭되는 브리프를 최대 2개 골라 같은 형식으로 답한다 */
 export function offlineAnswer(question: string, ctx: ToolContext): { markdown: string; used: string[] } {

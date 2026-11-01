@@ -70,12 +70,16 @@ export function AiInsight({
     }
   };
 
+  // 실행 버튼 자리에 중지 버튼이 바로 나타나므로, 더블클릭의 두 번째 클릭이 방금 시작한 생성을 중지(또는 중지 직후 재시작)하지
+  // 않게 한다. 키보드 실행(detail 0)과 한 번 클릭(detail 1)만 처리
+  const single = (fn: () => void) => (e: { detail: number }) => { if (e.detail > 1) return; fn(); };
+
   return (
     <Card title={title} sub={sub} tone={tone}
       actions={
         <>
           {mode === 'ai' ? <Src kind="AI" title="Claude 생성" /> : mode === 'rule' ? <Pill tone="neutral" icon="zap" title="규칙 엔진 결과 (TEST DATA · 제안서 기준값으로 계산)">규칙 엔진</Pill> : null}
-          {busy ? <Button size="sm" icon="stop" onClick={stop}>중지</Button> : <Button size="sm" variant="accent" icon="sparkle" onClick={run}>{text ? '다시 생성' : cta}</Button>}
+          {busy ? <Button size="sm" icon="stop" onClick={single(stop)}>중지</Button> : <Button size="sm" variant="accent" icon="sparkle" onClick={single(run)}>{text ? '다시 생성' : cta}</Button>}
           {text && !busy ? <CopyButton text={text} /> : null}
         </>
       }>

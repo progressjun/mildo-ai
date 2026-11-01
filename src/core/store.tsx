@@ -52,6 +52,19 @@ export type Action =
 
 const STORAGE_KEY = 'mildo-os/v1';
 
+/**
+ * 앱 전역 '시연 상태 초기화' 알림 — 스토어 밖에 따로 저장하는 모듈 기록(Lab · Watch · GEO · Ops 로컬 입력 등)은
+ * window의 이 이벤트를 받아 처음 상태로 돌린다. 설정의 '정말 초기화'가 스토어 reset 직후 보낸다.
+ */
+export const RESET_EVENT = 'mildo-os:reset';
+export function broadcastReset(): void {
+  try {
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') window.dispatchEvent(new Event(RESET_EVENT));
+  } catch {
+    /* 이벤트를 보낼 수 없는 환경 — 스토어 초기화만 */
+  }
+}
+
 const ROLES: readonly AppState['role'][] = ['담당 AE', 'PM', '수면밀도'];
 const AI_MODES: readonly AiSettings['mode'][] = ['auto', 'artifact', 'anthropic', 'offline'];
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);

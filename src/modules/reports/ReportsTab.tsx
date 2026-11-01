@@ -28,11 +28,20 @@ export function ReportsTab({ type, report, genMs, month, setMonth, issueId, setI
 }) {
   const { state } = useStore();
   const ai = useAi();
-  const [busy, setBusy] = useState(false);
+  // 진행 중 표시는 생성을 시작한 리포트에만 — 다른 리포트로 바꾸면 그 리포트에는 중지 버튼 · 작성 중 안내가 보이지 않는다
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const busy = busyKey === interpKey;
   const [note, setNote] = useState('');
   const ctl = useRef<AbortController | null>(null);
-  // 오류 안내는 해당 리포트의 해석 시도에만 붙인다 — 다른 리포트 · 월 · 이슈로 바꾸면 지운다
-  useEffect(() => { setNote(''); }, [interpKey]);
+  /** 실행 번호 — 새 실행이 시작되면 이전 실행의 늦은 onText · 결과 · 오류는 무시한다 */
+  const runId = useRef(0);
+  const keyRef = useRef(interpKey);
+  keyRef.current = interpKey;
+  // 오류 안내는 해당 리포트의 해석 시도에만 붙인다 — 다른 리포트 · 월 · 이슈로 바꾸면 지우고, 진행 중인 생성은 중지한다
+  // (보이지 않는 리포트에 사용량을 쓰지 않고, 다른 리포트 화면의 중지 버튼이 엉뚱한 생성을 멈추지 않게)
+  useEffect(() => { setNote(''); ctl.current?.abort(); }, [interpKey]);
+  // 화면을 떠나면 진행 중 생성을 중지한다
+  useEffect(() => () => ctl.current?.abort(), []);
   // 코멘트 범위: 일간 · 주간은 종류, 월간은 대상 월, 이슈 알림은 이슈별 (다른 월 · 다른 이슈 피드백이 섞이지 않음)
   const scope = scopeOf(report);
   const prefix = `reports:${scope}:`;
@@ -55,31 +64,37 @@ export function ReportsTab({ type, report, genMs, month, setMonth, issueId, setI
       setInterp(interpKey, { text: ruleText(), by: 'rule', at: nowIso() });
       return;
     }
-    ctl.current = new AbortController();
+    const myKey = interpKey;
+    const my = ++runId.current;
+    const live = () => runId.current === my;
+    const ac = new AbortController();
+    ctl.current = ac;
     // 다시 생성이 중지 · 실패로 끝나고 받은 글자가 없으면 직전 해석을 되살린다 (빈 'AI 해석' 영역이 남지 않게)
     const prev = interp?.text ? interp : null;
     let streamed = '';
-    setBusy(true);
-    setInterp(interpKey, { text: '', by: 'ai', at: nowIso() });
+    setBusyKey(myKey);
+    setInterp(myKey, { text: '', by: 'ai', at: nowIso() });
     try {
       const body = reportToMarkdown(report, { aeNotes: aeNotes.map((n) => ({ author: n.author, text: n.text, at: fmtAt(n.at) })) });
       const { text } = await ai.ask(`${ANALYST_RULES}\n\n${aiPrompt(report, body)}`, {
-        signal: ctl.current.signal, cache: false,
-        onText: (t) => { streamed = t; setInterp(interpKey, { text: t, by: 'ai', at: nowIso() }); },
+        signal: ac.signal, cache: false,
+        onText: (t) => { if (!live()) return; streamed = t; setInterp(myKey, { text: t, by: 'ai', at: nowIso() }); },
       });
-      setInterp(interpKey, { text, by: 'ai', at: nowIso() });
+      if (live()) setInterp(myKey, { text, by: 'ai', at: nowIso() });
     } catch (e) {
       const err = e as AiError;
       const partial = err.partial || streamed;
+      if (!live()) return;
       if (err.code === 'cancelled') {
         // 중지는 오류로 알리지 않는다 — 받은 부분은 유지, 없으면 직전 상태로
-        setInterp(interpKey, partial ? { text: partial, by: 'ai', at: nowIso() } : prev);
+        setInterp(myKey, partial ? { text: partial, by: 'ai', at: nowIso() } : prev);
       } else {
-        setNote(AI_ERROR_COPY[err.code] ?? err.message);
-        setInterp(interpKey, partial ? { text: partial, by: 'ai', at: nowIso() } : prev ?? { text: ruleText(), by: 'rule', at: nowIso() });
+        if (keyRef.current === myKey) setNote(AI_ERROR_COPY[err.code] ?? err.message);
+        setInterp(myKey, partial ? { text: partial, by: 'ai', at: nowIso() } : prev ?? { text: ruleText(), by: 'rule', at: nowIso() });
       }
     } finally {
-      setBusy(false);
+      if (live()) setBusyKey(null);
+      if (ctl.current === ac) ctl.current = null;
     }
   };
 
@@ -164,7 +179,10 @@ export function ReportsTab({ type, report, genMs, month, setMonth, issueId, setI
 function AePanel({ type, scope, report, count }: { type: ReportType; scope: string; report: Report; count: number }) {
   const { state, dispatch } = useStore();
   const { toast } = useActions();
-  const [text, setText] = useState('');
+  // 초안은 리포트 범위(종류 · 월 · 이슈)별로 따로 둔다 — 일간에서 만든 초안이 주간 리포트에 그대로 병합되지 않게
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const text = drafts[scope] ?? '';
+  const setText = (v: string) => setDrafts((p) => ({ ...p, [scope]: v }));
   const canWrite = state.role !== '수면밀도';
   const merge = () => {
     const t = text.trim();

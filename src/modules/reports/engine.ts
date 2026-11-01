@@ -22,8 +22,9 @@ import { generateBidProposals, type BidProposal } from '@/modules/adpilot/engine
 import { buildPipeline, type LabCriteria, type PipelineItem } from '@/modules/lab/engine';
 // p.47 이상 징후 기준 · 조기 소진 기준은 MILDO Alert 현재 탐지 기준(activeConfig: 반영된 alert_rule 변경 포함)으로 읽는다
 import { activeConfig, detectIncidents } from '@/modules/alert/engine';
+import { MODULE_LABEL } from '@/modules/flow/data';
 import {
-  BUSINESS_HOURS, DAILY_SEND_MIN, MODULE_ROLLOUT, MONTHLY_BUSINESS_DAY, MONTHLY_SEND_MIN, PACE_CURVE_DAYS, REPORT_META, ROAS_JUDGED, SAVINGS_CONFIRM_DAYS, SAVINGS_FLOOR_PCT, TASK_MODULE,
+  BUSINESS_HOURS, DAILY_SEND_MIN, MODULE_ROLLOUT, MONTHLY_BUSINESS_DAY, MONTHLY_SEND_MIN, PACE_CURVE_DAYS, REPORT_META, ROAS_JUDGED, SAVINGS_CONFIRM_DAYS, SAVINGS_FLOOR_PCT, SAVINGS_INPUT_MAX_MIN, TASK_MODULE,
   TASK_PHASE, TEST_JUDGE_MIN_CLICKS, TIMETABLE_META, WEEKLY_SEND, WEEKS_PER_YEAR, WEEK_MINUTES_PER_FTE, KICKOFF_ASSUMED, type ReportType,
 } from './data';
 
@@ -1625,6 +1626,11 @@ export interface Timetable {
 }
 const toMin = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + (m || 0); };
 
+/** 승인 대기 요청의 모듈 표기 — 내부 id(lab · adpilot)가 아니라 화면 이름(MILDO Lab · AD Pilot)으로 */
+export function pendingModules(pend: readonly Pick<ChangeRequest, 'module'>[]): string {
+  return [...new Set(pend.map((x) => MODULE_LABEL[x.module] ?? x.module))].join(' · ');
+}
+
 export function buildTimetable(d: Dataset, opts: { date?: string; offHours?: boolean; incidents?: readonly Incident[]; changes?: readonly ChangeRequest[] } = {}): Timetable {
   const date = opts.date && /^\d{4}-\d{2}-\d{2}$/.test(opts.date) ? opts.date : d.today;
   const isToday = date === d.today;
@@ -1666,7 +1672,7 @@ export function buildTimetable(d: Dataset, opts: { date?: string; offHours?: boo
     const pend = (opts.changes ?? []).filter((x) => x.status === 'pending');
     const ap = adPilotSummary(d);
     const apText = `AD Pilot 조정 후보 입찰 상향 ${ap.up.length} · 하향 ${ap.down.length} · 예산 재배분 ${ap.shift.length} · 보류 ${ap.hold.length}`;
-    outputs['16:30'] = { text: `${apText} · ${pend.length ? `승인 대기 ${pend.length}건 (${[...new Set(pend.map((x) => x.module))].join(' · ')}) → 익일 반영` : '승인 요청 전 (현재 승인 대기 0건)'}`, level: 'info' };
+    outputs['16:30'] = { text: `${apText} · ${pend.length ? `승인 대기 ${pend.length}건 (${pendingModules(pend)}) → 익일 반영` : '승인 요청 전 (현재 승인 대기 0건)'}`, level: 'info' };
     const spent = sum(fc, (f) => f.spentToday);
     const budget = sum(fc, (f) => f.dailyBudget);
     const proj = sum(fc, (f) => Math.min(f.dailyBudget, fin(f.pace) && f.expectedShare > 0 ? f.spentToday / f.expectedShare : f.spentToday));
@@ -1720,7 +1726,16 @@ export interface SavingsResult {
   floorPct: number; targetPct: number; meetsFloor: boolean; verdict: Verdict; edited: boolean;
   measured: { tasks: number; before: number; after: number; reductionPct: number; verdict: Verdict } | null;
 }
-const clean = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback);
+/**
+ * 숫자 입력 해석 — 0 이상 · 상한 이하의 유한한 숫자만 값으로 받고, 빈 값 · 음수 · 숫자 아님 · 상한 초과는 null.
+ * 절감표 입력(기존 · 실측 분/주, 재투입 비중)이 같은 규칙으로 검증된다.
+ */
+export function parseBoundedInput(raw: string | number | null | undefined, max: number = Infinity): number | null {
+  if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) return null;
+  const v = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(v) && v >= 0 && v <= max ? v : null;
+}
+const clean = (v: unknown, fallback: number) => (typeof v === 'number' ? parseBoundedInput(v, SAVINGS_INPUT_MAX_MIN) ?? fallback : fallback);
 /**
  * 절감률 표기 — 줄면 '−59%', 0이면 '0%', 늘면 '+12% 증가' (실측이 기존보다 큰 경우 '−-12%'로 표기되지 않게)
  * 소수 첫째 자리에서 반올림해 0이 되면 부호 없이 0%.
@@ -1747,7 +1762,7 @@ export function computeSavings(input: { before?: Record<string, number>; measure
     const ratio = t.before > 0 ? t.after / t.before : 1;
     const after = before === t.before ? t.after : mode === 'ratio' ? Math.round(before * ratio * 10) / 10 : Math.min(t.after, before);
     const mRaw = input.measured?.[t.task];
-    const measured = typeof mRaw === 'number' && Number.isFinite(mRaw) && mRaw >= 0 ? mRaw : null;
+    const measured = typeof mRaw === 'number' ? parseBoundedInput(mRaw, SAVINGS_INPUT_MAX_MIN) : null;
     return {
       task: t.task, how: t.how, route: TASK_MODULE[t.task]?.route ?? 'reports', moduleLabel: TASK_MODULE[t.task]?.label ?? '',
       defaultBefore: t.before, defaultAfter: t.after, before, after, saved: before - after,

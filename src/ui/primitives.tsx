@@ -1,5 +1,5 @@
 /* 공용 UI 프리미티브 — 모든 모듈은 이 컴포넌트와 app.css 클래스를 사용한다. */
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { Icon } from './Icon';
 import type { Severity, SourceKind } from '@/core/types';
 import { copyText, saveFile } from '@/core/download';
@@ -11,7 +11,7 @@ type BtnVariant = 'default' | 'primary' | 'accent' | 'danger' | 'ghost';
 export function Button({
   children, onClick, variant = 'default', size, icon, disabled, title, type = 'button', id, style,
 }: {
-  children?: ReactNode; onClick?: () => void; variant?: BtnVariant; size?: 'sm' | 'lg'; icon?: string; disabled?: boolean; title?: string; type?: 'button' | 'submit'; id?: string; style?: CSSProperties;
+  children?: ReactNode; onClick?: (e: MouseEvent<HTMLButtonElement>) => void; variant?: BtnVariant; size?: 'sm' | 'lg'; icon?: string; disabled?: boolean; title?: string; type?: 'button' | 'submit'; id?: string; style?: CSSProperties;
 }) {
   const cls = ['btn', variant !== 'default' ? variant : '', size ?? ''].filter(Boolean).join(' ');
   return (

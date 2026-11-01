@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { sanitizeSaved } from './store';
+import { describe, expect, it, vi } from 'vitest';
+import { broadcastReset, RESET_EVENT, sanitizeSaved } from './store';
 
 const change = { id: 'c1', status: 'pending', target: 'SA_일반', approver: 'PM', history: [], module: 'adpilot', kind: 'bid', before: 1, after: 2, reason: 'r', requestedBy: 'PM', createdAt: '2026-10-31T06:00:00.000Z' };
 const incident = { id: 'i1', status: 'open', severity: 'P1', title: 't', timeline: [], causeCandidates: [], impact: {}, ruleId: 'x', detectedAt: '', occurredAt: '', detectPath: '', isTest: false, autoActions: [] };
@@ -27,5 +27,25 @@ describe('저장본 검증 (mildo-os/v1)', () => {
     expect(sanitizeSaved({ role: '수면밀도' }).role).toBe('수면밀도');
     expect(sanitizeSaved({ ai: { mode: 'weird', apiKey: 3, model: '' } }).ai).toEqual({});
     expect(sanitizeSaved({ ai: { mode: 'offline', apiKey: 'k', model: 'claude-sonnet-5-5' } }).ai).toEqual({ mode: 'offline', apiKey: 'k', model: 'claude-sonnet-5-5' });
+  });
+});
+
+describe('시연 상태 초기화 알림 (mildo-os:reset)', () => {
+  it('모듈 로컬 저장본이 듣는 이벤트 이름과 같고, broadcastReset이 window로 보낸다 (회귀: 아무도 보내지 않아 Lab · Watch 기록이 남던 문제)', async () => {
+    const { LAB_RESET_EVENT } = await import('@/modules/lab/store');
+    expect(RESET_EVENT).toBe(LAB_RESET_EVENT);
+    const target = new EventTarget();
+    vi.stubGlobal('window', target);
+    try {
+      const heard: string[] = [];
+      target.addEventListener(RESET_EVENT, (e) => heard.push(e.type));
+      broadcastReset();
+      expect(heard).toEqual([RESET_EVENT]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('window가 없는 환경(CLI · 테스트)에서도 오류 없이 지나간다', () => {
+    expect(() => broadcastReset()).not.toThrow();
   });
 });

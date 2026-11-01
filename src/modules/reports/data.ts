@@ -82,6 +82,8 @@ export const SAVINGS_CONFIRM_DAYS = 30;
 /** 인력 환산 가정: 주 40시간 = 2,400분 (근로기준법 법정 근로시간 기준 · 가정) */
 export const WEEK_MINUTES_PER_FTE = 2400;
 export const WEEKS_PER_YEAR = 52;
+/** 절감표 입력 상한 (분/주): 한 주 7일 × 24시간 = 10,080분 — 업무별 주간 소요가 넘을 수 없는 물리적 상한 (모듈 가정 · 오입력 방지) */
+export const SAVINGS_INPUT_MAX_MIN = 7 * 24 * 60;
 
 /** p.19 업무 → MILDO OS 담당 모듈 (자동화 수단) */
 export const TASK_MODULE: Record<string, { route: string; label: string }> = {
