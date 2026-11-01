@@ -55,7 +55,7 @@ npm run build
 npm run build:single
 ```
 
-`build:single`은 `dist-single/index.html` 한 파일로 묶습니다(Claude 아티팩트 · 사내 공유용).
+`build:single`은 `dist-single/index.html` 한 파일로 묶습니다(Claude 아티팩트 · 사내 공유용). 빌드 후 `scripts/postbuild-single.mjs`가 번들 안의 U+FFFD 문자를 JS 이스케이프로 바꿉니다(아티팩트 업로드 검사 대응).
 
 ## 자동화 스크립트 (서버 · 크론)
 
@@ -82,6 +82,8 @@ npm run typecheck
 ```bash
 npm test
 ```
+
+테스트는 모듈별 엔진(규칙 · 판정 · 시드 시나리오 탐지, 데이터를 바꾸면 결과가 바뀌는지 확인), 에이전트 도구 계약(이름 · 32KB 이하 결과 · 브리프 구조), 화면 렌더 스모크로 구성됩니다. `src/modules/registry.test.ts`는 전 모듈 도구 · 브리프 계약과 '준비 중' 모듈이 없는지를 검사합니다.
 
 ## 구조
 
