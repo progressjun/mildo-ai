@@ -27,7 +27,7 @@ export interface ModuleDef {
   id: string; // 해시 라우트
   title: string; // 한글 메뉴명
   eng: string; // 영문 라벨 (eyebrow)
-  group: 'overview' | 'automation' | 'monitoring' | 'growth' | 'stability' | 'team';
+  group: 'overview' | 'automation' | 'monitoring' | 'growth' | 'stability' | 'team' | 'admin';
   summary: string;
   /** 제안서 장표 · RFP 항목 */
   sources: string;

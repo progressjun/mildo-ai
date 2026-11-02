@@ -16,6 +16,12 @@ import { agentKit as growthKit } from './growth/agent';
 import { agentKit as flowKit } from './flow/agent';
 import { agentKit as alertKit } from './alert/agent';
 import { agentKit as opsKit } from './ops/agent';
+import { agentKit as connectionsKit } from './connections/agent';
+import { agentKit as teamKit } from './team/agent';
+import { agentKit as auditKit } from './audit/agent';
+import { agentKit as notifyKit } from './notify/agent';
+import { agentKit as impactKit } from './impact/agent';
+import { agentKit as workspaceKit } from './workspace/agent';
 
 export const GROUP_LABEL: Record<ModuleDef['group'], string> = {
   overview: '개요',
@@ -24,6 +30,7 @@ export const GROUP_LABEL: Record<ModuleDef['group'], string> = {
   growth: '04 매출 성장 고도화',
   stability: '05 운영 안정성',
   team: '06 TF · 온보딩 · 계약',
+  admin: '07 관리 · 연동',
 };
 
 export const MODULES: ModuleDef[] = [
@@ -39,6 +46,12 @@ export const MODULES: ModuleDef[] = [
   { id: 'flow', title: 'MILDO Flow', eng: '04 · COLLABORATION', group: 'growth', summary: '요청 · 승인 · 반영 이력, 프로모션 체크리스트 · 자동 점검 · 리포트', sources: '제안서 p.31, p.53', Component: lazy(() => import('./flow/View')), agent: flowKit },
   { id: 'alert', title: 'MILDO Alert', eng: '05 · ALERT & SLA', group: 'stability', summary: '24시간 이상 감지 · 등급별 SLA · 주말 당번 · 계정 · 결제 점검 · 조치 보고', sources: '제안서 p.43–50', Component: lazy(() => import('./alert/View')), agent: alertKit },
   { id: 'ops', title: '전담 TF · 온보딩 · 계약', eng: '06 · TF & ONBOARDING', group: 'team', summary: '7인 TF · 1:1 백업 · 90일 온보딩 · 수수료 · RFP 커버리지', sources: '제안서 p.51–59', Component: lazy(() => import('./ops/View')), agent: opsKit },
+  { id: 'impact', title: '성과 증명', eng: '07 · VALUE LEDGER', group: 'admin', summary: '반영한 변경 · 막은 사고 · 줄인 시간을 측정해 구독료 대비 회수를 보여 준다', sources: 'MILDO OS Cloud', Component: lazy(() => import('./impact/View')), agent: impactKit },
+  { id: 'connections', title: '데이터 연결', eng: '07 · DATA SOURCES', group: 'admin', summary: '매체 · 판매 채널 API 연결, CSV 업로드, 수집 일정 · 품질 검사', sources: 'MILDO OS Cloud', Component: lazy(() => import('./connections/View')), agent: connectionsKit },
+  { id: 'notify', title: '알림 설정', eng: '07 · NOTIFICATIONS', group: 'admin', summary: 'Slack · 이메일 · 웹훅 채널, 등급별 발송, 당번 · 에스컬레이션', sources: 'MILDO OS Cloud', Component: lazy(() => import('./notify/View')), agent: notifyKit },
+  { id: 'team', title: '팀 · 권한', eng: '07 · TEAM & ROLES', group: 'admin', summary: '구성원 초대 · 역할 · 접속 세션 관리', sources: 'MILDO OS Cloud', Component: lazy(() => import('./team/View')), agent: teamKit },
+  { id: 'audit', title: '감사 로그', eng: '07 · AUDIT LOG', group: 'admin', summary: '누가 · 언제 · 무엇을 바꿨는지 전체 기록', sources: 'MILDO OS Cloud', Component: lazy(() => import('./audit/View')), agent: auditKit },
+  { id: 'workspace', title: '워크스페이스 설정', eng: '07 · WORKSPACE', group: 'admin', summary: '브랜드 · 예산 · 목표 · SAFETY · 위임 범위 · 사용 모듈', sources: 'MILDO OS Cloud', Component: lazy(() => import('./workspace/View')), agent: workspaceKit },
 ];
 
 export const MODULE_BY_ID: Record<string, ModuleDef> = Object.fromEntries(MODULES.map((m) => [m.id, m]));

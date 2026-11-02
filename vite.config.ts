@@ -7,6 +7,8 @@ import path from 'node:path';
 export default defineConfig(({ mode }) => ({
   plugins: mode === 'single' ? [react(), viteSingleFile()] : [react()],
   resolve: { alias: { '@': path.resolve(process.cwd(), 'src') } },
+  // 개발: 프런트(5173) → API 서버(8080) 프록시. SSE(/api/w/:ws/events)도 그대로 통과한다.
+  server: { proxy: { '/api': { target: process.env.API_URL ?? 'http://localhost:8080', changeOrigin: false } } },
   build: {
     outDir: mode === 'single' ? 'dist-single' : 'dist',
     chunkSizeWarningLimit: 2000,

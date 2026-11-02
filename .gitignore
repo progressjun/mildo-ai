@@ -6,3 +6,4 @@ dist-single
 *.local
 .DS_Store
 qa/logs/
+server/dist/

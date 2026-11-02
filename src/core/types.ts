@@ -161,6 +161,16 @@ export interface Dataset {
   promotions: Promotion[];
   /** 브랜드 키워드(수면밀도·밀도 매트리스) 일자별 검색량 — DA→SA 분석용 */
   brandSearchDaily: { date: string; volume: number }[];
+  /** 서버 모드: 데이터 출처 메타 (없으면 데모 데이터) */
+  meta?: DatasetMeta;
+}
+
+export interface DatasetMeta {
+  /** demo = 테스트 데이터만, live = 실연동 데이터만, mixed = 일부 매체 · 채널만 실연동 */
+  mode: 'demo' | 'live' | 'mixed';
+  builtAt: string;
+  /** 매체 · 채널별 사용 출처와 최신 데이터 시각 */
+  sources: { channel: string; source: string; kind: 'api' | 'csv' | 'demo'; latestDate: string | null; latestHour?: number | null }[];
 }
 
 /* ---------- 운영 상태 (스토어) ---------- */
@@ -183,6 +193,20 @@ export interface ChangeRequest {
   approver: ApprovalLevel;
   status: 'pending' | 'approved' | 'applied' | 'rejected' | 'rolled_back' | 'held';
   history: { at: string; by: string; action: string; note?: string }[];
+  /** 서버 모드: 매체 반영 실행 결과 (dry_run = 호출 내용만 기록, live = 실제 API 호출) */
+  execution?: ChangeExecution;
+}
+
+export interface ChangeExecution {
+  mode: 'dry_run' | 'live' | 'none';
+  ok: boolean;
+  at: string;
+  connectionId?: string;
+  provider?: string;
+  /** 보낸(또는 보낼) 요청 요약 — 비밀값 제외 */
+  request?: unknown;
+  response?: unknown;
+  error?: string;
 }
 
 export interface Incident {

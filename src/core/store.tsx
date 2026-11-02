@@ -50,7 +50,15 @@ export type Action =
   | { type: 'demo/resume' }
   | { type: 'demo/stop' }
   | { type: 'demo/seek'; seconds: number }
-  | { type: 'reset' };
+  | { type: 'reset' }
+  // 서버 모드 동기화 (src/saas): 서버가 원본인 항목을 통째로 · 건별로 반영
+  | { type: 'data/set'; data: Dataset }
+  | { type: 'changes/set'; changes: ChangeRequest[] }
+  | { type: 'change/upsert'; change: ChangeRequest }
+  | { type: 'incidents/set'; incidents: Incident[] }
+  | { type: 'incident/upsert'; incident: Incident }
+  | { type: 'comments/set'; comments: Comment[] }
+  | { type: 'comment/upsert'; comment: Comment };
 
 const STORAGE_KEY = 'mildo-os/v1';
 
@@ -193,6 +201,26 @@ export function reducer(s: AppState, a: Action): AppState {
       return { ...s, demo: { running: false, startedAt: null, pausedAt: null, elapsedBeforePause: 0 } };
     case 'reset':
       return { ...initialState(), changes: [], incidents: [], comments: [], tf: {}, resetSeq: (s.resetSeq ?? 0) + 1 };
+    case 'data/set':
+      return { ...s, data: a.data };
+    case 'changes/set':
+      return { ...s, changes: a.changes };
+    case 'change/upsert':
+      return s.changes.some((c) => c.id === a.change.id)
+        ? { ...s, changes: s.changes.map((c) => (c.id === a.change.id ? a.change : c)) }
+        : { ...s, changes: [a.change, ...s.changes] };
+    case 'incidents/set':
+      return { ...s, incidents: a.incidents };
+    case 'incident/upsert':
+      return s.incidents.some((i) => i.id === a.incident.id)
+        ? { ...s, incidents: s.incidents.map((i) => (i.id === a.incident.id ? a.incident : i)) }
+        : { ...s, incidents: [a.incident, ...s.incidents] };
+    case 'comments/set':
+      return { ...s, comments: a.comments };
+    case 'comment/upsert':
+      return s.comments.some((c) => c.id === a.comment.id)
+        ? { ...s, comments: s.comments.map((c) => (c.id === a.comment.id ? a.comment : c)) }
+        : { ...s, comments: [...s.comments, a.comment] };
     default:
       return s;
   }

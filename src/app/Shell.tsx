@@ -17,6 +17,7 @@ import { fmtDate } from '@/core/util';
 
 const ICON: Record<string, string> = {
   home: 'home', agent: 'bot', board: 'board', adpilot: 'pilot', reports: 'report', watch: 'watch', lab: 'lab', geo: 'search', growth: 'trend', flow: 'flow', alert: 'bell', ops: 'users',
+  impact: 'target', connections: 'link', notify: 'bell', team: 'users', audit: 'shield', workspace: 'gear',
 };
 
 export function Shell() {

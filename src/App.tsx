@@ -1,10 +1,13 @@
 import { StoreProvider } from '@/core/store';
 import { Shell } from '@/app/Shell';
+import { SaasProvider } from '@/saas/context';
 
 export default function App() {
   return (
-    <StoreProvider>
-      <Shell />
-    </StoreProvider>
+    <SaasProvider>
+      <StoreProvider>
+        <Shell />
+      </StoreProvider>
+    </SaasProvider>
   );
 }
