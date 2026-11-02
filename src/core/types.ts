@@ -244,7 +244,7 @@ export interface Toast {
 }
 
 export interface AiSettings {
-  mode: 'auto' | 'artifact' | 'anthropic' | 'offline';
+  mode: 'auto' | 'artifact' | 'anthropic' | 'server' | 'offline'; // server = MILDO OS Cloud 서버 키로 호출 (서버 모드 기본)
   apiKey: string;
   model: string;
 }

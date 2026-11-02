@@ -153,3 +153,39 @@ CI(타입 검사 · 단위 · 서버 테스트(postgres 서비스) · 빌드) ·
 - 비밀값(자격증명 · 웹훅 URL · SMTP 비밀번호 · API 키)은 DB에 암호화 저장, API 응답 · 로그 · 감사 상세에 평문 금지(마스킹).
 - 외부 호출은 `connectors/http.ts` 래퍼(타임아웃 · 재시도 · 레이트 리밋 · 요청 로그 마스킹)를 쓰고, 테스트에서는 가짜 fetch를 주입한다. 테스트 중 실제 네트워크 호출 금지.
 - 화면 문구: 번호 매기기 없이, 판정에는 기준값을 옆에, 추정은 추정이라고, 데모 데이터는 TEST DATA로.
+
+## 6. API 계약 (도메인 간 · 프런트 ↔ 서버) — 형식을 바꾸면 안 된다
+
+모든 응답은 JSON. 목록은 `{ items }`가 아니라 아래에 적힌 키를 쓴다. `:ws` = workspace id.
+
+| 담당 | 메서드 · 경로 | 권한 | 요청 → 응답 |
+| --- | --- | --- | --- |
+| core | POST /api/auth/login · POST /api/auth/logout · GET /api/auth/me | - | me: `{ user, csrfToken, workspaces[{ id, slug, name, brand_name, status, role, permissions, demoRole }] }` |
+| core | GET /api/w/:ws | read | `{ workspace(config 포함), role, permissions, demoRole }` |
+| core | GET /api/w/:ws/events (SSE) | read | event 이름 = type, data = `{ ws, type, id?, at }` |
+| team | POST /api/w/:ws/invites `{ email, role }` · GET /api/w/:ws/invites · DELETE /api/w/:ws/invites/:id | manage_team | `{ invite, link }` (메일 발송 실패 시에도 link 반환) |
+| team | GET /api/invites/:token · POST /api/invites/:token/accept `{ name, password }` | - | 수락 시 로그인 세션 쿠키 발급 |
+| team | GET /api/w/:ws/members · PATCH /api/w/:ws/members/:userId `{ role }` · DELETE /api/w/:ws/members/:userId | read / manage_team | `{ members }` · 마지막 owner 보호 |
+| team | POST /api/auth/password `{ current, next }` · POST /api/auth/password-reset `{ email }` · POST /api/auth/password-reset/confirm `{ token, password }` · GET/DELETE /api/auth/sessions[/:id] | 로그인 / - | 재설정 링크: `${APP_URL}/?reset=<token>`, 초대 링크: `${APP_URL}/?invite=<token>` |
+| team | GET /api/w/:ws/audit?action=&userId=&from=&to=&before= · GET /api/w/:ws/audit.csv | configure | `{ entries, nextBefore }` |
+| data | GET /api/connectors/catalog | 로그인 | `{ providers[{ provider, kind, channel, label, docsUrl, verifiedLive, credentialFields, capabilities }] }` |
+| data | GET/POST /api/w/:ws/connections · PATCH/DELETE /api/w/:ws/connections/:id · POST …/:id/test · POST …/:id/sync `{ from?, to? }` | read / configure / operate | `{ connections }` (자격증명은 마스킹), write_mode='live'는 live_write |
+| data | GET /api/w/:ws/ingest/runs · GET /api/w/:ws/ingest/quality | read | `{ runs }` · `{ issues }` |
+| data | POST /api/w/:ws/uploads `{ template, filename, content(CSV 텍스트), mapping?, dryRun? }` · GET /api/uploads/templates/:template.csv | operate | `{ upload, preview, issues }` |
+| data | GET /api/w/:ws/dataset?today=&hour= | read | `Dataset`(src/core/types.ts, `meta` 포함) |
+| changes | GET /api/w/:ws/changes · POST /api/w/:ws/changes `{ change }`(클라이언트 id 허용) · PATCH /api/w/:ws/changes/:id `{ patch, action, note? }` | read / request / 상태 전이별 승인 권한 | `{ changes }` · `{ change }` — 서버가 상태 전이 · 권한 · 실행(반영 · 롤백)을 판정하고 실제 결과(예: held)를 돌려준다 |
+| alerts | GET /api/w/:ws/incidents · POST /api/w/:ws/incidents `{ incident }` · PATCH /api/w/:ws/incidents/:id `{ patch, action }` · POST /api/w/:ws/alerts/scan | read / operate | `{ incidents }` · `{ incident }` · `{ found, created }` |
+| alerts | GET/POST /api/w/:ws/notify/channels · PATCH/DELETE …/:id · POST …/:id/test · GET /api/w/:ws/notify/log | read / configure | 채널 설정 값은 마스킹 |
+| reports | GET /api/w/:ws/reports · GET /api/w/:ws/reports/:id · POST /api/w/:ws/reports/generate `{ type }` · POST /api/w/:ws/reports/:id/deliver | read / operate | `{ reports }` · `{ report }` |
+| impact | GET /api/w/:ws/impact/summary?month=YYYY-MM · GET /api/w/:ws/impact/ledger | read | `{ summary }` · `{ entries }` |
+| ai | POST /api/w/:ws/ai/messages `{ messages, tools?, maxTokens?, purpose? }` (SSE) · GET /api/w/:ws/ai/usage | request(=AI 사용) / read | SSE: `text`(delta) · `tool_use`(id, name, input) · `done`(stop_reason, usage) · `error` |
+| settings | GET /api/w/:ws/config · PUT /api/w/:ws/config `{ config }` · GET /api/w/:ws/config/history | read / configure | `{ config, defaults }` |
+| platform(state) | GET /api/w/:ws/comments · POST `{ comment }` · PATCH /api/w/:ws/comments/:id `{ resolved }` | read / comment | `{ comments }` · `{ comment }` |
+| platform(state) | GET /api/w/:ws/state · PUT /api/w/:ws/state/:key `{ value }` | read / comment | `{ state: Record<key, value> }` |
+
+잡 타입 계약: `ingest.daily` · `ingest.intraday` · `ingest.backfill` `{ connectionId, days }` · `ingest.upload` (data) → 성공 시 `alerts.scan`을 enqueue(alerts가 구현) · `dataset` 이벤트 발행.
+`alerts.scan` · `alerts.sla` · `notify.send` `{ channelId, event, refId, payload }` (alerts) · `reports.generate` `{ type }` · `impact.measure` (reports-impact) · `changes.execute` `{ changeId }` (changes).
+다른 도메인 테이블에 직접 써야 할 때(예: changes가 대량 변경 이슈 생성)는 해당 테이블 스키마(001_core.sql)대로 `ON CONFLICT DO NOTHING`으로 넣고 `publish`한다.
+
+프런트 연결 계약: platform이 워크스페이스가 정해지면 `applyWorkspaceConfig(workspace.config)`(settings) · `configureServerAi({ workspaceId })`(ai, src/ai/claude.ts)를 호출한다.
+`config.modules?: string[]`가 있으면 셸은 그 모듈만 메뉴에 보인다. AI 모드 'auto'는 서버 모드에서 'server' 백엔드를 고른다.

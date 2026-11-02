@@ -76,7 +76,7 @@ export function broadcastReset(): void {
 }
 
 const ROLES: readonly AppState['role'][] = ['담당 AE', 'PM', '수면밀도'];
-const AI_MODES: readonly AiSettings['mode'][] = ['auto', 'artifact', 'anthropic', 'offline'];
+const AI_MODES: readonly AiSettings['mode'][] = ['auto', 'artifact', 'anthropic', 'server', 'offline'];
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const str = (v: unknown) => typeof v === 'string';
 

@@ -14,13 +14,14 @@ import * as reports from './reports';
 import * as impact from './impact';
 import * as ai from './ai';
 import * as settings from './settings';
+import * as state from './state';
 
 export interface JobRegistry {
   job(type: string, handler: JobHandler): void;
   schedule(name: string, cron: string, fn: ScheduleFn): void;
 }
 
-export const DOMAINS = { team, connectors, ingest, warehouse, changes, alerts, reports, impact, ai, settings } as const;
+export const DOMAINS = { team, connectors, ingest, warehouse, changes, alerts, reports, impact, ai, settings, state } as const;
 
 let jobsRegistered = false;
 /** 워커 · 테스트에서 한 번 호출 */
