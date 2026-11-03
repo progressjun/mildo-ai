@@ -11,14 +11,15 @@ import {
 } from '@/core/selectors';
 import { addDays, clamp, daysInMonth, fmt, fmtDate, isOffDay, metrics, monthKey, parseDate, sum, weekday, WEEKDAY_KO } from '@/core/util';
 import { toCsv } from '@/core/download';
-import { BOARD_PERIODS, BOARD_RULES as R, DAILY_BATCH_TIME, EXTERNAL_SOURCES, MEDIA_JUDGE_NOTE, SALES_NOTE, SOURCE_METHOD } from './data';
+import { BOARD_PERIODS, BOARD_RULES as R, dailyBatchTime, EXTERNAL_SOURCES, MEDIA_JUDGE_NOTE, SALES_NOTE, SOURCE_METHOD } from './data';
 
 const SALES_NOTE_TEXT = `${SALES_NOTE.replace(/\.$/, '')}(p.12).`;
 /** p.17 일간 리포트 시각 · 월간 리포트 시점 */
 const DAILY_REPORT_TIME = (REPORT_CADENCE.find((r) => r.id === 'daily')?.when ?? '08:00').replace(/^매일\s*/, '');
 const MONTHLY_REPORT_WHEN = REPORT_CADENCE.find((r) => r.id === 'monthly')?.when ?? '익월 3영업일';
 /** p.18 예산 소진율 점검 시각 */
-const PACE_CHECK_TIME = DATA_TIMETABLE.find((t) => t.title.includes('예산 소진'))?.time ?? '14:00';
+/** 예산 소진 점검 시각 — 워크스페이스 설정(timetable.budget_check)을 반영하도록 호출 시점에 읽는다 */
+const paceCheckTime = (): string => DATA_TIMETABLE.find((t) => t.title.includes('예산 소진'))?.time ?? '14:00';
 /** p.15 위임 범위 문장 (GFA_DELEGATION에서 생성) */
 export function delegationText(): string {
   return GFA_DELEGATION.map((g, i) => {
@@ -1338,6 +1339,7 @@ export function collectionSummary(d: Dataset): CollectionSummary {
     ...MEDIA_IDS.filter((m) => !d.mediaDaily.some((r) => r.media === m && r.date === y)).map((m) => MEDIA[m].short),
     ...SALES_CHANNEL_IDS.filter((c) => !d.salesDaily.some((r) => r.channel === c && r.date === y)).map((c) => SALES_CHANNELS[c].name),
   ];
+  const DAILY_BATCH_TIME = dailyBatchTime();
   const batchState: CollectionSummary['batch']['state'] = asOf < DAILY_BATCH_TIME ? 'pending' : missing.length ? 'missing' : 'done';
   const batchText = batchState === 'done' ? `${DAILY_BATCH_TIME} 완료`
     : batchState === 'pending' ? `${DAILY_BATCH_TIME} 예정`
@@ -1532,8 +1534,8 @@ export function pacingBrief(d: Dataset): Brief {
   const overMedia = p.media.filter((x) => x.status === 'over');
   const actions = [
     p.early.length
-      ? `담당 AE가 ${PACE_CHECK_TIME} 예산 소진율 점검(p.18)에서 조기 소진 캠페인의 재배분 · 입찰 조정안을 AD Pilot으로 올리고, 위임 범위(일 예산 ${delegationText()})에 따라 승인합니다(p.15).`
-      : `담당 AE가 ${PACE_CHECK_TIME} 예산 소진율 점검(p.18)에서 같은 기준으로 캠페인별 예상 마감을 다시 확인합니다.`,
+      ? `담당 AE가 ${paceCheckTime()} 예산 소진율 점검(p.18)에서 조기 소진 캠페인의 재배분 · 입찰 조정안을 AD Pilot으로 올리고, 위임 범위(일 예산 ${delegationText()})에 따라 승인합니다(p.15).`
+      : `담당 AE가 ${paceCheckTime()} 예산 소진율 점검(p.18)에서 같은 기준으로 캠페인별 예상 마감을 다시 확인합니다.`,
     overMedia.length
       ? `PM이 월 예산 초과 예상 매체(${overMedia.map((x) => x.name).join(', ')})의 다음 달 일 예산을 권장치(${listMore(overMedia, 3, (x) => `${x.name} ${fmt.krw(x.next.recommendedDaily)}/일`)}) 기준으로 수면밀도와 확정합니다.`
       : `PM이 월간 리뷰(${MONTHLY_REPORT_WHEN})에서 다음 달 매체별 일 예산(연 배분 ÷ 12 ÷ 일수)을 수면밀도와 확정합니다.`,

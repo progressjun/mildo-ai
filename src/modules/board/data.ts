@@ -117,7 +117,9 @@ export const MEDIA_JUDGE_NOTE: Record<string, string> = {
 };
 
 /** p.18 전일 데이터 수집 · 검증 완료 시각 */
-export const DAILY_BATCH_TIME: string = DATA_TIMETABLE[0].time; // '07:00'
+export const DAILY_BATCH_TIME: string = DATA_TIMETABLE[0].time; // '07:00' (모듈 로드 시 기본값 — 계산에는 dailyBatchTime() 사용)
+/** 일 배치 기준 시각 — 워크스페이스 설정(timetable.collect)이 DATA_TIMETABLE을 제자리에서 바꾸므로 호출 시점에 읽는다 */
+export const dailyBatchTime = (): string => DATA_TIMETABLE[0]?.time ?? DAILY_BATCH_TIME;
 
 /** 키워드 집계 창 (검색광고 보고서는 최근 14일 · 직전 14일 단위로 수집) */
 export const KEYWORD_WINDOWS = [
