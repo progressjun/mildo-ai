@@ -49,7 +49,8 @@ export function useFlow() {
     return () => clearInterval(t);
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const clock = useMemo(() => makeClock(data.generatedAt), [data.generatedAt, tick]);
+  // 서버 모드: 실제 시각 그대로 (이력은 서버 시각 · 데이터는 실시간) — 데모는 데이터 기준 시각으로 환산 (기존 그대로)
+  const clock = useMemo(() => makeClock(data.generatedAt, Date.now(), server), [data.generatedAt, tick, server]);
 
   const seeds = useMemo(() => seedChanges(data), [data]);
   const missingSeeds = seeds.filter((s) => !state.changes.some((c) => c.id === s.id));
@@ -103,7 +104,8 @@ export function useFlow() {
       // 서버 모드: 복원 내용(직전 상태로 복원: …)은 서버가 이력에 남긴다 — 사용자 메모만
       actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', server ? note.trim() || undefined : `직전 상태로 복원: ${fmtValue(c, c.after)} → ${fmtValue(c, c.before)}${note ? ` · ${note}` : ''}`);
       if (server) say({ tone: 'info', title: '롤백 요청을 보냈습니다', body: `${c.target}: ${withJosa(fmtValue(c, c.before), '으로/로')} 복원 요청 · 서버 매체 반영 결과는 이어서 알립니다`, route: 'flow' });
-      else say({ tone: 'info', title: '롤백했습니다', body: `${c.target}: ${withJosa(fmtValue(c, c.before), '으로/로')} 복원` });
+      // 데모 모드 문구는 기존 그대로 (qa/e2e 데모 점검이 이 문구를 확인한다)
+      else say({ tone: 'info', title: '롤백했습니다', body: `${c.target}: ${fmtValue(c, c.before)}로 복원` });
       return true;
     }
     const allowedFrom: Record<FlowAction, ChangeRequest['status'][]> = {

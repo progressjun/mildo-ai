@@ -833,6 +833,10 @@ async function finalize(env: Env, ws: string, id: string, attemptId: string, f: 
       ...(f.rolledBackAt !== undefined ? { rolledBackAt: f.rolledBackAt } : {}),
     }, at);
     await storeBulkIncidents(q, ws, f.bulkIncidents);
+    // 탐지 기준(alert_rule)이 반영 · 롤백되면 서버 감지를 새 기준으로 다시 돌린다 (화면이 직접 감지하지 않는다)
+    if (row.kind === 'alert_rule' && from !== f.status && (f.status === 'applied' || f.status === 'rolled_back')) {
+      await enqueue(q, { type: 'alerts.scan', workspaceId: ws, payload: { trigger: 'alert_rule', changeId: id }, dedupeKey: `alerts.scan:${ws}` });
+    }
     await audit(q, {
       workspaceId: ws, userId: actor.userId, actor: actor.name, ip: actor.ip, action: f.auditAction, targetType: 'change', targetId: id,
       detail: {

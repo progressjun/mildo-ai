@@ -26,7 +26,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Severity } from '@/core/types';
 import { SLA } from '@/data/constants';
 import { withWorkspaceConfig } from '@/data/config';
-import { regimeOf, rotationTable } from '@/modules/alert/engine';
+import { regimeOf, rotationTable, withDeliveryNote } from '@/modules/alert/engine';
 import { WEEKEND_ACK_MIN, WEEKEND_TIERS } from '@/modules/alert/data';
 import type { JobRegistry } from '../domains';
 import { one } from '../db/pool';
@@ -104,13 +104,18 @@ export const routes: FastifyPluginAsync = async (app) => {
     if (doc.status !== 'resolved') doc.notifiedAt = nowIso();
     const out = await db.tx(async (q) => {
       const created = await insertIncident(q, c.workspace.id, doc);
-      const incident = await getIncident(q, c.workspace.id, doc.id);
+      let incident = await getIncident(q, c.workspace.id, doc.id);
       if (created) {
         await audit(q, {
           workspaceId: c.workspace.id, userId: c.user.id, actor: c.actor, action: 'incident.create', targetType: 'incident', targetId: doc.id, ip: c.ip,
           detail: { severity: doc.severity, ruleId: doc.ruleId, title: doc.title, isTest: doc.isTest, source: 'client' },
         });
-        if (incident && incident.status !== 'resolved') await fanOutIncident(q, c.workspace.id, { event: 'incident', incident });
+        if (incident && incident.status !== 'resolved') {
+          const r = await fanOutIncident(q, c.workspace.id, { event: 'incident', incident });
+          // 화면 · 다른 모듈이 만든 이슈도 실제 발송 요청 결과(채널 수 · 미발송 사유)를 기록한다
+          await saveIncident(q, c.workspace.id, withDeliveryNote(incident, r));
+          incident = await getIncident(q, c.workspace.id, doc.id);
+        }
         await publish(q, c.workspace.id, { type: 'incident', id: doc.id });
       }
       return { incident, created };

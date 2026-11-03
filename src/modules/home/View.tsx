@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useActions, useStore } from '@/core/store';
+import { useSaas } from '@/saas/context';
+import { ROLE_LABEL } from '@/core/permissions';
 import { navigate } from '@/core/router';
 import { AI_ENGINES, AD_PILOT, LIVE_DEMO, OS_SCENARIO, RFP, SA_CAMPAIGNS, SKU_EXPANSION } from '@/data/constants';
 import { dailySeries, rangeOf } from '@/core/selectors';
@@ -23,6 +25,9 @@ const OS_MODULES = [
 
 export default function View() {
   const { state } = useStore();
+  const saas = useSaas();
+  // 서버 모드: 멤버십 역할 (데모 역할 매핑은 열람자를 '담당 AE'로, 소유자를 'PM'으로 보이게 한다)
+  const roleText = saas.mode === 'server' && saas.role ? ROLE_LABEL[saas.role] : state.role;
   const d = state.data;
   const proposals = useMemo(() => generateBidProposals(d), [d]);
   const s = useMemo(() => operatingSummary(d, state.incidents, state.changes), [d, state.incidents, state.changes]);
@@ -88,7 +93,7 @@ export default function View() {
               <a href="#flow" className="card flat" style={{ textDecoration: 'none', color: 'inherit', padding: 12 }}>
                 <span className="xs muted">승인 대기 (MILDO Flow)</span>
                 <strong style={{ fontSize: 'var(--fs-xl)' }} className="num">{s.pending.length}건</strong>
-                <span className="xs muted">현재 역할: {state.role}</span>
+                <span className="xs muted">현재 역할: {roleText}</span>
               </a>
               <a href="#board" className="card flat" style={{ textDecoration: 'none', color: 'inherit', padding: 12 }}>
                 <span className="xs muted">일 예산 조기 소진 예상</span>

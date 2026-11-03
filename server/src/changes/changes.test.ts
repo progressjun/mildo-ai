@@ -594,6 +594,26 @@ describe('매체 반영 (커넥터 apply)', () => {
 
 /* ---------- 롤백 ---------- */
 
+describe('탐지 기준 반영 → 서버 재감지', () => {
+  it('alert_rule 변경이 반영 · 롤백되면 alerts.scan 잡을 넣는다 (중복 키 하나)', async () => {
+    const c = await create(u.pm, bid({ module: 'alert', kind: 'alert_rule', target: '탐지 기준 · 광고비 급변', targetId: 'alert_rule:spend_spike', before: '±50%', after: '±40%', changePct: undefined, approver: 'PM' }));
+    expect((await to(u.pm, c.id, 'approved')).status).toBe(200);
+    const r = await to(u.pm, c.id, 'applied');
+    expect(r.json.change.status).toBe('applied');
+    const scans = async () => (await t.db.query<{ payload: { trigger: string; changeId: string }; dedupe_key: string }>(`SELECT payload, dedupe_key FROM jobs WHERE type = 'alerts.scan' AND workspace_id = $1`, [t.ws])).rows;
+    expect(await scans()).toEqual([expect.objectContaining({ payload: { trigger: 'alert_rule', changeId: c.id }, dedupe_key: `alerts.scan:${t.ws}` })]);
+    await t.db.query(`DELETE FROM jobs WHERE type = 'alerts.scan'`);
+    expect((await to(u.pm, c.id, 'rolled_back')).json.change.status).toBe('rolled_back');
+    expect(await scans()).toHaveLength(1);
+    // 탐지 기준이 아닌 변경은 재감지를 넣지 않는다
+    await t.db.query(`DELETE FROM jobs WHERE type = 'alerts.scan'`);
+    const s2 = await create(u.pm, bid({ module: 'adpilot', kind: 'setting', target: 'AD Pilot 기준 · 최소 전환', targetId: 'adpilot.cfg.minConversionsForDown', before: 5, after: 6, changePct: 20, approver: 'PM' }));
+    await to(u.pm, s2.id, 'approved');
+    await to(u.pm, s2.id, 'applied');
+    expect(await scans()).toHaveLength(0);
+  });
+});
+
 describe('롤백', () => {
   it('live 키워드 추가: 커넥터가 새로 만든 키워드만 OFF로 되돌리고, 원래 있던 키워드였으면 기록만, 근거가 없으면 보류', async () => {
     await addConnection('naver_sa', 'naver_sa', 'live', 'SA live');

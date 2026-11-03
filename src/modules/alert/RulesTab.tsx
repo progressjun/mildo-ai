@@ -72,6 +72,12 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
   };
 
   const applyAndScan = (c: ChangeRequest) => {
+    if (ctx.server) {
+      // 서버 모드: 반영이 끝나면 서버가 새 기준으로 감지를 다시 돌린다 (alerts.scan) — 화면에서 따로 감지 · 등록하지 않는다
+      actions.updateChange(c.id, { status: 'applied' }, '반영');
+      actions.toast({ tone: 'info', title: '탐지 기준 반영 요청을 보냈습니다', body: `${c.target}: ${c.before} → ${c.after} · 반영되면 서버가 새 기준으로 다시 감지하고, 새 이슈는 자동으로 목록에 들어옵니다`, route: 'alert' });
+      return;
+    }
     actions.updateChange(c.id, { status: 'applied' }, '반영', '탐지 기준 적용 · 재스캔');
     const next = activeConfig(state.changes.map((x) => (x.id === c.id ? { ...x, status: 'applied' as const } : x)));
     const found = detectIncidents(data, { config: next, creatives: DEMO_CREATIVES });

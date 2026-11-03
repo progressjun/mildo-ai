@@ -230,8 +230,8 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
           })() : null}
           {inc.ruleId === 'soldout_landing' && !resolved ? (
             <Button size="sm" icon="pause" disabled={requested(`alert:${inc.id}:pause`) || !perm.request} title={reqWhy}
-              onClick={() => requestChange({ kind: 'status', target: `${inc.target} 키워드`, targetId: `alert:${inc.id}:pause`, before: 'on', after: 'off', reason: `${inc.title} — 재입고 시 재개`, approver: 'AE' }, '키워드 일시 중지 요청을 만들었습니다')}>
-              {`키워드 일시 중지 요청${requested(`alert:${inc.id}:pause`) ? '됨' : ''} (담당 AE)`}
+              onClick={() => requestChange({ kind: 'status', target: `${inc.target} 키워드`, targetId: `alert:${inc.id}:pause`, before: 'on', after: 'off', reason: `${inc.title} — 재입고 시 재개`, approver: server ? 'PM' : 'AE' }, '키워드 일시 중지 요청을 만들었습니다')}>
+              {`키워드 일시 중지 요청${requested(`alert:${inc.id}:pause`) ? '됨' : ''} (${server ? 'PM — 서버 ON/OFF 승인 기준 p.15' : '담당 AE'})`}
             </Button>
           ) : null}
           {['budget_forecast', 'keyword_spike', 'brand_intrusion', 'budget_exhausted'].includes(inc.ruleId) ? <a className="btn sm" href="#adpilot">AD Pilot 조정 후보</a> : null}

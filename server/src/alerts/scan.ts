@@ -9,7 +9,8 @@
  *  - 알림 문구는 실제 발송 요청 결과로 적는다(withDeliveryNote): 엔진의 '감지 · 메신저 알림 (…)' · '메신저 즉시 알림 발송 · …'은 화면 시연 문구라
  *    채널이 없거나 등급 · 이벤트 필터로 안 보낸 경우에도 '보냈다'고 읽힌다. 실제 발송 결과의 원본은 발송 이력(notifications)이다.
  *  - 테스트 데이터(Dataset.meta.mode demo, 또는 mixed에서 그 매체의 출처가 전부 demo)로 감지한 이슈는 isTest=true —
- *    알림은 'test' 이벤트를 켠 채널로만 가고(TEST DATA 표기), 성과 증명 집계에서 빠진다. 엔진은 데이터 출처를 모르므로 서버가 정한다.
+ *    알림은 '테스트 데이터 이슈'(test)를 켠 채널 중 해당 이벤트(새 이슈 · SLA · 해결 공유)도 켠 채널로만 가고(test만 켠 채널은 TEST DATA 이슈 알림 전부, TEST DATA 표기),
+ *    성과 증명 집계에서 빠진다. 엔진은 데이터 출처를 모르므로 서버가 정한다.
  */
 import type { ChangeRequest, Dataset, DatasetMeta } from '@/core/types';
 import { activeConfig, detectIncidents, msToKstIso, withDeliveryNote, type AlertIncident } from '@/modules/alert/engine';

@@ -6,7 +6,7 @@
  * (doc.escalations에 기록). 담당이 비어 있으면 당번표(regimeOf · onDutyFor)로 채운다. 운영자가 정한 담당은 바꾸지 않는다.
  * 같은 잡에서 intakeSweep이 다른 도메인이 직접 넣은 이슈(대량 변경 등)에 '새 이슈' 알림을 한 번 보낸다.
  */
-import { fmtStamp, msToKstIso, regimeOf } from '@/modules/alert/engine';
+import { fmtStamp, msToKstIso, regimeOf, withDeliveryNote } from '@/modules/alert/engine';
 import { withWorkspaceConfig } from '@/data/config';
 import type { Db } from '../db/pool';
 import { loadWorkspaceConfig } from '../settings/service';
@@ -137,6 +137,8 @@ export async function intakeSweep(db: Db, wsId: string): Promise<IntakeResult> {
         if (!doc.detectedAt || !Number.isFinite(Date.parse(doc.detectedAt))) doc.detectedAt = at;
         if (!doc.assignee) Object.assign(doc, withWorkspaceConfig(cfg, () => rosterAssignment(doc, kstToday(now), forcedOff)));
         const r = await fanOutIncident(q, wsId, { event: 'incident', incident: doc });
+        // 다른 도메인이 넣은 이슈(일괄 변경 등)의 엔진 문구 '메신저 즉시 알림'을 실제 발송 요청 결과로 바꾼다
+        Object.assign(doc, withDeliveryNote(doc, r));
         doc.timeline.push({ at, by: 'MILDO Alert', action: `알림 접수: 담당 ${doc.assignee ?? '—'} · 백업 ${doc.backup ?? '—'} · 알림 잡 ${r.enqueued}건` });
         await saveIncident(q, wsId, doc);
         await audit(q, {
