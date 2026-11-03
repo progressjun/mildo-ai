@@ -77,7 +77,7 @@ export function planStorageLoad(
 
 export type RefetchTarget = 'changes' | 'incidents' | 'comments' | 'dataset' | 'state' | 'workspace' | 'me';
 
-/** 이벤트 이름(type) → 다시 불러올 대상. connection · report 등 스토어에 없는 것은 null (각 화면이 onServerEvent로 받는다) */
+/** 이벤트 이름(type) → 다시 불러올 대상. connection · report · notify 등 스토어에 없는 것은 null (각 화면이 onServerEvent로 받는다) */
 export const EVENT_REFETCH: Record<string, RefetchTarget | null> = {
   change: 'changes',
   incident: 'incidents',
@@ -88,6 +88,8 @@ export const EVENT_REFETCH: Record<string, RefetchTarget | null> = {
   member: 'me',
   connection: null,
   report: null,
+  // 알림 채널 생성 · 수정 · 삭제 · 테스트 (alerts) — 알림 설정 화면이 onServerEvent('notify')로 받는다. 스토어 목록 · 설정 다시 읽기 없음
+  notify: null,
 };
 export const SERVER_EVENT_TYPES = Object.keys(EVENT_REFETCH);
 
@@ -292,6 +294,36 @@ export function normalizeInvite(json: unknown): InviteInfo {
   };
   for (const [k, v] of Object.entries(flags)) if (v !== undefined) (out as unknown as Record<string, boolean>)[k] = v;
   return out;
+}
+
+/**
+ * 비밀번호 재설정 링크 사전 확인 — POST /api/auth/password-reset/check { token } → { valid, reason?, email?(가린 형태), expiresAt? } (team 도메인).
+ * 링크를 열자마자 쓸 수 없는 링크(사용됨 · 만료 · 잘못됨)를 폼보다 먼저 알린다. 형식이 다르면 확인 불가(null)로 보고 폼을 보여 준다 — 최종 판정은 confirm.
+ */
+export type ResetCheckReason = 'invalid' | 'used' | 'expired';
+export interface ResetCheck { valid: boolean; reason: ResetCheckReason | null; email: string | null; expiresAt: string | null }
+export function normalizeResetCheck(json: unknown): ResetCheck | null {
+  if (!json || typeof json !== 'object') return null;
+  const o = json as Record<string, unknown>;
+  if (typeof o.valid !== 'boolean') return null;
+  const reason = o.reason === 'invalid' || o.reason === 'used' || o.reason === 'expired' ? o.reason : null;
+  const s = (v: unknown) => (typeof v === 'string' && v ? v : null);
+  return { valid: o.valid, reason: o.valid ? null : reason ?? 'invalid', email: s(o.email), expiresAt: s(o.expiresAt) };
+}
+
+/** 쓸 수 없는 재설정 링크 안내 (사전 확인 reason · confirm 오류 코드 reset_invalid | reset_used | reset_expired 공용) */
+export function resetLinkProblem(reason: string | null | undefined): string | null {
+  switch (reason) {
+    case 'used': case 'reset_used': return '이미 사용했거나 새 링크로 바뀐 재설정 링크입니다. 가장 최근 메일의 링크를 쓰거나 재설정 메일을 다시 받아 주세요.';
+    case 'expired': case 'reset_expired': return '재설정 링크가 만료되었습니다. 재설정 메일을 다시 받아 주세요.';
+    case 'invalid': case 'reset_invalid': return '재설정 링크가 올바르지 않습니다. 메일의 링크 전체를 열었는지 확인하거나 재설정 메일을 다시 받아 주세요.';
+    default: return null;
+  }
+}
+
+/** 서버 오류 문구가 한국어 안내이면 그대로 쓴다 (속도 제한 · 잠금 · 권한 · 정책 위반 등은 서버가 사유와 대기 시간을 담아 보낸다) */
+export function serverKoreanMessage(e: unknown): string | null {
+  return e instanceof ApiError && typeof e.message === 'string' && /[가-힣]/.test(e.message) ? e.message : null;
 }
 
 /** 서버 모드에서 Flow 시연 이력(seed_flow_*)은 적재하지 않는다 — src/modules/flow/data.ts SEED_PREFIX와 같은 값 (테스트로 고정) */

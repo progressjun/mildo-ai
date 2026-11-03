@@ -7,7 +7,8 @@ import {
   routeApprover, targetStatusOf,
 } from './policy';
 import { parseTarget } from './targets';
-import { evaluateGuards } from './executor';
+import { entityOf, evaluateGuards, opChange } from './executor';
+import { decideBulk, windowOf, bulkIncidentsFor } from './bulk';
 
 const mk = (o: Partial<ChangeRequest> = {}): ChangeRequest => ({
   id: 'c1', createdAt: '2026-11-02T00:00:00.000Z', module: 'adpilot', kind: 'bid', target: '수면밀도 입찰가', targetId: 'kw_1',
@@ -214,5 +215,62 @@ describe('반영 전 점검 (Flow executionCheck + 서버 점검)', () => {
     const resolved = evaluateGuards({ ...base, changes: list, change: list[3], bulkIncidentStatus: new Map([[r.bulkIncidents[0].id, 'resolved']]) });
     expect(resolved.bulkIncidents).toHaveLength(0);
     expect(resolved.blocks.join(' ')).not.toMatch(/대량 변경/);
+  });
+});
+
+describe('대량 변경 window · 판정 (bulk.ts)', () => {
+  const at = (hhmm: string) => `2026-11-02T${hhmm}:00.000+09:00`;
+  const mkAt = (id: string, hhmm: string, o: Partial<ChangeRequest> = {}) => mk({ id, createdAt: new Date(at(hhmm)).toISOString(), requestedBy: '김AE', status: 'pending', ...o });
+  const burst = (prefix: string, start: number) => Array.from({ length: 10 }, (_, i) => mkAt(`${prefix}${i}`, `${String(start).padStart(2, '0')}:0${i}`));
+  it('windowOf: 이 건을 포함한 window만 — 같은 크기의 이전 묶음에 가려지지 않는다', () => {
+    const a = burst('a', 10), b = burst('b', 15);
+    const all = [...a, ...b];
+    expect(windowOf(all, b[4], 10).map((x) => x.id)).toEqual(b.map((x) => x.id));
+    expect(windowOf(all, a[0], 10).map((x) => x.id)).toEqual(a.map((x) => x.id));
+    // 반려 · 롤백 · 대상 밖 종류 · 다른 요청자는 세지 않는다
+    expect(windowOf([...a.slice(0, 9), mkAt('x', '10:09', { requestedBy: '다른 AE' })], a[0], 10)).toHaveLength(9);
+    expect(windowOf(a.map((x, i) => (i ? { ...x, status: 'rejected' as const } : x)), a[0], 10)).toHaveLength(1);
+    expect(windowOf(a, { ...a[0], kind: 'setting' }, 10)).toEqual([]);
+    const found = bulkIncidentsFor(all, b[4]);
+    expect(found).toHaveLength(1);
+    expect(found[0].id).toBe('bulk_change:adpilot · 김AE:2026-11-02');
+    expect(found[0].related).toEqual(b.map((x) => x.id));
+  });
+  it('decideBulk: 미해결 차단 · 종료 통과 · 종료 뒤 재발은 새 id로 적재', () => {
+    const a = burst('a', 10), b = burst('b', 15);
+    const all = [...a, ...b];
+    const [ib] = bulkIncidentsFor(all, b[0]);
+    const id = 'bulk_change:adpilot · 김AE:2026-11-02';
+    const fresh = decideBulk([ib], b[0], [], all);
+    expect(fresh.toStore.map((x) => x.id)).toEqual([id]);
+    expect(fresh.blocks[0]).toMatch(/대량 변경 실수 감지/);
+    const open = decideBulk([ib], b[0], [{ id, status: 'open', related: b.map((x) => x.id), resolvedAt: null }], all);
+    expect(open).toMatchObject({ toStore: [], passes: [] });
+    expect(open.blocks).toHaveLength(1);
+    const done = decideBulk([ib], b[0], [{ id, status: 'resolved', related: b.map((x) => x.id), resolvedAt: Date.parse(at('16:00')) }], all);
+    expect(done).toMatchObject({ blocks: [], toStore: [] });
+    // 첫 묶음(a)이 11:00에 종료된 뒤 b가 생김 → 재발
+    const again = decideBulk([ib], b[0], [{ id, status: 'resolved', related: a.map((x) => x.id), resolvedAt: Date.parse(at('11:00')) }], all);
+    expect(again.toStore.map((x) => x.id)).toEqual([`${id}:b0`]);
+    expect(again.toStore[0].related).toEqual(b.map((x) => x.id));
+    // 재발 이슈가 열려 있으면 다시 적재하지 않고 차단
+    const followOpen = decideBulk([ib], b[5], [
+      { id, status: 'resolved', related: a.map((x) => x.id), resolvedAt: Date.parse(at('11:00')) },
+      { id: `${id}:b0`, status: 'open', related: b.map((x) => x.id), resolvedAt: null },
+    ], all);
+    expect(followOpen.toStore).toEqual([]);
+    expect(followOpen.blocks[0]).toContain(`${id}:b0`);
+  });
+});
+
+describe('커넥터에 넘기는 변경 (opChange · entityOf)', () => {
+  it('대상 엔티티는 화이트리스트 필드만, 이전 실행 기록은 넘기지 않는다', () => {
+    const e = entityOf({ entityType: 'keyword', externalId: 'nkw-1', source: 'c', doc: { text: '수면밀도', adgroupId: 'grp-1', campaignId: 'cmp-1', bid: 270, token: 'secret', name: 'x'.repeat(300) }, updatedAt: null, connection: null });
+    expect(e).toEqual({ type: 'keyword', externalId: 'nkw-1', text: '수면밀도', adgroupId: 'grp-1', campaignId: 'cmp-1' });
+    const ch = opChange(mk({ execution: { mode: 'live', ok: true, at: 'x' } }), {
+      externalId: 'nkw-1', entityType: 'keyword', kind: 'bid', target: 't', before: 270, after: 297, role: 'primary', connectionId: 'c', provider: 'naver_sa', idempotent: true, entity: e,
+    });
+    expect(ch).toMatchObject({ targetId: 'nkw-1', before: 270, after: 297, changePct: 10, entity: { adgroupId: 'grp-1' } });
+    expect(ch.execution).toBeUndefined();
   });
 });

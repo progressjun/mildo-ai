@@ -26,11 +26,12 @@ const BASE_DATA = generateDemoData('2026-11-02', 10);
 // 이 도메인 커넥터가 만든 엔티티가 Dataset에 들어온 상태 (실서비스에서는 수집 → Dataset 빌더 경로)
 const DATA = {
   ...BASE_DATA,
-  keywords: [...BASE_DATA.keywords, { ...BASE_DATA.keywords[1], id: 'gads-kw-5001-9001', text: '수면밀도', adgroup: 'Google · 브랜드', bid: 1500, maxBid: 3000 }],
+  keywords: [...BASE_DATA.keywords, { ...BASE_DATA.keywords[1], id: 'gads-kw-5001-9001', text: '수면밀도', adgroup: '브랜드', bid: 1500, maxBid: 3000, media: 'google' as const, campaignId: 'gads-cmp-111', adgroupId: '5001' }],
   campaigns: [
     ...BASE_DATA.campaigns,
     { id: 'kakao-cmp-1001', media: 'kakao' as const, name: '방문 리마케팅', dailyBudget: 300000, spentToday: 90000, status: 'on' as const, hourOfData: 10 },
     { id: 'meta-adset-22', media: 'meta' as const, name: '리타겟팅 · 장바구니', dailyBudget: 150000, spentToday: 40000, status: 'on' as const, hourOfData: 10 },
+    { id: 'gfa-cmp-1', media: 'naver_gfa' as const, name: '쇼핑 고객 확장', dailyBudget: 300000, spentToday: 90000, status: 'on' as const, hourOfData: 10, adGroups: [{ id: '11', name: '리타겟팅', status: 'on' as const, dailyBudget: 300000 }] },
   ],
 };
 const MEDIA = ['naver_sa', 'google_ads', 'meta', 'kakao_moment', 'naver_gfa'];
@@ -51,14 +52,14 @@ beforeEach(async () => {
   configureChanges({ buildDataset: async () => DATA });
 });
 
-async function insertConnection(ws: string, provider: string, channel: string, creds: Record<string, unknown>, writeMode = 'dry_run'): Promise<string> {
+async function insertConnection(ws: string, provider: string, channel: string, creds: Record<string, unknown>, writeMode = 'dry_run', settings: Record<string, unknown> = {}): Promise<string> {
   const r = await t.db.query<{ id: string }>(
-    `INSERT INTO connections (workspace_id, provider, kind, channel, label, status, write_mode, credentials_enc) VALUES ($1, $2, 'media', $3, $4, 'active', $5, $6) RETURNING id`,
-    [ws, provider, channel, `${provider} 테스트`, writeMode, encryptCredentials(creds, t.config.encryptionKey)],
+    `INSERT INTO connections (workspace_id, provider, kind, channel, label, status, write_mode, credentials_enc, settings) VALUES ($1, $2, 'media', $3, $4, 'active', $5, $6, $7) RETURNING id`,
+    [ws, provider, channel, `${provider} 테스트`, writeMode, encryptCredentials(creds, t.config.encryptionKey), JSON.stringify(settings)],
   );
   return r.rows[0].id;
 }
-const entity = (type: string, id: string, source: string, channel: string, doc: Record<string, unknown>) =>
+const entity = (type: string, id: string, source: string, channel: string, doc: object) =>
   t.db.query(`INSERT INTO wh_entities (workspace_id, entity_type, external_id, source, channel, doc) VALUES ($1, $2, $3, $4, $5, $6)`, [t.ws, type, id, source, channel, JSON.stringify(doc)]);
 
 const changes = (p = '') => `/api/w/${t.ws}/changes${p}`;
@@ -85,8 +86,11 @@ describe('카탈로그 · 커넥션', () => {
       expect(byId[p].credentialFields.length).toBeGreaterThan(0);
       expect(byId[p].credentialFields.every((f: { label: string; help?: string }) => /[가-힣]/.test(f.label) && !!f.help)).toBe(true);
     }
-    expect(byId.naver_sa.capabilities.writes).toEqual(['bid', 'budget', 'status']);
-    expect(byId.naver_gfa.capabilities.writes).toEqual(['status']);
+    expect(byId.naver_sa.capabilities.writes).toEqual(['bid', 'budget', 'status', 'keyword_add']);
+    expect(byId.google_ads.capabilities.writes).toEqual(['bid', 'budget', 'status']);
+    expect(byId.meta.capabilities.writes).toEqual(['budget', 'status']);
+    expect(byId.kakao_moment.capabilities.writes).toEqual(['budget', 'status']);
+    expect(byId.naver_gfa.capabilities.writes).toEqual(['budget', 'status']);
   });
 
   it('생성: 자격증명 형식 검증(400) · ae 거부(403) · 비밀값 마스킹 · 감사, 다른 워크스페이스 404', async () => {
@@ -174,5 +178,36 @@ describe('변경 요청 반영 (기본 해석기 · dry_run)', () => {
 
     const exec = await t.db.query<{ n: string }>(`SELECT count(*)::text AS n FROM change_executions WHERE workspace_id = $1 AND mode = 'dry_run' AND ok`, [t.ws]);
     expect(Number(exec.rows[0].n)).toBe(3);
+  });
+
+  it('GFA Control: 광고그룹 OFF(gfa:adgroup:<캠페인>:<광고 그룹 번호>) · 캠페인 일 예산(gfa:budget:) — 실제 광고 그룹 번호로 요청 단계 기록', async () => {
+    const gfaCreds = { clientId: 'gfa-client-id', clientSecret: 'gfa-integration-secret', refreshToken: 'gfa-refresh-token-0123', adAccountNo: '1017' };
+    const c = await insertConnection(t.ws, 'naver_gfa', 'naver_gfa', gfaCreds);
+    await entity('campaign', 'gfa-cmp-1', c, 'naver_gfa', DATA.campaigns.find((x) => x.id === 'gfa-cmp-1')!);
+    const off = await approveAndApply({ module: 'gfa', kind: 'status', target: '쇼핑 고객 확장 · 리타겟팅', targetId: 'gfa:adgroup:gfa-cmp-1:11', before: 'on', after: 'off', approver: 'PM' });
+    expect(off.status).toBe('applied');
+    expect(off.execution).toMatchObject({ mode: 'dry_run', ok: true, provider: 'naver_gfa' });
+    const offSteps = off.execution.request.steps as { method: string; url: string; query?: Record<string, unknown> }[];
+    expect(offSteps[0]).toMatchObject({ method: 'POST', url: 'https://openapi.naver.com/v1/ad-api/1.0/adAccounts/1017/adSets/activate', query: { adSetNos: '11', activated: false } });
+
+    // 감액 (데모 Dataset의 GFA 계정은 잔액 1일치 미만 · 자동충전 실패라 증액은 changes 도메인 GFA Control 검증이 보류한다 — 의도된 안전장치)
+    const b = await approveAndApply({ module: 'gfa', kind: 'budget', target: '쇼핑 고객 확장 일 예산', targetId: 'gfa:budget:gfa-cmp-1', before: 300000, after: 270000, changePct: -10, approver: 'PM' });
+    expect(b.execution).toMatchObject({ mode: 'dry_run', ok: true, provider: 'naver_gfa' });
+    expect(JSON.stringify(b.execution.request)).toContain('"campaignSpendLimit":270000');
+    expect(JSON.stringify(b.execution.request)).toContain('editSpendLimit');
+    expect(JSON.stringify(b.execution.request)).toContain('AdSetEditBudgetParam');
+    expect(JSON.stringify(b.execution)).not.toContain(gfaCreds.clientSecret);
+    expect(JSON.stringify(b.execution)).not.toContain(gfaCreds.refreshToken);
+  });
+
+  it('AD Pilot 테스트 후보 등록(keyword_add, term:<검색어>) → 네이버 검색광고 커넥션의 테스트 광고그룹으로 POST 단계 기록', async () => {
+    const GRP = 'grp-a001-01-000000099999999';
+    await insertConnection(t.ws, 'naver_sa', 'naver_sa', { apiKey: 'test-api-key-0123', secretKey: 'test-secret-key-0123', customerId: '1234567' }, 'dry_run', { testAdgroups: { generic: GRP } });
+    const r = await approveAndApply({ module: 'adpilot', kind: 'keyword_add', target: '퀸 매트리스 추천 → GENERIC_TEST 등록', targetId: 'term:퀸 매트리스 추천', before: '미등록', after: 'GENERIC_TEST · 입찰 1,200원', approver: 'AE' });
+    expect(r.status).toBe('applied');
+    expect(r.execution).toMatchObject({ mode: 'dry_run', ok: true, provider: 'naver_sa' });
+    const steps = r.execution.request.steps as { method: string; url: string; query?: unknown; body?: unknown }[];
+    expect(steps.at(-1)).toMatchObject({ method: 'POST', url: 'https://api.searchad.naver.com/ncc/keywords', query: { nccAdgroupId: GRP }, body: [{ keyword: '퀸 매트리스 추천', bidAmt: 1200 }] });
+    expect(JSON.stringify(r.execution)).not.toContain('test-secret-key-0123');
   });
 });

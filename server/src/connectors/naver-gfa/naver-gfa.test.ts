@@ -108,11 +108,20 @@ describe('수집 (fetch)', () => {
     expect(b.mediaHourly![0]).toMatchObject({ cost: 1500, conversions: 1 });
 
     expect(b.campaigns).toEqual([
-      { id: 'gfa-cmp-1', media: 'naver_gfa', name: '쇼핑 고객 확장', intent: 'generic', dailyBudget: 350000, spentToday: 4000, status: 'on', hourOfData: 14 },
+      {
+        id: 'gfa-cmp-1', media: 'naver_gfa', name: '쇼핑 고객 확장', intent: 'generic', dailyBudget: 350000, spentToday: 4000, status: 'on', hourOfData: 14,
+        // GFA Control이 데모 광고그룹 대신 쓰는 실제 광고 그룹 — id는 반영 대상 번호(gfa:adgroup:gfa-cmp-1:<번호>)
+        adGroups: [
+          { id: '11', name: '리타겟팅', status: 'on', dailyBudget: 200000 },
+          { id: '12', name: '확장', status: 'on', dailyBudget: 150000 },
+          { id: '13', name: '기간', status: 'on', dailyBudget: 0 },
+        ],
+      },
       { id: 'gfa-cmp-2', media: 'naver_gfa', name: 'Prospecting', intent: 'generic', dailyBudget: 700000, spentToday: 2010, status: 'limited', hourOfData: 14 },
     ]);
     expect(b.accounts![0]).toMatchObject({ id: 'gfa-1017', media: 'naver_gfa', balance: -1, avgDailySpend: 80000, status: 'active' });
-    expect(b.warnings!.map((w) => w.code)).toEqual(['balance_unavailable', 'hourly_conversions_all_types']);
+    // CBO 예산은 명세상 '총 예산' — 일 예산으로 표시하되 경고
+    expect(b.warnings!.map((w) => w.code)).toEqual(['cbo_budget_total', 'balance_unavailable', 'hourly_conversions_all_types']);
   });
 
   it('전환 유형을 비우면 일반 성과의 전체 전환 · 과거만이면 오늘 행 없음', async () => {
@@ -123,9 +132,14 @@ describe('수집 (fetch)', () => {
     expect(b.campaigns!.find((c) => c.id === 'gfa-cmp-1')!.spentToday).toBe(4000);
   });
 
-  it('캠페인 예산: CBO면 캠페인 예산, 아니면 켜진 일 예산 광고 그룹 합계 (기간 예산 제외)', () => {
+  it('캠페인 예산: ADVoost 쇼핑(PMAX) = performanceMax.budget(일 예산), CBO = CBO 예산, 그 밖 = 켜진 일 예산 광고 그룹 합계 (기간 예산 제외)', () => {
     const rows = normCampaigns([{ no: 5, name: '브랜드', activated: false }], [{ no: 1, campaignNo: 5, budgetType: 'DAILY', budgetAmount: 1000, activated: false }], new Map(), 9, []);
-    expect(rows[0]).toMatchObject({ dailyBudget: 0, status: 'off', intent: 'brand' });
+    expect(rows[0]).toMatchObject({ dailyBudget: 0, status: 'off', intent: 'brand', adGroups: [{ id: '1', status: 'off', dailyBudget: 1000 }] });
+    const pmax = normCampaigns([{ no: 7, name: 'ADVoost', objective: 'PMAX', activated: true, spendLimit: 9_999_999, performanceMax: { budget: 450000 } }], [], new Map([[7, 1200]]), 9, []);
+    expect(pmax[0]).toMatchObject({ id: 'gfa-cmp-7', dailyBudget: 450000, spentToday: 1200 });
+    expect(pmax[0].adGroups).toBeUndefined();
+    const cboNoBudget = normCampaigns([{ no: 8, cboActivated: true }], [{ no: 81, campaignNo: 8, budgetType: 'DAILY', budgetAmount: 5000, activated: true }], new Map(), 9, []);
+    expect(cboNoBudget[0].dailyBudget).toBe(5000);
   });
 });
 
@@ -153,9 +167,11 @@ describe('반영 (apply)', () => {
       { method: 'POST', match: `${BASE}/campaigns/activate`, reply: { data: true } },
       { method: 'POST', match: `${BASE}/adSets/activate`, reply: { data: { success: true, message: '변경 완료했습니다.' } } },
       { method: 'GET', match: `${BASE}/adSets/11`, reply: { data: { no: 11, activated: false } } },
+      { method: 'GET', match: (req) => req.url === `${BASE}/campaigns/1`, reply: { data: { no: 1, activated: true } } },
     ]);
     const c = await connector.apply!(fakeCtx(CREDS, {}, http), change({ targetId: 'gfa-cmp-1', after: 'on' }));
     expect(c).toMatchObject({ ok: true, appliedValue: 'on' });
+    expect(http.calls.filter((x) => x.url === `${BASE}/campaigns/1`)).toHaveLength(1);
     expect(http.callsTo('campaigns/activate')[0].query).toEqual({ campaignNos: '1', activated: true });
     const a = await connector.apply!(fakeCtx(CREDS, {}, http), change({}));
     expect(a).toMatchObject({ ok: true, appliedValue: 'off' });
@@ -168,10 +184,111 @@ describe('반영 (apply)', () => {
     expect(x.ok).toBe(false);
     expect(x.error).toMatch(/하위에 속하지 않은 광고 그룹/);
 
-    const budget = await connector.apply!(fakeCtx(CREDS, {}, fakeHttp([])), change({ kind: 'budget', targetId: 'gfa:budget:gfa-cmp-1', before: 300000, after: 330000 }));
-    expect(budget.ok).toBe(false);
-    expect(budget.error).toMatch(/editType/);
-    expect(connector.capabilities.writes).toEqual(['status']);
+    // 신규 캠페인(kind gfa)은 생성 필수 항목이 요청에 없어 반영 대상이 아니다 (writes에 없음 → 변경 실행기는 기록만)
+    const created = await connector.apply!(fakeCtx(CREDS, {}, fakeHttp([])), change({ kind: 'gfa', targetId: 'gfa:new:gfa-1017:신규', after: 300000 }));
+    expect(created.ok).toBe(false);
+    expect(connector.capabilities.writes).toEqual(['budget', 'status']);
+  });
+});
+
+describe('반영 (apply) · 일 예산', () => {
+  const tok = { match: 'nid.naver.com', reply: { data: { access_token: 'tok', expires_in: 3600 } } } as FakeRoute;
+  const budget = (p: Partial<ChangeRequest> = {}) => change({ kind: 'budget', target: '쇼핑 고객 확장 일 예산', targetId: 'gfa-cmp-1', before: 300000, after: 330000, ...p });
+  const isCmp = (req: { url: string }) => req.url === `${BASE}/campaigns/1`;
+
+  it('dry_run: 네트워크 없이 예산 구조 확인 → (PMAX) editSpendLimit · (일 예산 광고 그룹 1개) adSets/edit 단계를 근거와 함께 돌려준다', async () => {
+    const http = fakeHttp([]);
+    const r = await connector.apply!(fakeCtx(CREDS, {}, http, { dryRun: true }), budget());
+    expect(http.calls).toHaveLength(0);
+    expect(r).toMatchObject({ ok: true, appliedValue: 330000 });
+    const steps = (r.request as { steps: { method: string; url: string; query?: unknown; body?: unknown; note?: string }[] }).steps;
+    expect(steps.map((x) => `${x.method} ${x.url.replace(BASE, '')}`)).toEqual(['GET /campaigns/1', 'POST /campaigns/editSpendLimit', 'GET /adSets', 'POST /adSets/edit', 'GET /campaigns/1']);
+    expect(steps[1]).toMatchObject({ query: { campaignNos: '1', campaignSpendLimit: 330000 } });
+    expect(steps[1].note).toMatch(/PMAX/);
+    expect(steps[3].body).toMatchObject({ editType: 'AdSetEditBudgetParam', budgetType: 'DAILY', budgetAmount: 330000 });
+    expect(JSON.stringify(r.request)).not.toContain(CREDS.clientSecret);
+    expect(JSON.stringify(r.request)).not.toContain(CREDS.refreshToken);
+  });
+
+  it('live ADVoost 쇼핑(PMAX): editSpendLimit 쿼리 → performanceMax.budget 확인 읽기 값을 반영 값으로', async () => {
+    const http = fakeHttp([
+      tok,
+      { method: 'GET', match: isCmp, reply: (_r, n) => ({ data: { no: 1, objective: 'PMAX', performanceMax: { budget: n === 1 ? 300000 : 330000 } } }) },
+      { method: 'POST', match: `${BASE}/campaigns/editSpendLimit`, reply: { data: true } },
+    ]);
+    const r = await connector.apply!(fakeCtx(CREDS, {}, http), budget());
+    expect(r).toMatchObject({ ok: true, appliedValue: 330000 });
+    expect(http.callsTo('editSpendLimit')[0]).toMatchObject({ method: 'POST', query: { campaignNos: '1', campaignSpendLimit: 330000 } });
+    expect(http.callsTo('/adSets')).toHaveLength(0);
+  });
+
+  it('live 일 예산 광고 그룹 1개: adSets/edit 본문(editType · adSetNos · budgetType DAILY · budgetAmount) → 확인 읽기', async () => {
+    const http = fakeHttp([
+      tok,
+      { method: 'GET', match: isCmp, reply: { data: { no: 1, objective: 'CONVERSION', cboActivated: false } } },
+      { method: 'GET', match: (req) => req.url === `${BASE}/adSets`, reply: { data: { content: [
+        { no: 11, campaignNo: 1, name: '리타겟팅', activated: true, budgetType: 'DAILY', budgetAmount: 300000 },
+        { no: 12, campaignNo: 1, name: '꺼진 그룹', activated: false, budgetType: 'DAILY', budgetAmount: 100000 },
+        { no: 13, campaignNo: 1, name: '기간', activated: true, budgetType: 'TOTAL', budgetAmount: 9000000 },
+      ], last: true } } },
+      { method: 'GET', match: `${BASE}/adSets/11`, reply: (_r, n) => ({ data: { no: 11, budgetType: 'DAILY', budgetAmount: n === 1 ? 300000 : 330000 } }) },
+      { method: 'POST', match: `${BASE}/adSets/edit`, reply: { data: { success: true, message: '변경 완료했습니다.' } } },
+    ]);
+    const r = await connector.apply!(fakeCtx(CREDS, {}, http), budget());
+    expect(r).toMatchObject({ ok: true, appliedValue: 330000 });
+    expect(http.callsTo('/adSets')[0].query).toMatchObject({ campaignNo: '1', page: 0, size: 100 });
+    const edit = http.callsTo('/adSets/edit')[0];
+    expect(edit.body).toEqual({ editType: 'AdSetEditBudgetParam', adSetNos: [11], budgetType: 'DAILY', budgetAmount: 330000 });
+    expect(edit.bodyType).toBe('json');
+    expect((r.request as { notes?: string[] }).notes?.[0]).toMatch(/광고 그룹 11/);
+  });
+
+  it('멈춤: CBO(총 예산) · 부스트업 · 일 예산 광고 그룹 여러 개 · 값 불일치 · success=false — 변경 호출 없음', async () => {
+    const run = async (cmp: Record<string, unknown>, sets: Record<string, unknown>[] = [], adSet: Record<string, unknown> = {}, edit: unknown = { success: true }) => {
+      const http = fakeHttp([
+        tok,
+        { method: 'GET', match: isCmp, reply: { data: { no: 1, ...cmp } } },
+        { method: 'GET', match: (req) => req.url === `${BASE}/adSets`, reply: { data: { content: sets, last: true } } },
+        { method: 'GET', match: `${BASE}/adSets/`, reply: { data: { no: 11, budgetType: 'DAILY', budgetAmount: 300000, ...adSet } } },
+        { method: 'POST', match: `${BASE}/adSets/edit`, reply: { data: edit } },
+      ]);
+      const r = await connector.apply!(fakeCtx(CREDS, {}, http), budget());
+      return { r, writes: http.calls.filter((c) => c.method === 'POST' && !c.url.includes('nid.naver.com')).length };
+    };
+    const daily = (no: number) => ({ no, campaignNo: 1, activated: true, budgetType: 'DAILY', budgetAmount: 150000 });
+    const cbo = await run({ cboActivated: true, budget: 300000 });
+    expect(cbo.r.error).toMatch(/CBO.*총 예산/);
+    expect(cbo.writes).toBe(0);
+    const off = await run({ subType: 'OFFSITE_CAMPAIGN' });
+    expect(off.r.error).toMatch(/부스트업/);
+    const many = await run({}, [daily(11), daily(12)]);
+    expect(many.r.error).toMatch(/광고 그룹 2개/);
+    expect(many.writes).toBe(0);
+    const none = await run({}, []);
+    expect(none.r.error).toMatch(/일 예산\(DAILY\) 광고 그룹이 없는/);
+    const drift = await run({}, [daily(11)], { budgetAmount: 280000 });
+    expect(drift.r.error).toMatch(/요청 시점 값\(300,000원\)과 다릅니다/);
+    expect(drift.writes).toBe(0);
+    const failed = await run({}, [daily(11)], {}, { success: false, message: '예산 범위 오류' });
+    expect(failed.r).toMatchObject({ ok: false });
+    expect(failed.r.error).toMatch(/예산 범위 오류/);
+  });
+
+  it('광고 그룹 대상(gfa:adgroup:<캠페인>:<번호>) 예산은 바로 adSets/edit · 총예산 광고 그룹은 멈춤', async () => {
+    const http = fakeHttp([
+      tok,
+      { method: 'GET', match: `${BASE}/adSets/12`, reply: { data: { no: 12, budgetType: 'DAILY', budgetAmount: 150000 } } },
+      { method: 'POST', match: `${BASE}/adSets/edit`, reply: { data: { success: true } } },
+    ]);
+    const r = await connector.apply!(fakeCtx(CREDS, {}, http), budget({ targetId: 'gfa:adgroup:gfa-cmp-1:12', before: 150000, after: 180000 }));
+    expect(r).toMatchObject({ ok: true });
+    expect(http.callsTo('/adSets/edit')[0].body).toEqual({ editType: 'AdSetEditBudgetParam', adSetNos: [12], budgetType: 'DAILY', budgetAmount: 180000 });
+    expect(http.callsTo('/campaigns')).toHaveLength(0);
+
+    const total = fakeHttp([tok, { method: 'GET', match: `${BASE}/adSets/13`, reply: { data: { no: 13, budgetType: 'TOTAL', budgetAmount: 9000000 } } }]);
+    const t = await connector.apply!(fakeCtx(CREDS, {}, total), budget({ targetId: 'gfa:adgroup:gfa-cmp-1:13' }));
+    expect(t.error).toMatch(/총예산/);
+    expect(total.calls.filter((c) => c.method === 'POST' && !c.url.includes('nid'))).toHaveLength(0);
   });
 });
 

@@ -8,8 +8,11 @@
  *    (날짜 × 매체/채널)마다 남은 출처 중 우선순위가 가장 높은 하나를 고른다 (예: 오래된 기간은 CSV, 최근은 API).
  *  - 시간대 데이터는 (날짜 × 매체) 단위로 출처 하나를 통째로 쓴다(시간대끼리 출처를 섞지 않는다).
  *
+ * 키워드 · 검색어 그룹: 키워드 문서의 매체(Google Ads 키워드 = 'google') → 출처 커넥션 채널 → 네이버 SA. Google Ads만 실연동이면
+ * 네이버 SA 데모 키워드는 남고(채널이 다르다), 네이버 SA를 연결하면 데모 키워드가 빠진다.
+ *
  * 형태:
- *  - dates: 어제까지 days일 + 오늘(진행 중) — 오름차순
+ *  - dates: 오늘 포함 days일(오늘-(days-1) ~ 오늘, 오늘은 진행 중) — 오름차순. 데모 생성기(src/data/demo.ts)와 같은 길이
  *  - mediaHourly: 최근 35일(오늘 포함)
  *  - keywords: 엔티티(wh_entities) + wh_keyword_daily로 last14(어제까지 14일) · prev14(그 전 14일) · daily(14일) 다시 계산
  *  - searchTerms: 최근 28일(어제까지) 합계, registered = 등록 키워드와 같은 단어 조합(순서 무관)
@@ -33,7 +36,7 @@ export interface BuildDatasetOptions {
 }
 
 type SourceKind = 'api' | 'csv' | 'demo';
-interface SourceInfo { key: string; kind: SourceKind; priority: number; createdMs: number }
+interface SourceInfo { key: string; kind: SourceKind; priority: number; createdMs: number; channel: string | null }
 
 const DEFAULT_PRIORITY: Record<SourceKind, number> = { api: 100, csv: 50, demo: 10 };
 const HOURLY_DAYS = 35;
@@ -44,6 +47,8 @@ const SALES_ORDER = new Map<string, number>(SALES_CHANNEL_IDS.map((c, i) => [c, 
 const CHANNEL_ORDER = new Map<string, number>([...MEDIA_IDS, ...SALES_CHANNEL_IDS].map((c, i) => [c, i]));
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+/** 문서 숫자 필드: 숫자가 아니거나 무한대면 0 */
+const finite = (v: unknown) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
 const weekdayOf = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay();
 const natural = (a: string, b: string) => a.localeCompare(b, 'en', { numeric: true });
 
@@ -54,22 +59,22 @@ function better(a: SourceInfo, b: SourceInfo): boolean {
 
 async function loadSources(q: Queryable, wsId: string): Promise<Map<string, SourceInfo>> {
   const m = new Map<string, SourceInfo>();
-  const conns = (await q.query<{ id: string; provider: string; priority: number; created_at: Date }>(
-    'SELECT id, provider, priority, created_at FROM connections WHERE workspace_id = $1', [wsId],
+  const conns = (await q.query<{ id: string; provider: string; channel: string | null; priority: number; created_at: Date }>(
+    'SELECT id, provider, channel, priority, created_at FROM connections WHERE workspace_id = $1', [wsId],
   )).rows;
   const priorityOfConn = new Map<string, number>();
   for (const c of conns) {
     priorityOfConn.set(c.id, c.priority);
-    if (c.provider === 'demo') m.set('demo', { key: 'demo', kind: 'demo', priority: c.priority, createdMs: new Date(c.created_at).getTime() });
-    else m.set(c.id, { key: c.id, kind: c.provider === 'csv' ? 'csv' : 'api', priority: c.priority, createdMs: new Date(c.created_at).getTime() });
+    if (c.provider === 'demo') m.set('demo', { key: 'demo', kind: 'demo', priority: c.priority, createdMs: new Date(c.created_at).getTime(), channel: null });
+    else m.set(c.id, { key: c.id, kind: c.provider === 'csv' ? 'csv' : 'api', priority: c.priority, createdMs: new Date(c.created_at).getTime(), channel: c.channel });
   }
-  if (!m.has('demo')) m.set('demo', { key: 'demo', kind: 'demo', priority: DEFAULT_PRIORITY.demo, createdMs: 0 });
-  const ups = (await q.query<{ id: string; connection_id: string | null; created_at: Date }>(
-    `SELECT id, connection_id, created_at FROM uploads WHERE workspace_id = $1 AND status = 'imported'`, [wsId],
+  if (!m.has('demo')) m.set('demo', { key: 'demo', kind: 'demo', priority: DEFAULT_PRIORITY.demo, createdMs: 0, channel: null });
+  const ups = (await q.query<{ id: string; connection_id: string | null; channel: string | null; created_at: Date }>(
+    `SELECT id, connection_id, channel, created_at FROM uploads WHERE workspace_id = $1 AND status = 'imported'`, [wsId],
   )).rows;
   for (const u of ups) {
     const p = u.connection_id ? priorityOfConn.get(u.connection_id) ?? DEFAULT_PRIORITY.csv : DEFAULT_PRIORITY.csv;
-    m.set(`csv:${u.id}`, { key: `csv:${u.id}`, kind: 'csv', priority: p, createdMs: new Date(u.created_at).getTime() });
+    m.set(`csv:${u.id}`, { key: `csv:${u.id}`, kind: 'csv', priority: p, createdMs: new Date(u.created_at).getTime(), channel: u.channel });
   }
   return m;
 }
@@ -99,11 +104,14 @@ function collectReal<R extends { source: string }>(into: Set<string>, rows: R[],
   }
 }
 
-/** 엔티티 그룹: 키워드는 검색광고 채널, 상품은 하나의 그룹, 나머지는 매체 · 채널 */
-const entityGroup = (e: { entity_type: string; channel: string | null }) =>
-  e.entity_type === 'keyword' ? e.channel ?? 'naver_sa' : e.entity_type === 'product' ? 'products' : e.channel ?? '-';
-const KW_GROUP = 'naver_sa';
+const KW_DEFAULT = 'naver_sa';
 const BRAND_GROUP = 'brand_search';
+const asMedia = (v: unknown): string | null => (typeof v === 'string' && MEDIA_ORDER.has(v) ? v : null);
+/** 키워드 엔티티의 매체: 문서 media → 행 channel → 네이버 SA */
+const keywordChannelOf = (e: { channel: string | null; doc: Record<string, unknown> }) => asMedia(e.doc?.media) ?? asMedia(e.channel) ?? KW_DEFAULT;
+/** 엔티티 그룹: 키워드는 그 매체, 상품은 하나의 그룹, 나머지는 매체 · 채널 */
+const entityGroup = (e: { entity_type: string; channel: string | null; doc: Record<string, unknown> }) =>
+  e.entity_type === 'keyword' ? keywordChannelOf(e) : e.entity_type === 'product' ? 'products' : e.channel ?? '-';
 
 interface Used { channel: string; source: string; latestDate: string | null; latestHour: number | null }
 
@@ -126,7 +134,7 @@ export async function buildDataset(q: Queryable, workspaceId: string, opts: Buil
   const hour = Number.isInteger(opts.hour) && (opts.hour as number) >= 0 && (opts.hour as number) <= 23 ? (opts.hour as number) : today === now.date ? now.hour : 23;
   const days = Math.max(1, Math.min(400, Math.round(opts.days ?? 120)));
   const yesterday = addDaysStr(today, -1);
-  const from = addDaysStr(today, -days);
+  const from = addDaysStr(today, -(days - 1));
   const dates = dateRange(from, today);
   const hourlyFrom = addDaysStr(today, -(HOURLY_DAYS - 1));
   const kwFrom = addDaysStr(today, -28);
@@ -168,13 +176,26 @@ export async function buildDataset(q: Queryable, workspaceId: string, opts: Buil
   const bsRows = (await q.query<{ date: string; source: string; volume: number }>(
     `SELECT date, source, volume FROM wh_brand_search_daily WHERE workspace_id = $1 AND date BETWEEN $2 AND $3`, [workspaceId, from, today],
   )).rows;
+  // 키워드 일별 · 검색어 행의 매체: 같은 출처의 키워드 엔티티 → 같은 id의 다른 출처 엔티티(CSV가 API 키워드에 붙은 경우) → 출처 커넥션 · 업로드 채널 → 네이버 SA
+  const kwChannelBySourceId = new Map<string, string>();
+  const kwChannelById = new Map<string, string>();
+  for (const e of entRows) {
+    if (e.entity_type !== 'keyword') continue;
+    const ch = keywordChannelOf(e);
+    kwChannelBySourceId.set(`${e.source}\u0000${e.external_id}`, ch);
+    if (e.source !== 'demo' || !kwChannelById.has(e.external_id)) kwChannelById.set(e.external_id, ch);
+  }
+  const sourceMedia = (source: string) => asMedia(sources.get(source)?.channel);
+  const kdGroup = (r: { source: string; keyword_id: string }) =>
+    kwChannelBySourceId.get(`${r.source}\u0000${r.keyword_id}`) ?? kwChannelById.get(r.keyword_id) ?? sourceMedia(r.source) ?? KW_DEFAULT;
+  const stGroup = (r: { source: string }) => sourceMedia(r.source) ?? KW_DEFAULT;
   const real = new Set<string>();
   collectReal(real, mdRows, sources, (r) => r.media);
   collectReal(real, hrRows, sources, (r) => r.media);
   collectReal(real, sdRows, sources, (r) => r.channel);
   collectReal(real, entRows, sources, entityGroup);
-  collectReal(real, kdRows, sources, () => KW_GROUP);
-  collectReal(real, stRows, sources, () => KW_GROUP);
+  collectReal(real, kdRows, sources, kdGroup);
+  collectReal(real, stRows, sources, stGroup);
   collectReal(real, bsRows, sources, () => BRAND_GROUP);
   const pick = <R extends { source: string }>(rows: R[], group: (r: R) => string, key: (r: R) => string) => selectRows(rows, sources, real, group, key);
 
@@ -217,10 +238,10 @@ export async function buildDataset(q: Queryable, workspaceId: string, opts: Buil
   /* ---------- 엔티티 ---------- */
   const entOf = (type: string) => pick(entRows.filter((e) => e.entity_type === type), entityGroup, (e) => e.external_id);
   const kwEnt = entOf('keyword');
-  const kwSources = new Set(kwEnt.map((e) => e.source));
+  const kwSources = new Map(kwEnt.map((e) => [`${keywordChannelOf(e)}\u0000${e.source}`, { channel: keywordChannelOf(e), source: e.source }]));
 
   /* ---------- 키워드 일별 → last14 · prev14 · daily ---------- */
-  const kd = pick(kdRows, () => KW_GROUP, (r) => `${r.keyword_id}|${r.date}`);
+  const kd = pick(kdRows, kdGroup, (r) => `${r.keyword_id}|${r.date}`);
   const kdBy = new Map<string, Map<string, (typeof kd)[number]>>();
   const coverage = new Set<string>();
   for (const r of kd) {
@@ -228,7 +249,7 @@ export async function buildDataset(q: Queryable, workspaceId: string, opts: Buil
     if (!m) kdBy.set(r.keyword_id, (m = new Map()));
     m.set(r.date, r);
     coverage.add(r.date);
-    markUsed('naver_sa', r.source, r.date);
+    markUsed(kdGroup(r), r.source, r.date);
   }
   const last14Dates = dateRange(addDaysStr(today, -14), yesterday);
   const prev14Dates = dateRange(addDaysStr(today, -28), addDaysStr(today, -15));
@@ -243,25 +264,31 @@ export async function buildDataset(q: Queryable, workspaceId: string, opts: Buil
       let rankSum = 0, rankW = 0;
       for (const [d, r] of m) if (recent7.has(d) && r.avg_rank !== null && r.avg_rank !== undefined && Number(r.impressions) > 0) { rankSum += Number(r.avg_rank) * Number(r.impressions); rankW += Number(r.impressions); }
       const avgRank = rankW > 0 ? Math.round((rankSum / rankW) * 10) / 10 : Number(doc.avgRank ?? 0);
-      return {
+      const kw: Keyword = {
         id: String(doc.id ?? e.external_id), text: String(doc.text ?? e.external_id), intent: (doc.intent ?? 'generic') as Keyword['intent'], adgroup: String(doc.adgroup ?? ''),
-        isBrand: !!doc.isBrand, bid: Number(doc.bid ?? 0), maxBid: Number(doc.maxBid ?? 0), avgRank, monthlySearch: Number(doc.monthlySearch ?? 0),
-        impressionShareLost: Number(doc.impressionShareLost ?? 0), status: (doc.status ?? 'on') as Keyword['status'], landing: String(doc.landing ?? ''),
+        isBrand: !!doc.isBrand, bid: finite(doc.bid), maxBid: finite(doc.maxBid), avgRank, monthlySearch: finite(doc.monthlySearch),
+        impressionShareLost: finite(doc.impressionShareLost), status: (doc.status ?? 'on') as Keyword['status'], landing: String(doc.landing ?? ''),
         last14, prev14, daily,
       };
+      // 서버 모드 필드 (src/core/types.ts Keyword.media · campaignId · adgroupId) — 매체 반영 · 매체별 제안에 쓴다
+      const media = asMedia(doc.media) ?? (keywordChannelOf(e) !== KW_DEFAULT ? keywordChannelOf(e) : null);
+      if (media) kw.media = media as MediaId;
+      if (typeof doc.campaignId === 'string' && doc.campaignId) kw.campaignId = doc.campaignId;
+      if (typeof doc.adgroupId === 'string' && doc.adgroupId) kw.adgroupId = doc.adgroupId;
+      return kw;
     })
     .sort((a, b) => natural(a.id, b.id));
-  for (const s of kwSources) markUsed('naver_sa', s, null);
+  for (const s of kwSources.values()) markUsed(s.channel, s.source, null);
 
   /* ---------- 검색어 (최근 28일 합계) ---------- */
-  const st = pick(stRows, () => KW_GROUP, (r) => `${r.term}|${r.date}`);
+  const st = pick(stRows, stGroup, (r) => `${r.term}|${r.date}`);
   const kwTokens = new Set(keywords.map((k) => tokenKey(k.text)));
   const termAgg = new Map<string, SearchTermRow>();
   for (const r of st) {
     const t = termAgg.get(r.term) ?? { term: r.term, impressions: 0, clicks: 0, cost: 0, conversions: 0, revenue: 0, registered: kwTokens.has(tokenKey(r.term)) };
     t.impressions += Number(r.impressions); t.clicks += Number(r.clicks); t.cost += Number(r.cost); t.conversions = r2(t.conversions + Number(r.conversions)); t.revenue += Number(r.revenue);
     termAgg.set(r.term, t);
-    markUsed('naver_sa', r.source, r.date);
+    markUsed(stGroup(r), r.source, r.date);
   }
   const searchTerms = [...termAgg.values()].sort((a, b) => b.clicks - a.clicks || b.cost - a.cost || a.term.localeCompare(b.term)).slice(0, SEARCH_TERM_LIMIT);
 
@@ -276,7 +303,7 @@ export async function buildDataset(q: Queryable, workspaceId: string, opts: Buil
       const c = e.doc as unknown as Campaign;
       const fresh = kstParts(new Date(e.updated_at).getTime()).date === today || today !== now.date;
       markUsed(String(c.media ?? e.channel ?? '-'), e.source, null);
-      return { ...c, spentToday: fresh ? Number(c.spentToday ?? 0) : 0, hourOfData: fresh ? Math.max(0, Math.min(23, Number(c.hourOfData ?? hour))) : 0, dailyBudget: Number(c.dailyBudget ?? 0) };
+      return { ...c, spentToday: fresh ? finite(c.spentToday) : 0, hourOfData: fresh ? Math.max(0, Math.min(23, Math.round(finite(c.hourOfData ?? hour)))) : 0, dailyBudget: finite(c.dailyBudget) };
     })
     .sort((a, b) => (CHANNEL_ORDER.get(a.media) ?? 99) - (CHANNEL_ORDER.get(b.media) ?? 99) || natural(a.id, b.id));
   const accounts: AdAccount[] = entOf('account')

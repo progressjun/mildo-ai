@@ -82,6 +82,9 @@ describe('오류 정규화 (callApi)', () => {
     expect(scrub('Authorization: Bearer ya29.abcdefghijklmnop access_token=EAAxyz123&x=1')).toBe('Authorization: Bearer •••• access_token=••••&x=1');
     const s = requestSummary({ method: 'GET', url: 'https://a.example/x', query: { access_token: 'secret', appsecret_proof: 'p', fields: 'id' }, headers: { Authorization: 'Bearer t' } });
     expect(s).toEqual({ method: 'GET', url: 'https://a.example/x', query: { fields: 'id' }, headers: ['Authorization'] });
+    // 비밀값 이름만 뺀다 — key가 들어간 일반 파라미터(nccKeywordId · hintKeywords)는 dry_run 요약에 남아야 한다
+    const t = requestSummary({ method: 'GET', url: 'https://a.example/x', query: { client_secret: 's', refresh_token: 'r', api_key: 'k', key: 'k2', signature: 'g', nccKeywordId: 'nkw-1', hintKeywords: 'a,b', campaignSpendLimit: 1 } });
+    expect(t.query).toEqual({ nccKeywordId: 'nkw-1', hintKeywords: 'a,b', campaignSpendLimit: 1 });
   });
 });
 

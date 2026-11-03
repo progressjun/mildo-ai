@@ -1,10 +1,12 @@
 /**
  * 데이터 연결 화면 상태 — 서버 모드: API에서 카탈로그 · 커넥션 · 수집 실행 · 품질 · 업로드를 읽고, 수집 대기 · 실행 중이면 4초마다 다시 읽는다.
+ * 다른 사용자 · 워커의 변경은 SSE 'connection' · 'dataset' 이벤트로 받아 0.4초 디바운스 뒤 다시 읽는다.
  * 데모 모드: 예시 상태(읽기 전용, TEST DATA).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSaas } from '@/saas/context';
 import { ApiError } from '@/saas/api';
+import { onServerEvent, type ServerEventData } from '@/saas/events';
 import { useStore } from '@/core/store';
 import type { Permission } from '@/core/permissions';
 import type { CatalogProvider, ConnectionView, QualityItem, QualitySummary, RunView, UploadView } from './model';
@@ -37,6 +39,9 @@ export interface ConnectionsState {
 }
 
 const POLL_MS = 4000;
+const EVENT_DEBOUNCE_MS = 400;
+/** 이 화면을 다시 읽게 하는 서버 이벤트 */
+export const SERVER_EVENTS = ['connection', 'dataset'] as const;
 
 export function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.message;
@@ -92,6 +97,24 @@ export function useConnections(): ConnectionsState {
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server, ws]);
+
+  // SSE: 커넥션 추가 · 수정 · 수집 완료 · 업로드 가져오기(다른 사용자 · 워커) → 다시 읽기
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    if (!server || !ws) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const later = (e: ServerEventData) => {
+      if (e.ws && e.ws !== ws) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; void refreshRef.current(); }, EVENT_DEBOUNCE_MS);
+    };
+    const offs = SERVER_EVENTS.map((t) => onServerEvent(t, later));
+    return () => {
+      offs.forEach((off) => off());
+      if (timer) clearTimeout(timer);
+    };
   }, [server, ws]);
 
   // 수집 대기 · 실행 중이거나 업로드를 가져오는 중이면 짧게 다시 읽는다

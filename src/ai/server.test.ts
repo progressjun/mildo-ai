@@ -143,6 +143,26 @@ describe('resolveBackend — server', () => {
     expect(await m.resolveBackend(settings)).toBe('server');
   });
 
+  it('같은 워크스페이스로 다시 configureServerAi하면, 직전 확인이 "쓸 수 없음"일 때만 다시 확인한다 (관리자가 AI를 켠 뒤 새로고침 없이 복귀)', async () => {
+    const usage = { available: false, enabled: false };
+    const { fake } = installFetch([]);
+    fake.mockImplementation(async (url: string) => json(200, String(url).includes('/ai/usage') ? usage : {}));
+    const m = await load();
+    expect(await m.resolveBackend(settings)).toBe('none');
+    const fn = vi.fn();
+    m.onBackendChange(fn);
+    usage.available = true;
+    usage.enabled = true;
+    m.configureServerAi({ workspaceId: WS });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(await m.resolveBackend(settings)).toBe('server');
+    // 쓸 수 있는 상태에서 같은 값으로 다시 부르면 알리지 않고 다시 확인하지도 않는다
+    m.configureServerAi({ workspaceId: WS });
+    expect(fn).toHaveBeenCalledTimes(1);
+    await m.resolveBackend(settings);
+    expect(fake.mock.calls.filter(([u]) => String(u).includes('/ai/usage'))).toHaveLength(2);
+  });
+
   it('configureServerAi는 구독자에게 알리고, 같은 값이면 알리지 않는다', async () => {
     installFetch([]);
     const m = await load({ ws: null });
@@ -248,6 +268,25 @@ describe('ask — 서버 도구 루프', () => {
     expect(sent).toHaveLength(8);
   });
 
+  it('max_tokens로 끝난 답은 잘림 안내를 붙이고, 도구 왕복 상한에서 멈추면 그렇다고 적는다 (마지막 라운드 도구는 실행하지 않음)', async () => {
+    installFetch([sse([['text', { delta: '부분 답' }], done('max_tokens', [{ type: 'text', text: '부분 답' }])])]);
+    let m = await load();
+    expect((await m.ask(settings, 'q')).text).toBe('부분 답\n\n_(응답 길이 제한으로 일부가 잘렸습니다)_');
+
+    installFetch([sse([done('max_tokens')])]);
+    m = await load();
+    await expect(m.ask(settings, 'q')).rejects.toMatchObject({ code: 'empty_completion', message: expect.stringMatching(/길이 제한/) });
+
+    const round = (i: number) => sse([['text', { delta: `단계 ${i}` }], ['tool_use', { id: `t${i}`, name: 't', input: {} }], done('tool_use', [{ type: 'text', text: `단계 ${i}` }, { type: 'tool_use', id: `t${i}`, name: 't', input: {} }])]);
+    const { sent } = installFetch(Array.from({ length: 8 }, (_, i) => round(i)));
+    m = await load();
+    const exec = vi.fn(() => 1);
+    const r = await m.ask(settings, 'q', { tools: [{ name: 't', description: 'd', execute: exec }] });
+    expect(sent).toHaveLength(8);
+    expect(exec).toHaveBeenCalledTimes(7);
+    expect(r.text).toMatch(/단계 7\n\n_\(도구 조회 8회 상한에 도달해 여기서 멈췄습니다/);
+  });
+
   it('askJson은 서버 경로에서 JSON을 읽고 용도에 :json을 붙인다', async () => {
     const { sent } = installFetch([sse([['text', { delta: '```json\n{"ok":true}\n```' }], done('end_turn')])]);
     const m = await load({ hash: '#reports' });
@@ -340,5 +379,20 @@ describe('fetchServerAiUsage', () => {
     expect(await m.fetchServerAiUsage('2026-11')).toMatchObject({ month: '2026-11', limit: 30_000_000 });
     m.configureServerAi({ workspaceId: null });
     expect(await m.fetchServerAiUsage()).toBeNull();
+  });
+
+  it('JSON이 아닌 200 응답(프록시 오류 페이지)은 null', async () => {
+    const { fake } = installFetch([]);
+    fake.mockImplementation(async () => new Response('<html>gateway</html>', { status: 200, headers: { 'content-type': 'text/html' } }));
+    const m = await load();
+    expect(await m.fetchServerAiUsage()).toBeNull();
+  });
+
+  it('423 workspace_locked → 서버 백엔드를 끄고 한국어 안내', async () => {
+    installFetch([json(423, { error: { code: 'workspace_locked', message: '이 워크스페이스는 현재 읽기 전용입니다' } })]);
+    const m = await load();
+    await expect(m.ask(settings, 'q')).rejects.toMatchObject({ code: 'workspace_locked' });
+    expect(await m.resolveBackend(settings)).toBe('none');
+    expect(m.AI_ERROR_COPY.workspace_locked).toMatch(/읽기 전용/);
   });
 });

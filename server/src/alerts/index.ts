@@ -16,10 +16,10 @@
  *  POST   /w/:ws/notify/channels/:id/test     configure → { result, channel }
  *  GET    /w/:ws/notify/log?channelId=&status=&event=&before=&limit=  read → { entries, nextBefore }
  *
- * 잡: alerts.scan · alerts.sla · notify.send (스케줄: 감지 10분마다, SLA 1분마다)
+ * 잡: alerts.scan · alerts.sla(SLA 에스컬레이션 + 다른 도메인이 직접 넣은 이슈 알림 접수) · notify.send (스케줄: 감지 10분마다, SLA 1분마다)
  *
- * 채널 변경은 SSE로 알리지 않는다: 이벤트 종류(events/hub.ts EventType)에 알림 채널용이 없고, 'config'는 플랫폼이
- * 워크스페이스 설정 변경(재계산 안내 토스트)으로 처리한다. 화면은 자기 변경 후 목록을 다시 읽는다.
+ * 이벤트: 이슈 변경 → 'incident', 알림 채널 생성 · 수정 · 삭제 · 테스트 발송 · 발송 결과 → 'notify'(id = 채널 id).
+ * 플랫폼 SSE 목록에 'notify'가 있으면 알림 설정 화면이 onServerEvent('notify')로 다른 사용자의 변경을 반영한다.
  */
 import type { FastifyPluginAsync } from 'fastify';
 import type { Severity } from '@/core/types';
@@ -37,10 +37,10 @@ import { parseBody, z } from '../lib/validate';
 import { kstToday, nowMs } from '../lib/time';
 import { loadWorkspaceConfig } from '../settings/service';
 import {
-  applyIncidentPatch, getIncident, IncidentId, IncidentInput, IncidentPatch, insertIncident, listIncidents, normalizeClientIncident, saveIncident,
+  applyIncidentPatch, getIncident, IncidentId, IncidentInput, IncidentPatch, insertIncident, listIncidents, normalizeClientIncident, nowIso, saveIncident,
 } from './incidents';
 import { scanWorkspace } from './scan';
-import { slaSweep } from './sla';
+import { intakeSweep, slaSweep } from './sla';
 import {
   CHANNEL_EVENTS, CHANNEL_TYPES, channelView, decryptConfig, DEFAULT_EVENTS, encryptConfig, maskConfig, validateConfig, type ChannelConfig, type ChannelRow,
 } from './channels';
@@ -49,7 +49,8 @@ import { buildMessage } from './messages';
 import { ROLE_LABEL } from '../auth/permissions';
 
 const MAX_CHANNELS = 20;
-const Uuid = z.string().regex(/^[0-9a-f-]{36}$/i);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const Uuid = z.string().regex(UUID_RE);
 
 const IncidentCreateBody = z.object({ incident: IncidentInput });
 const IncidentPatchBody = z.object({ patch: IncidentPatch.default({}), action: z.string().max(500).optional() });
@@ -96,7 +97,10 @@ export const routes: FastifyPluginAsync = async (app) => {
     const body = parseBody(IncidentCreateBody, req.body);
     const by = byLabel(c.actor, c.role);
     const wcfg = await loadWorkspaceConfig(db, c.workspace.id);
-    const doc = withWorkspaceConfig(wcfg, () => normalizeClientIncident(body.incident, by));
+    const offHoursMode = (wcfg as { offHoursMode?: unknown }).offHoursMode === true;
+    const doc = withWorkspaceConfig(wcfg, () => normalizeClientIncident(body.incident, by, nowMs(), { offHoursMode }));
+    // 새로 저장되면 같은 트랜잭션에서 '새 이슈' 알림 잡을 만든다 (알림 접수 기록 — SLA 잡의 접수 대상에서 빠진다)
+    if (doc.status !== 'resolved') doc.notifiedAt = nowIso();
     const out = await db.tx(async (q) => {
       const created = await insertIncident(q, c.workspace.id, doc);
       const incident = await getIncident(q, c.workspace.id, doc.id);
@@ -163,14 +167,15 @@ export const routes: FastifyPluginAsync = async (app) => {
     const today = kstToday();
     // 설정(settings)이 SLA 상수를 덮어쓰면 그 값 — withWorkspaceConfig 안에서 읽는다
     const sla = withWorkspaceConfig(cfg, () => JSON.parse(JSON.stringify(SLA)) as typeof SLA);
-    const { regime, roster } = withWorkspaceConfig(cfg, () => ({ regime: regimeOf(today), roster: rotationTable(today, 60) }));
-    return { sla, weekendAckMin: WEEKEND_ACK_MIN, regime: { off: regime.off, label: regime.label, duty: regime.duty }, roster, tiers: WEEKEND_TIERS, today };
+    const forced = (cfg as { offHoursMode?: unknown }).offHoursMode === true;
+    const { regime, roster } = withWorkspaceConfig(cfg, () => ({ regime: regimeOf(today, forced), roster: rotationTable(today, 60) }));
+    return { sla, weekendAckMin: WEEKEND_ACK_MIN, regime: { off: regime.off, label: regime.label, duty: regime.duty, forced: regime.forced }, roster, tiers: WEEKEND_TIERS, today };
   });
 
   /* ============================== 알림 채널 ============================== */
 
   const loadChannel = async (wsId: string, id: string) => {
-    if (!/^[0-9a-f-]{36}$/i.test(id)) throw notFound('채널을 찾을 수 없습니다');
+    if (!UUID_RE.test(id)) throw notFound('채널을 찾을 수 없습니다');
     const ch = await one<ChannelRow>(db, 'SELECT * FROM notification_channels WHERE id = $1 AND workspace_id = $2', [id, wsId]);
     if (!ch) throw notFound('채널을 찾을 수 없습니다');
     return ch;
@@ -200,6 +205,7 @@ export const routes: FastifyPluginAsync = async (app) => {
         workspaceId: c.workspace.id, userId: c.user.id, actor: c.actor, action: 'notify.channel.create', targetType: 'notification_channel', targetId: r!.id, ip: c.ip,
         detail: { type, name: body.name, target: maskConfig(type, cfg).target, minSeverity: body.minSeverity, events: body.events, enabled: body.enabled },
       });
+      await publish(q, c.workspace.id, { type: 'notify', id: r!.id });
       return r!;
     });
     reply.status(201);
@@ -242,6 +248,7 @@ export const routes: FastifyPluginAsync = async (app) => {
           configChanged: !!body.config, target: target ?? null,
         },
       });
+      await publish(q, c.workspace.id, { type: 'notify', id: ch.id });
       return r!;
     });
     return { channel: channelView(row, key) };
@@ -256,6 +263,7 @@ export const routes: FastifyPluginAsync = async (app) => {
         workspaceId: c.workspace.id, userId: c.user.id, actor: c.actor, action: 'notify.channel.delete', targetType: 'notification_channel', targetId: ch.id, ip: c.ip,
         detail: { type: ch.type, name: ch.name },
       });
+      await publish(q, c.workspace.id, { type: 'notify', id: ch.id });
     });
     return { ok: true };
   });
@@ -292,6 +300,7 @@ export const routes: FastifyPluginAsync = async (app) => {
       workspaceId: c.workspace.id, userId: c.user.id, actor: c.actor, action: 'notify.channel.test', targetType: 'notification_channel', targetId: ch.id, ip: c.ip,
       detail: { status: result.status, httpStatus: result.httpStatus ?? null, reason: result.reason ?? null },
     });
+    await publish(db, c.workspace.id, { type: 'notify', id: ch.id });
     return { result: { ok: result.status === 'sent', status: result.status, httpStatus: result.httpStatus ?? null, reason: result.reason ?? null }, channel: channelView(row!, key) };
   });
 
@@ -326,8 +335,12 @@ export function jobs(reg: JobRegistry): void {
   });
   reg.job('alerts.sla', async (ctx) => {
     if (!ctx.workspaceId) return { skipped: 'workspaceId 없음' };
+    // 다른 도메인이 직접 넣은 이슈(대량 변경 등)를 먼저 알림 접수 → 같은 실행에서 SLA 판정
+    const intake = await intakeSweep(ctx.db, ctx.workspaceId);
     const r = await slaSweep(ctx.db, ctx.workspaceId);
-    return { checked: r.checked, escalated: r.escalated.slice(0, 50), notified: r.notified };
+    const errors = [...intake.errors, ...r.errors];
+    if (errors.length) ctx.log(`이슈 ${errors.length}건 처리 실패 (나머지는 계속 처리): ${errors.slice(0, 3).map((e) => `${e.id} · ${e.error}`).join(' | ')}`);
+    return { checked: r.checked, escalated: r.escalated.slice(0, 50), notified: r.notified, intake: intake.notified.slice(0, 50), errors: errors.slice(0, 20) };
   });
   reg.job('notify.send', notifySendJob);
 

@@ -6,6 +6,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import Anthropic from '@anthropic-ai/sdk';
 import type { BetaMessage, BetaMessageStreamParams, BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { createTestApp, type TestApp, type TestClient } from '../../test/app';
+import { hashPassword } from '../lib/crypto';
+import { setNowForTest } from '../lib/time';
 import {
   DEFAULT_MONTHLY_TOKEN_LIMIT,
   MAX_REQUEST_BYTES,
@@ -108,11 +110,21 @@ let t: TestApp;
 let pm: TestClient;
 let otherWs: string;
 const url = () => `/api/w/${t.ws}/ai/messages`;
+/** 역할별 로그인 클라이언트 재사용 — 로그인 경로의 분당 10회 제한(IP 기준)에 걸리지 않게 */
+const clients = new Map<string, TestClient>();
+async function as(role: 'owner' | 'admin' | 'pm' | 'ae' | 'client' | 'viewer'): Promise<TestClient> {
+  let c = clients.get(role);
+  if (!c) {
+    c = await t.login(role);
+    clients.set(role, c);
+  }
+  return c;
+}
 
 beforeAll(async () => {
   t = await createTestApp({ config: { anthropicApiKey: API_KEY, anthropicModel: 'claude-opus-5-5' } });
   setAiClientFactory(fakeFactory);
-  pm = await t.login('pm');
+  pm = await as('pm');
   otherWs = (await t.db.query<{ id: string }>(`INSERT INTO workspaces (org_id, slug, name, brand_name) VALUES ($1, 'other-ai', '다른 브랜드', '다른') RETURNING id`, [t.orgId])).rows[0].id;
 });
 afterAll(async () => {
@@ -217,11 +229,14 @@ describe('POST /ai/messages — 스트리밍 이벤트', () => {
     expect(ev.find((e) => e.event === 'done')!.data.stopReason).toBe('max_tokens');
   });
 
-  it('서버 측 대체 모델 경계: 마지막 fallback 블록 앞의 tool_use는 빼고, 사용량은 시도별 합계', async () => {
+  it('서버 측 대체 모델 경계 (공식 표): 마지막 fallback 앞의 thinking · redacted_thinking · tool_use는 빼고 text · fallback · 경계 뒤 블록은 둔다, 사용량은 시도별 합계', async () => {
     const content = [
       { type: 'thinking', thinking: '', signature: 's1' },
+      { type: 'redacted_thinking', data: 'enc-pre' },
+      { type: 'text', text: '부분 답변', citations: null },
       { type: 'tool_use', id: 'toolu_pre', name: 'get_kpi', input: {} },
       { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-4-8' }, trigger: { type: 'refusal', category: null } },
+      { type: 'thinking', thinking: '', signature: 's2' },
       { type: 'text', text: '이어서 확인합니다.' },
       { type: 'tool_use', id: 'toolu_post', name: 'get_kpi', input: { media: 'meta' } },
     ];
@@ -233,11 +248,30 @@ describe('POST /ai/messages — 스트리밍 이벤트', () => {
     const ev = sse((await pm.post(url(), { messages: [{ role: 'user', content: 'q' }], tools: [{ name: 'get_kpi', description: 'd', input_schema: { type: 'object' } }] })).body);
     expect(ev.filter((e) => e.event === 'tool_use').map((e) => e.data.id)).toEqual(['toolu_post']);
     const done = ev.find((e) => e.event === 'done')!.data;
-    expect(done.content.map((b: { type: string }) => b.type)).toEqual(['thinking', 'fallback', 'text', 'tool_use']);
+    expect(done.content).toEqual([
+      { type: 'text', text: '부분 답변' },
+      { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-4-8' }, trigger: { type: 'refusal', category: null } },
+      { type: 'thinking', thinking: '', signature: 's2' },
+      { type: 'text', text: '이어서 확인합니다.' },
+      { type: 'tool_use', id: 'toolu_post', name: 'get_kpi', input: { media: 'meta' } },
+    ]);
     expect(done.usage).toEqual({ inputTokens: 230, outputTokens: 100, cacheReadTokens: 20, cacheCreationTokens: 0 });
     expect(done.model).toBe('claude-opus-4-8');
     const row = (await t.db.query<{ served_model: string; input_tokens: number }>('SELECT served_model, input_tokens FROM ai_usage')).rows[0];
     expect(row).toEqual({ served_model: 'claude-opus-4-8', input_tokens: 230 });
+
+    // 다음 라운드: done.content를 그대로 되돌려 보내면 검증을 통과하고 fallback 블록이 같은 자리로 SDK에 간다
+    queue.push({ events: textEvents(['끝']), final: message([{ type: 'text', text: '끝' }], 'end_turn') });
+    const r2 = await pm.post(url(), {
+      messages: [
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: done.content },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_post', content: '{"roas":3.1}' }] },
+      ],
+      tools: [{ name: 'get_kpi', description: 'd', input_schema: { type: 'object' } }],
+    });
+    expect(r2.status).toBe(200);
+    expect((calls[1].messages[1].content as Array<{ type: string }>).map((b) => b.type)).toEqual(['text', 'fallback', 'thinking', 'text', 'tool_use']);
   });
 
   it('refusal은 done(stopReason refusal, content 비움)으로 알린다', async () => {
@@ -490,9 +524,13 @@ describe('입력 검증', () => {
       { messages: [{ role: 'system', content: 'q' }] },
       { messages: [{ role: 'user', content: 'q' }], maxTokens: 999999 },
       { messages: [{ role: 'user', content: 'q' }], purpose: '용도 공백' },
+      // assistant 미리 채우기(prefill) — 4.6 이후 모델은 모두 거절하므로 호출 전에 막는다
+      { messages: [{ role: 'user', content: 'q' }, { role: 'assistant', content: '{"' }] },
     ];
+    // 분당 호출 상한(사용자별 40회)이 pm의 다른 테스트 호출과 겹치지 않게 admin으로 보낸다
+    const admin = await as('admin');
     for (const b of bodies) {
-      const r = await pm.post(url(), b);
+      const r = await admin.post(url(), b);
       expect(r.status, JSON.stringify(b)).toBe(400);
       expect(r.json.error.message).toMatch(/[가-힣]/);
     }
@@ -503,28 +541,54 @@ describe('입력 검증', () => {
 /* ---------------- 권한 · 격리 · 설정 ---------------- */
 
 describe('권한 · 격리 · 서버 키', () => {
-  it('viewer 403, 비로그인 401, client · ae는 사용 가능 (request 권한)', async () => {
-    const viewer = await t.login('viewer');
+  it('viewer 403(사용량 기록 없음), 비로그인 401, owner · admin · pm · ae · client는 사용 가능 (request 권한)', async () => {
+    const viewer = await as('viewer');
     const r = await viewer.post(url(), { messages: [{ role: 'user', content: 'q' }] });
     expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe('forbidden');
     expect((await t.anon().post(url(), { messages: [{ role: 'user', content: 'q' }] })).status).toBe(401);
-    for (const role of ['client', 'ae'] as const) {
+    expect((await t.db.query('SELECT 1 FROM ai_usage')).rowCount).toBe(0);
+    for (const role of ['owner', 'admin', 'pm', 'ae', 'client'] as const) {
       queue.push({ events: textEvents(['ok']), final: message([{ type: 'text', text: 'ok' }], 'end_turn') });
-      const c = await t.login(role);
-      expect((await c.post(url(), { messages: [{ role: 'user', content: 'q' }] })).status).toBe(200);
+      const c = await as(role);
+      expect((await c.post(url(), { messages: [{ role: 'user', content: 'q' }] })).status, role).toBe(200);
     }
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(5);
+    const users = (await t.db.query<{ user_id: string }>('SELECT user_id FROM ai_usage ORDER BY id')).rows.map((x) => x.user_id);
+    expect(users).toEqual([t.userIds.owner, t.userIds.admin, t.userIds.pm, t.userIds.ae, t.userIds.client]);
+  });
+
+  it('잠긴(읽기 전용) 워크스페이스 → POST 423, 사용량 API는 canUse · available false', async () => {
+    await t.db.query(`UPDATE workspaces SET status = 'suspended' WHERE id = $1`, [t.ws]);
+    try {
+      const r = await pm.post(url(), { messages: [{ role: 'user', content: 'q' }] });
+      expect(r.status).toBe(423);
+      expect(r.json.error.code).toBe('workspace_locked');
+      const u = await pm.get(`/api/w/${t.ws}/ai/usage`);
+      expect(u.status).toBe(200);
+      expect(u.json).toMatchObject({ canUse: false, available: false });
+    } finally {
+      await t.db.query(`UPDATE workspaces SET status = 'active' WHERE id = $1`, [t.ws]);
+    }
+    expect(calls).toHaveLength(0);
   });
 
   it('사용자별 분당 40회 상한 → 429 rate_limited (다른 사용자는 영향 없음)', async () => {
-    const owner = await t.login('owner');
+    // 이 파일의 다른 테스트가 쓴 호출 수와 섞이지 않게 새 사용자로 잰다
+    const { rows } = await t.db.query<{ id: string }>(
+      `INSERT INTO users (email, name, password_hash) VALUES ('ratelimit-ai@test.local', '속도 제한 확인', $1) RETURNING id`,
+      [await hashPassword('TestPass#2027')],
+    );
+    await t.db.query(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'ae')`, [t.ws, rows[0].id]);
+    const fresh = await t.login('ratelimit-ai@test.local', 'TestPass#2027');
     const codes: number[] = [];
-    for (let i = 0; i < 41; i++) codes.push((await owner.post(url(), { messages: [] })).status);
+    for (let i = 0; i < 41; i++) codes.push((await fresh.post(url(), { messages: [] })).status);
     expect(codes.slice(0, 40).every((c) => c === 400)).toBe(true);
     expect(codes[40]).toBe(429);
-    const last = await owner.post(url(), { messages: [] });
+    const last = await fresh.post(url(), { messages: [] });
     expect(last.json.error.code).toBe('rate_limited');
-    expect((await pm.post(url(), { messages: [] })).status).toBe(400);
+    const other = await as('viewer');
+    expect((await other.post(url(), { messages: [] })).status).toBe(403);
   });
 
   it('CSRF 토큰 없이 보내면 403', async () => {
@@ -604,13 +668,48 @@ describe('월 한도 · 사용량 기록', () => {
 
     const u = await pm.get(`/api/w/${t.ws}/ai/usage`);
     expect(u.json).toMatchObject({ limit: 1000, inputTokens: 880, outputTokens: 130, totalTokens: 1010, remaining: 0, budgetExceeded: true });
+    // 비율은 0~1 (넘은 양은 totalTokens · limit로)
+    expect(u.json.usedRatio).toBe(1);
+  });
+
+  it('KST 월 경계: 10/31 23:59 KST 사용량은 10월, 11/01 00:00 KST부터 11월 — 한도 판정 · 기록 · 일별 집계가 같은 기준', async () => {
+    await t.db.query(`UPDATE workspaces SET config = '{"ai":{"monthlyTokenLimit":500}}'::jsonb WHERE id = $1`, [t.ws]);
+    // 2026-10-31T14:59:59Z = 10/31 23:59:59 KST (10월) · 2026-10-31T15:00:00Z = 11/01 00:00 KST (11월)
+    await t.db.query(
+      `INSERT INTO ai_usage (workspace_id, user_id, model, purpose, input_tokens, output_tokens, at)
+       VALUES ($1, $2, 'm', 'agent', 900, 100, '2026-10-31T14:59:59Z'), ($1, $2, 'm', 'agent', 40, 10, '2026-10-31T15:00:00Z')`,
+      [t.ws, t.userIds.pm],
+    );
+    try {
+      // UTC로는 아직 10/31이지만 KST로는 11/01 — 10월의 1,000 토큰은 11월 한도에 세지 않는다
+      setNowForTest(Date.parse('2026-10-31T15:30:00Z'));
+      queue.push({ events: textEvents(['ok']), final: message([{ type: 'text', text: 'ok' }], 'end_turn') });
+      expect((await pm.post(url(), { messages: [{ role: 'user', content: 'q' }] })).status).toBe(200);
+      const rec = (await t.db.query<{ at: Date }>(`SELECT at FROM ai_usage WHERE request_id = 'req_test_0001'`)).rows[0];
+      expect(rec.at.toISOString()).toBe('2026-10-31T15:30:00.000Z');
+      const nov = await pm.get(`/api/w/${t.ws}/ai/usage`);
+      expect(nov.json).toMatchObject({ month: '2026-11', inputTokens: 40 + 180, outputTokens: 10 + 30, calls: 2 });
+      expect(nov.json.daily).toEqual([{ date: '2026-11-01', calls: 2, inputTokens: 220, outputTokens: 40 }]);
+      const oct = await pm.get(`/api/w/${t.ws}/ai/usage?month=2026-10`);
+      expect(oct.json).toMatchObject({ month: '2026-10', inputTokens: 900, outputTokens: 100, calls: 1, budgetExceeded: true });
+      expect(oct.json.daily).toEqual([{ date: '2026-10-31', calls: 1, inputTokens: 900, outputTokens: 100 }]);
+
+      // 10/31 23:59 KST에 보면 10월 사용량(1,000 ≥ 500)으로 막힌다
+      setNowForTest(Date.parse('2026-10-31T14:59:00Z'));
+      const blocked = await pm.post(url(), { messages: [{ role: 'user', content: 'q' }] });
+      expect(blocked.status).toBe(429);
+      expect(blocked.json.error.detail).toMatchObject({ month: '2026-10', limit: 500, used: 1000 });
+    } finally {
+      setNowForTest(null);
+    }
+    expect(calls).toHaveLength(1);
   });
 
   it('GET /ai/usage — 월 · 합계 · 한도(기본 3,000만) · 용도별 · 일별, 사용자별은 configure 권한만', async () => {
     queue.push({ events: textEvents(['a']), final: message([{ type: 'text', text: 'a' }], 'end_turn') });
     queue.push({ events: textEvents(['b']), final: message([{ type: 'text', text: 'b' }], 'end_turn') });
     await pm.post(url(), { messages: [{ role: 'user', content: 'q' }], purpose: 'agent' });
-    const ae = await t.login('ae');
+    const ae = await as('ae');
     await ae.post(url(), { messages: [{ role: 'user', content: 'q' }] });
     const r = await pm.get(`/api/w/${t.ws}/ai/usage`);
     expect(r.status).toBe(200);
@@ -628,7 +727,7 @@ describe('월 한도 · 사용량 기록', () => {
 
     const aeView = await ae.get(`/api/w/${t.ws}/ai/usage`);
     expect(aeView.json.byUser).toBeUndefined();
-    const viewer = await t.login('viewer');
+    const viewer = await as('viewer');
     const vView = await viewer.get(`/api/w/${t.ws}/ai/usage`);
     expect(vView.status).toBe(200);
     expect(vView.json).toMatchObject({ canUse: false, available: false });
@@ -657,6 +756,34 @@ describe('순수 함수', () => {
     expect(usageFromMessage(usage({ input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 3 }) as never)).toEqual({ inputTokens: 4, outputTokens: 2, cacheReadTokens: 3, cacheCreationTokens: 0 });
     expect(usageFromMessage(null)).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 });
   });
+  it('buildStreamParams — fallbacks · 베타 헤더는 문서의 지원 모델에만 (그 밖의 모델에 보내 모든 호출이 400이 되지 않게)', () => {
+    const req = parseAiRequest({ messages: [{ role: 'user', content: 'q' }] });
+    for (const m of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-haiku-5-5']) {
+      expect(buildStreamParams(req, m), m).toMatchObject({ betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
+    }
+    const old = buildStreamParams(req, 'claude-opus-4-8') as unknown as Record<string, unknown>;
+    expect(old.fallbacks).toBeUndefined();
+    expect(old.betas).toBeUndefined();
+    expect(old).toMatchObject({ model: 'claude-opus-4-8', thinking: { type: 'adaptive' }, output_config: { effort: 'medium' }, cache_control: { type: 'ephemeral' } });
+  });
+
+  it('toEchoContent — 경계 앞 thinking · tool_use 제외는 마지막 fallback 기준, fallback이 없으면 모두 그대로', () => {
+    const noFallback = toEchoContent([
+      { type: 'thinking', thinking: '', signature: 'a' },
+      { type: 'tool_use', id: 't1', name: 'x', input: { k: 1 } },
+    ] as never);
+    expect(noFallback.content.map((b) => b.type)).toEqual(['thinking', 'tool_use']);
+    expect(noFallback.toolUses).toEqual([{ id: 't1', name: 'x', input: { k: 1 } }]);
+    const two = toEchoContent([
+      { type: 'thinking', thinking: '', signature: 'a' },
+      { type: 'fallback', from: { model: 'a' }, to: { model: 'b' }, trigger: null },
+      { type: 'thinking', thinking: '', signature: 'b' },
+      { type: 'fallback', from: { model: 'b' }, to: { model: 'c' }, trigger: null },
+      { type: 'thinking', thinking: '', signature: 'c' },
+    ] as never);
+    expect(two.content.map((b) => (b.type === 'thinking' ? `thinking:${b.signature}` : b.type))).toEqual(['fallback', 'fallback', 'thinking:c']);
+  });
+
   it('toEchoContent — 빈 텍스트 · 알 수 없는 블록은 뺀다', () => {
     const r = toEchoContent([
       { type: 'text', text: '', citations: null },

@@ -6,7 +6,7 @@
  *
  * platform 도메인이 하는 일:
  *  - 로그인 · 로그아웃(대기 중인 저장을 보낸 뒤 이 브라우저의 동기화 키를 지운다) · 세션 만료(어느 API든 401 → 로그인 화면)
- *  - 워크스페이스 정보(GET /api/w/:ws) → applyWorkspaceConfig(config) · configureServerAi({ workspaceId })
+ *  - 워크스페이스 정보(GET /api/w/:ws) → applyWorkspaceConfig(config) · configureServerAi({ workspaceId }), 로그아웃 · 세션 만료 → configureServerAi({ workspaceId: null })
  *  - 워크스페이스 전환 (사용자가 둘 이상에 속할 때)
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -70,9 +70,17 @@ export interface SaasValue {
 const WS_KEY = 'mildo-os/cloud/workspace';
 const Ctx = createContext<SaasValue | null>(null);
 
-async function configureAi(workspaceId: string): Promise<void> {
+/**
+ * AI 서버 백엔드 연결 (ai 도메인 src/ai/claude.ts configureServerAi) — 워크스페이스가 정해지거나 바뀌면 그 id, 로그아웃 · 세션 만료면 null.
+ * ai 도메인 구현 시점에 의존하지 않게 typeof로 확인한다.
+ */
+let aiConfigured = false;
+export async function configureAi(workspaceId: string | null): Promise<void> {
+  // 연결한 적이 없으면 해제할 것도 없다 (로그인 전 화면에서 AI 계층을 불러오지 않는다)
+  if (workspaceId === null && !aiConfigured) return;
+  aiConfigured = workspaceId !== null;
   try {
-    const mod = (await import('@/ai/claude')) as unknown as { configureServerAi?: (o: { workspaceId: string }) => void };
+    const mod = (await import('@/ai/claude')) as unknown as { configureServerAi?: (o: { workspaceId: string | null }) => void };
     if (typeof mod.configureServerAi === 'function') mod.configureServerAi({ workspaceId });
   } catch {
     /* AI 계층이 없거나 아직 서버 백엔드를 지원하지 않음 — 규칙 엔진으로 동작 */
@@ -100,6 +108,7 @@ export function SaasProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setMe(null);
+        void configureAi(null);
         return null;
       }
       throw e;
@@ -121,6 +130,7 @@ export function SaasProvider({ children }: { children: ReactNode }) {
     if (error.status !== 401 || AUTH_ENTRY_RE.test(path.split('?')[0]) || !meRef.current) return;
     setMe(null);
     setDetail(null);
+    void configureAi(null);
     setNotice('세션이 만료되었거나 다른 곳에서 로그아웃되었습니다. 다시 로그인해 주세요.');
   }), []);
 
@@ -150,6 +160,7 @@ export function SaasProvider({ children }: { children: ReactNode }) {
       if (e instanceof ApiError && e.status === 404) {
         // 멤버십이 없어졌다 — 목록을 다시 받아 다른 워크스페이스로
         try { localStorage.removeItem(WS_KEY); } catch { /* 무시 */ }
+        void configureAi(null);
         setWsId(null);
         await refreshMe().catch(() => null);
         return null;
@@ -217,6 +228,7 @@ export function SaasProvider({ children }: { children: ReactNode }) {
       await flushStorageSync();
       await api('/api/auth/logout', { method: 'POST', body: {}, silent: true }).catch(() => null);
       clearSyncedStorage();
+      await configureAi(null);
       setCsrfToken(null);
       setMe(null);
       setDetail(null);

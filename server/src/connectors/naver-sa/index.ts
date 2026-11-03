@@ -23,11 +23,16 @@
  *   - budget : GET /ncc/campaigns/{id}(공유 예산 · 현재 값 확인) → PUT /ncc/campaigns/{id}?fields=budget { nccCampaignId, dailyBudget, useDailyBudget:true }
  *              (광고그룹 grp- 대상이면 /ncc/adgroups/{id}?fields=budget)
  *   - status : userLock (true = OFF) — 키워드 ?fields=userLock (광고그룹 ID 확인 후) · 캠페인 · 광고그룹
+ *   - keyword_add : AD Pilot 테스트 후보 등록(대상 'term:<검색어>', after '<의도>_TEST · 입찰 <금액>원')
+ *              GET /ncc/keywords?nccAdgroupId(중복 확인) → POST /ncc/keywords?nccAdgroupId [{ keyword, bidAmt, useGroupBidAmt:false, userLock:false }]
+ *              등록할 광고그룹은 설정 testAdgroups(의도 → grp- ID)로 정한다 — 없으면 보내지 않고 오류. 같은 키워드가 이미 있으면 다시 만들지 않는다
+ *   - keyword_exclude : 문서상 POST /ncc/adgroups/{id}/restricted-keywords가 있으나, 현재 변경 요청(Flow · Lab)의 대상 id는
+ *              'lab:term:<slug>' · 'labdec:<id>'라 변경 실행기가 '기록만'으로 처리한다(커넥터까지 오지 않음) — writes에 넣지 않는다
  *   현재 값이 요청 시점 값(before)과 다르면 덮어쓰지 않고 멈춘다(설정 allowDrift로 끌 수 있음).
  */
 import { z } from 'zod';
 import type { ApplyResult, ConnectorContext, ConnectorDef, DateRange, NormalizedBatch } from '../types';
-import type { AdAccount, ChangeRequest } from '@/core/types';
+import type { AdAccount, ChangeRequest, IntentId } from '@/core/types';
 import { addDaysStr, dateRange, kstHour, kstToday, nowMs } from '../../lib/time';
 import {
   ApplyAbort, DailyAcc, HourlyAcc, assertNoDrift, chunk, clampRange, commonSettingsShape, executePlan, finishFunnel, isoDate, krw,
@@ -41,6 +46,8 @@ export const credentialsSchema = z.object({
   secretKey: z.string().trim().min(8, '비밀키를 입력해 주세요'),
   customerId: z.union([z.string(), z.number()]).transform((v) => String(v).trim()).pipe(z.string().regex(/^\d{3,15}$/, '고객 ID는 숫자입니다')),
 });
+
+const grpId = z.string().trim().regex(/^grp-[A-Za-z0-9]+-\d+-\d+$/, '광고그룹 ID(grp-…) 형식이 아닙니다');
 
 export const settingsSchema = z.object({
   ...commonSettingsShape,
@@ -63,6 +70,8 @@ export const settingsSchema = z.object({
   allowDrift: z.boolean().default(false),
   /** /stats ids 묶음 크기 */
   statsChunk: z.number().int().min(1).max(200).default(100),
+  /** 테스트 후보(keyword_add)를 등록할 광고그룹 — 구매 의도별 grp- ID (예: { generic: 'grp-a001-01-000000012345678' }) */
+  testAdgroups: z.object({ brand: grpId.optional(), generic: grpId.optional(), problem: grpId.optional(), compare: grpId.optional(), life: grpId.optional() }).default({}),
 });
 export type NaverSaSettings = z.infer<typeof settingsSchema>;
 
@@ -264,6 +273,47 @@ export function naverTarget(targetId: string | undefined): { type: 'keyword' | '
   return { type: m[1] === 'nkw' ? 'keyword' : m[1] === 'cmp' ? 'campaign' : 'adgroup', id: m[0] };
 }
 
+const INTENTS: IntentId[] = ['brand', 'generic', 'problem', 'compare', 'life'];
+const normKw = (x: string) => x.replace(/\s+/g, '').toLowerCase();
+
+/** AD Pilot 테스트 후보 after('GENERIC_TEST · 입찰 1,200원') → 의도 · 입찰가 (해석 불가면 null) */
+export function parseTestRegistration(after: unknown): { intent: IntentId | null; bid: number | null } {
+  const s = String(after ?? '');
+  const m = s.match(/\b(BRAND|GENERIC|PROBLEM|COMPARE|LIFE)_TEST\b/i);
+  const intent = m ? (m[1].toLowerCase() as IntentId) : null;
+  const b = s.match(/입찰\s*([\d,]+)\s*원?/);
+  const bid = b ? parseKrwAmount(b[1]) : typeof after === 'number' ? parseKrwAmount(after) : null;
+  return { intent: intent && INTENTS.includes(intent) ? intent : null, bid };
+}
+
+async function applyKeywordAdd(ctx: ConnectorContext, client: NaverSaClient, s: NaverSaSettings, change: ChangeRequest): Promise<ApplyResult> {
+  const tid = String(change.targetId ?? '');
+  const term = tid.startsWith('term:') ? tid.slice('term:'.length).trim() : '';
+  if (!term) return unsupported(change, NAVER_SA_LABEL, `키워드 등록 대상(${tid || '—'})이 'term:<검색어>' 형식이 아닙니다`);
+  const { intent, bid } = parseTestRegistration(change.after);
+  if (!intent) return { ok: false, request: { targetId: tid }, error: `등록 값(${String(change.after)})에서 구매 의도(<의도>_TEST)를 찾지 못했습니다` };
+  if (bid === null) return { ok: false, request: { targetId: tid }, error: `등록 값(${String(change.after)})에서 입찰가(입찰 <금액>원)를 찾지 못했습니다` };
+  if (bid < NAVER_BID_MIN || bid > NAVER_BID_MAX) return { ok: false, request: { targetId: tid, bidAmt: bid }, error: `네이버 키워드 입찰가는 ${NAVER_BID_MIN}~${NAVER_BID_MAX.toLocaleString('ko-KR')}원입니다 (요청 ${bid.toLocaleString('ko-KR')}원)` };
+  const grp = s.testAdgroups[intent];
+  if (!grp) return { ok: false, request: { targetId: tid, intent }, error: `등록할 테스트 광고그룹이 없습니다 — 커넥션 설정 testAdgroups.${intent}에 광고그룹 ID(grp-…)를 지정해 주세요 (보내지 않았습니다)` };
+  const body = [{ keyword: term, bidAmt: bid, useGroupBidAmt: false, userLock: false }];
+  const query = { nccAdgroupId: grp };
+  return executePlan(ctx, {
+    label: NAVER_SA_LABEL, what: `테스트 키워드 등록 (${intent.toUpperCase()}_TEST)`, intended: bid,
+    steps: [
+      step(client.request('GET', '/ncc/keywords', { nccAdgroupId: grp }), '같은 키워드가 이미 있는지 확인 (있으면 등록하지 않음)'),
+      step(client.request('POST', '/ncc/keywords', query, body)),
+    ],
+    live: async () => {
+      const existing = (await client.keywords(grp)).find((k) => !isDeleted(k) && normKw(k.keyword) === normKw(term));
+      if (existing) return { response: existing, appliedValue: existing.nccKeywordId, notes: [`이미 등록된 키워드(${existing.nccKeywordId}) — 다시 만들지 않았습니다`] };
+      const res = await client.call<NaverKeyword[]>('POST', '/ncc/keywords', '키워드 등록', query, body);
+      const created = Array.isArray(res.data) ? res.data[0] : undefined;
+      return { response: res.data, appliedValue: created?.nccKeywordId ?? bid, notes: created?.nccKeywordId ? [`등록 키워드 ${created.nccKeywordId} · 입찰 ${num(created.bidAmt) || bid}원`] : [] };
+    },
+  });
+}
+
 export async function applyNaverSa(ctx: ConnectorContext, change: ChangeRequest): Promise<ApplyResult> {
   const s = parseSettings(ctx);
   let client: NaverSaClient;
@@ -272,6 +322,7 @@ export async function applyNaverSa(ctx: ConnectorContext, change: ChangeRequest)
   } catch (e) {
     return { ok: false, request: { kind: change.kind, targetId: change.targetId }, error: (e as Error).message };
   }
+  if (change.kind === 'keyword_add') return applyKeywordAdd(ctx, client, s, change);
   const t = naverTarget(change.targetId);
   if (!t) return unsupported(change, NAVER_SA_LABEL, `대상 id(${change.targetId ?? '—'})가 네이버 검색광고 키워드 · 캠페인 · 광고그룹 id 형식(nkw- · cmp- · grp-)이 아닙니다`);
 
@@ -378,7 +429,7 @@ export const connector: ConnectorDef = {
   ],
   capabilities: {
     reads: ['mediaDaily', 'mediaHourly', 'keywordDaily', 'keywords', 'campaigns', 'accounts'],
-    writes: ['bid', 'budget', 'status'],
+    writes: ['bid', 'budget', 'status', 'keyword_add'],
     intraday: true,
     // FAQ-stat: breakdown 없는 통계 보관 2년 (시간대 통계는 7일)
     maxBackfillDays: 730,

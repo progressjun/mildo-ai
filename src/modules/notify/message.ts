@@ -223,10 +223,19 @@ export function buildMessage(m: MessageInput): Message {
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: clip(esc(`${who} · ${brand} · 감지 ${fmtStamp(Date.parse(i.detectedAt))} · ${i.detectPath}`), 3000) }] });
   blocks.push({ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: '이슈 열기' }, url: link, ...(i.severity === 'P1' && m.event !== 'resolved' ? { style: 'danger' } : {}) }] });
 
+  // 외부로 나가는 수치: NaN · Infinity는 null, 금액(원) · 노출 수는 정수, 변화율(%)은 소수 둘째 자리
+  const finite = (v: unknown, digits?: number) => {
+    const n = typeof v === 'number' ? v : NaN;
+    if (!Number.isFinite(n)) return null;
+    return digits === undefined ? n : Math.round(n * 10 ** digits) / 10 ** digits;
+  };
+  const whole = (v: unknown) => { const n = finite(v); return n === null || n < 0 ? null : Math.round(n); };
+  const im = i.impact ?? {};
   const webhookIncident = {
     id: i.id, ruleId: i.ruleId, severity: i.severity, status: i.status, title: i.title, media: i.media ?? null, target: i.target ?? null,
-    detectedAt: i.detectedAt, occurredAt: i.occurredAt, metric: i.metric ?? null, observed: i.observed ?? null, baseline: i.baseline ?? null, deltaPct: i.deltaPct ?? null,
-    basis: b, evidence: primary, causes, impact: { ...(i.impact ?? {}), estimate: true }, assignee: i.assignee ?? null, backup: i.backup ?? null, onDuty: !!i.onDuty,
+    detectedAt: i.detectedAt, occurredAt: i.occurredAt, metric: i.metric ?? null, observed: finite(i.observed), baseline: finite(i.baseline), deltaPct: finite(i.deltaPct, 2),
+    basis: b, evidence: primary, causes,
+    impact: { spendAtRiskKrw: whole(im.spendAtRisk), revenueLossEstKrw: whole(im.revenueLossEst), impressionsLost: whole(im.impressionsLost), estimate: true, note: i.impactNote ?? null }, assignee: i.assignee ?? null, backup: i.backup ?? null, onDuty: !!i.onDuty,
     sla: deadlines.map((d) => ({ stage: d.stage, deadline: new Date(d.deadlineMs).toISOString(), target: d.target })),
     escalation: m.event === 'sla' ? m.stage ?? null : null,
     stillDetected: i.stillDetected ?? null, isTest: !!i.isTest, actionNote: i.actionNote ?? null, preventNote: i.preventNote ?? null, url: link,

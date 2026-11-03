@@ -89,6 +89,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    # 종료 시 진행 중인 AI 응답을 SHUTDOWN_STREAM_GRACE_MS(기본 20s)까지 기다린다 — 이 값이 그보다 길어야 강제 종료되지 않는다
     stop_grace_period: 30s
     <<: *hardening
     logging: *logging

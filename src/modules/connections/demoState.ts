@@ -10,7 +10,11 @@ import { addDays } from './model';
 const iso = (date: string, hour: number, minute = 0) => `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+09:00`;
 const NONE = { reads: [], writes: [], intraday: false, maxBackfillDays: 0 };
 
-/** 예시 카탈로그 — 자격증명 항목 · 기능은 구현된 커넥터 기준, 나머지는 서버 카탈로그에서 확인 */
+/**
+ * 예시 카탈로그 — 서버 레지스트리(server/src/connectors/<provider>/index.ts)의 공급자 정의를 옮겨 둔 것.
+ * 화면이 서버 없이도 입력 항목 · 수집 범위를 보여 주기 위함이다. 구현 중(수집 미지원)인 공급자는 빈 기능으로 두고
+ * '서버 카탈로그(공식 문서 기준)에서 표시'로 안내한다. demoState.test.ts가 서버 정의와 어긋나지 않는지(부분 집합인지) 확인한다.
+ */
 export const DEMO_CATALOG: CatalogProvider[] = [
   { provider: 'naver_sa', kind: 'media', channel: 'naver_sa', label: '네이버 검색광고', docsUrl: 'https://naver.github.io/searchad-apidoc/', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true,
     credentialFields: [
@@ -25,15 +29,35 @@ export const DEMO_CATALOG: CatalogProvider[] = [
       { key: 'clientSecret', label: 'OAuth 클라이언트 보안 비밀번호', secret: true },
       { key: 'refreshToken', label: '갱신 토큰 (refresh token)', secret: true },
       { key: 'customerId', label: '고객 ID', secret: false },
+      { key: 'loginCustomerId', label: '관리자 계정 고객 ID', secret: false, optional: true },
     ],
-    capabilities: { reads: ['mediaDaily', 'mediaHourly', 'keywordDaily', 'searchTermDaily', 'campaigns'], writes: ['bid', 'budget', 'status'], intraday: true, maxBackfillDays: 400 } },
-  { provider: 'meta', kind: 'media', channel: 'meta', label: 'Meta 광고', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true, credentialFields: [], capabilities: NONE },
-  { provider: 'kakao_moment', kind: 'media', channel: 'kakao', label: '카카오모먼트', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true, credentialFields: [], capabilities: NONE },
-  { provider: 'naver_gfa', kind: 'media', channel: 'naver_gfa', label: '네이버 성과형 디스플레이(GFA)', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true, credentialFields: [], capabilities: NONE },
-  { provider: 'naver_commerce', kind: 'sales', channel: 'brandstore', label: '네이버 브랜드스토어(커머스 API)', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true, credentialFields: [], capabilities: NONE },
-  { provider: 'coupang', kind: 'sales', channel: 'coupang', label: '쿠팡 Wing', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true, credentialFields: [], capabilities: NONE },
-  { provider: 'cafe24', kind: 'sales', channel: 'own_mall', label: '카페24 자사몰', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true, credentialFields: [], capabilities: NONE },
-  { provider: 'ohouse', kind: 'sales', channel: 'ohouse', label: '오늘의집', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true, credentialFields: [], capabilities: NONE },
+    capabilities: { reads: ['mediaDaily', 'mediaHourly', 'keywordDaily', 'searchTermDaily', 'keywords', 'campaigns', 'accounts'], writes: ['bid', 'budget', 'status'], intraday: true, maxBackfillDays: 400 } },
+  { provider: 'meta', kind: 'media', channel: 'meta', label: 'Meta 광고', docsUrl: 'https://developers.facebook.com/docs/marketing-api/insights', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true,
+    credentialFields: [
+      { key: 'accessToken', label: '시스템 사용자 액세스 토큰', secret: true },
+      { key: 'adAccountId', label: '광고 계정 ID', secret: false },
+      { key: 'appSecret', label: '앱 시크릿 (선택)', secret: true, optional: true },
+    ],
+    capabilities: { reads: ['mediaDaily', 'mediaHourly', 'campaigns', 'accounts'], writes: ['budget', 'status'], intraday: true, maxBackfillDays: 400 } },
+  { provider: 'kakao_moment', kind: 'media', channel: 'kakao', label: '카카오모먼트', docsUrl: 'https://developers.kakao.com/docs/latest/ko/kakaomoment/common', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true,
+    credentialFields: [
+      { key: 'accessToken', label: '비즈니스 토큰', secret: true },
+      { key: 'adAccountId', label: '광고계정 ID', secret: false },
+    ],
+    capabilities: { reads: ['mediaDaily', 'mediaHourly', 'campaigns', 'accounts'], writes: ['budget', 'status'], intraday: true, maxBackfillDays: 400 } },
+  { provider: 'naver_gfa', kind: 'media', channel: 'naver_gfa', label: '네이버 성과형 디스플레이(GFA)', docsUrl: 'https://naver-ad-api.github.io/developers/', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true,
+    credentialFields: [
+      { key: 'clientId', label: '클라이언트 ID (Client ID)', secret: false },
+      { key: 'clientSecret', label: '클라이언트 시크릿 (Client Secret)', secret: true },
+      { key: 'refreshToken', label: '네이버 로그인 갱신 토큰', secret: true },
+      { key: 'adAccountNo', label: 'GFA 광고 계정 번호', secret: false },
+      { key: 'managerAccountNo', label: '관리 계정 번호', secret: false, optional: true },
+    ],
+    capabilities: { reads: ['mediaDaily', 'mediaHourly', 'campaigns', 'accounts'], writes: ['status'], intraday: true, maxBackfillDays: 400 } },
+  { provider: 'naver_commerce', kind: 'sales', channel: 'brandstore', label: '네이버 브랜드스토어(커머스 API)', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: false, credentialFields: [], capabilities: NONE },
+  { provider: 'coupang', kind: 'sales', channel: 'coupang', label: '쿠팡 Wing', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: false, credentialFields: [], capabilities: NONE },
+  { provider: 'cafe24', kind: 'sales', channel: 'own_mall', label: '카페24 자사몰', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: false, credentialFields: [], capabilities: NONE },
+  { provider: 'ohouse', kind: 'sales', channel: 'ohouse', label: '오늘의집', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: false, credentialFields: [], capabilities: NONE },
   { provider: 'csv', kind: 'other', channel: null, label: 'CSV · TSV 업로드', docsUrl: 'https://www.rfc-editor.org/rfc/rfc4180', verifiedLive: false, sourceKind: 'csv', defaultPriority: 50, available: true, credentialFields: [],
     capabilities: { reads: ['mediaDaily', 'mediaHourly', 'salesDaily', 'keywordDaily', 'searchTermDaily', 'keywords'], writes: [], intraday: false, maxBackfillDays: 0 } },
   { provider: 'demo', kind: 'other', channel: null, label: '데모 데이터 (TEST DATA)', docsUrl: '', verifiedLive: false, sourceKind: 'demo', defaultPriority: 10, available: true, credentialFields: [],

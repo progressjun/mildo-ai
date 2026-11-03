@@ -90,7 +90,7 @@ jobs:
         run: npm run test:server
 
   smoke:
-    name: 통합 스모크 (마이그레이션 · 시드 · 서버 · 워커 · 로그인 · Dataset)
+    name: 통합 스모크 (마이그레이션 · 시드 · 서버 · 워커 · 로그인 · Dataset · SSE · 권한)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -114,6 +114,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: 프런트 빌드 (서빙되는 화면의 CSP · 정적 파일 확인용)
+        run: npx vite build
       - name: 서버 번들
         run: npm run server:build
       - name: 스모크 (번들로 실행)
@@ -171,8 +173,8 @@ jobs:
       - name: compose 기동 (db · migrate · app · worker · backup)
         working-directory: deploy
         run: |
-          # 저장소 루트 .gitignore의 '.env.*' 규칙에 '!.env.example' 예외가 없으면 이 파일이 커밋되지 않는다
-          [ -f .env.example ] || { echo "::error::deploy/.env.example가 저장소에 없습니다 — .gitignore에 '!.env.example' 예외를 넣고 커밋하세요"; exit 1; }
+          # 저장소 루트 .gitignore가 '.env.*'를 무시하고 '!.env.example'로 이 파일만 예외로 둔다 — 예외가 빠지면 여기서 멈춘다
+          [ -f .env.example ] || { echo "::error::deploy/.env.example가 저장소에 없습니다 — .gitignore의 '!.env.example' 예외를 확인하세요"; exit 1; }
           cp .env.example .env
           sed -i \
             -e "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$(openssl rand -base64 32)|" \

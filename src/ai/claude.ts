@@ -114,6 +114,8 @@ let serverWsId: string | null = null;
 /** 서버가 이 워크스페이스에서 AI를 쓸 수 없다고 답한 뒤(키 없음 · AI 꺼짐 · 권한 없음) — 다시 configureServerAi할 때까지 */
 let serverDenied = false;
 let serverProbe: Promise<boolean> | null = null;
+/** 마지막 확인 결과 (확인 전 null) — 같은 워크스페이스로 다시 configureServerAi할 때 '쓸 수 없음'이었으면 다시 확인한다 */
+let serverProbeResult: boolean | null = null;
 
 function notifyBackendChange() {
   backendListeners.forEach((fn) => {
@@ -122,15 +124,18 @@ function notifyBackendChange() {
 }
 
 /**
- * 서버 모드 연결 (platform이 워크스페이스가 정해질 때 · 바뀔 때 호출, 로그아웃 시 null).
+ * 서버 모드 연결 (platform이 워크스페이스가 정해질 때 · 바뀔 때 · 설정이 바뀌어 다시 읽을 때 호출, 로그아웃 시 null).
  * 'auto' 모드는 이 값이 있으면 서버 백엔드를 고른다. 바뀌면 화면의 연결 상태를 다시 계산하게 알린다.
+ * 같은 워크스페이스로 다시 불려도, 직전 확인이 '쓸 수 없음'(관리자가 AI를 꺼 둠 등)이었으면 다시 확인한다 —
+ * 관리자가 설정에서 AI를 켠 뒤 새로고침 없이 서버 백엔드로 돌아오게 하기 위해서다.
  */
 export function configureServerAi(o: { workspaceId: string | null }): void {
   const next = o.workspaceId || null;
-  if (next === serverWsId && !serverDenied) return;
+  if (next === serverWsId && !serverDenied && serverProbeResult !== false) return;
   serverWsId = next;
   serverDenied = false;
   serverProbe = null;
+  serverProbeResult = null;
   notifyBackendChange();
 }
 
@@ -141,23 +146,31 @@ function markServerDenied() {
   if (serverDenied) return;
   serverDenied = true;
   serverProbe = Promise.resolve(false);
+  serverProbeResult = false;
   notifyBackendChange();
 }
 
-/** 서버 AI 사용 가능 여부 — GET /ai/usage의 available(키 설정 · AI 켜짐 · request 권한). 확인 실패 시 사용 가능으로 보고 호출 오류로 알린다 */
+/** 서버 AI 사용 가능 여부 — GET /ai/usage의 available(키 설정 · AI 켜짐 · request 권한 · 잠기지 않은 워크스페이스). 확인 실패 시 사용 가능으로 보고 호출 오류로 알린다 */
 function serverAvailable(): Promise<boolean> {
   if (!serverWsId) return Promise.resolve(false);
   if (serverDenied) return Promise.resolve(false);
   if (serverProbe) return serverProbe;
-  serverProbe = (async () => {
+  const ws = serverWsId;
+  const holder: { p: Promise<boolean> | null } = { p: null };
+  holder.p = (async () => {
+    let ok = true;
     try {
       const u = await fetchServerAiUsage();
-      return u ? u.available !== false : true;
+      ok = u ? u.available !== false : true;
     } catch {
-      return true;
+      ok = true;
     }
+    // 확인하는 사이 워크스페이스가 바뀌었거나 다시 configure되었으면 이 결과를 기록하지 않는다
+    if (serverWsId === ws && serverProbe === holder.p) serverProbeResult = ok;
+    return ok;
   })();
-  return serverProbe;
+  serverProbe = holder.p;
+  return holder.p;
 }
 
 /** GET /api/w/:ws/ai/usage 응답 (server/src/ai/service.ts UsageSummary + available) */
@@ -191,7 +204,13 @@ export async function fetchServerAiUsage(month?: string, signal?: AbortSignal): 
   const q = month ? `?month=${encodeURIComponent(month)}` : '';
   const res = await fetch(`/api/w/${serverWsId}/ai/usage${q}`, { headers: { accept: 'application/json' }, credentials: 'same-origin', signal });
   if (!res.ok) return null;
-  return (await res.json()) as ServerAiUsage;
+  try {
+    const j = (await res.json()) as ServerAiUsage | null;
+    return j && typeof j === 'object' && !Array.isArray(j) ? j : null;
+  } catch {
+    // JSON이 아닌 응답 (프록시 오류 페이지 등)
+    return null;
+  }
 }
 
 /* ---------------- 공통 호출 ---------------- */
@@ -276,6 +295,7 @@ export const AI_ERROR_COPY: Record<string, string> = {
   ai_billing: 'Anthropic 계정 결제 문제로 호출이 거절되었습니다. 관리자에게 확인을 요청하세요.',
   model_unavailable: '서버에 설정된 Claude 모델을 쓸 수 없습니다. 관리자에게 확인을 요청하세요.',
   network: '서버에 연결할 수 없습니다. 네트워크를 확인하세요.',
+  workspace_locked: '이 워크스페이스는 읽기 전용 상태라 AI를 호출할 수 없습니다. 규칙 엔진 결과를 표시합니다.',
 };
 
 /* ---------------- artifact ---------------- */
@@ -384,7 +404,7 @@ export function fitToolResult(r: unknown, maxBytes: number): string {
   let cap = limit;
   for (let i = 0; i < 8; i++) {
     const c = String(compactTo(raw, cap));
-    if (utf8Len(JSON.stringify(c)) <= limit) return c || '(빈 결과)';
+    if (utf8Len(JSON.stringify(c)) <= limit) return c.trim() ? c : '(빈 결과)';
     cap = Math.floor(cap * 0.7);
   }
   return RESULT_OMITTED;
@@ -403,7 +423,7 @@ async function serverHttpError(res: Response): Promise<AiError> {
   }
   if (!code) code = res.status >= 500 ? 'upstream_error' : res.status === 401 ? 'unauthorized' : `http_${res.status}`;
   if (code === 'bad_request') code = 'invalid_request';
-  if (code === 'ai_not_configured' || code === 'ai_disabled' || (res.status === 403 && code === 'forbidden')) markServerDenied();
+  if (code === 'ai_not_configured' || code === 'ai_disabled' || code === 'workspace_locked' || (res.status === 403 && code === 'forbidden')) markServerDenied();
   return new AiError(code, message || AI_ERROR_COPY[code] || `AI 호출 실패 (${res.status})`);
 }
 
@@ -469,6 +489,9 @@ async function askServer(input: string | Turn[], opts: AskOptions): Promise<stri
   const rawPurpose = opts.purpose ?? currentScreen();
   const purpose = /^[A-Za-z0-9_.:-]{1,64}$/.test(rawPurpose) ? rawPurpose : 'general';
   let out = '';
+  /** 마지막 라운드의 stop_reason · 도구 왕복 상한에 걸렸는지 — 잘린 답을 완결된 답처럼 보이지 않게 표시한다 */
+  let lastStop: string | null = null;
+  let roundCapHit = false;
   for (let round = 0; round < SERVER_MAX_ROUNDS; round++) {
     if (opts.signal?.aborted) throw new AiError('cancelled', AI_ERROR_COPY.cancelled, out || undefined);
     const prefix = out ? `${out}\n\n` : '';
@@ -492,7 +515,12 @@ async function askServer(input: string | Turn[], opts: AskOptions): Promise<stri
     }
     if (r.stopReason === 'refusal') throw new AiError('refused', AI_ERROR_COPY.refused, out || undefined);
     if (r.text) out = prefix + r.text;
+    lastStop = r.stopReason;
     if (r.stopReason !== 'tool_use' || !r.toolUses.length) break;
+    if (round === SERVER_MAX_ROUNDS - 1) {
+      roundCapHit = true;
+      break;
+    }
     // 도구 왕복 중인 assistant 턴은 서버가 준 content(thinking 서명 포함)를 그대로 되돌려 보낸다
     const content = r.content.some((b) => b.type === 'tool_use')
       ? r.content
@@ -519,7 +547,13 @@ async function askServer(input: string | Turn[], opts: AskOptions): Promise<stri
       content: results.map((x) => ({ type: 'tool_result', tool_use_id: x.id, content: fitToolResult(x.value, per), ...(x.isError ? { is_error: true } : {}) })),
     });
   }
-  if (!out.trim()) throw new AiError('empty_completion', 'AI 응답이 비어 있습니다.');
+  const truncated = lastStop === 'max_tokens' || lastStop === 'model_context_window_exceeded';
+  if (!out.trim()) {
+    throw new AiError('empty_completion', truncated ? 'AI 응답이 길이 제한에 걸려 비어 있습니다. 범위를 줄여 다시 시도하세요.' : 'AI 응답이 비어 있습니다.');
+  }
+  // 아티팩트 경로(truncated)와 같은 안내 — 잘린 답 · 도구 왕복 상한에서 멈춘 답을 완결된 답처럼 보이지 않게 한다
+  if (truncated) return `${out}\n\n_(응답 길이 제한으로 일부가 잘렸습니다)_`;
+  if (roundCapHit) return `${out}\n\n_(도구 조회 ${SERVER_MAX_ROUNDS}회 상한에 도달해 여기서 멈췄습니다. 범위를 좁혀 다시 질문하세요)_`;
   return out;
 }
 

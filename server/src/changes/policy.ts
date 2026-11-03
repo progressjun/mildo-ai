@@ -98,6 +98,11 @@ export function routeApprover(c: Pick<ChangeRequest, 'kind' | 'targetId' | 'befo
   const e = effectivePct(c);
   let changePct: number | null = finite(c.changePct) ? c.changePct : finite(e.computed) ? round1(e.computed) : null;
   let required: ApprovalLevel = 'AE';
+  // 요청 변경 폭과 값 기준 변경 폭이 허용 폭을 넘게 다르면 큰 쪽을 저장한다 (입찰 상한 · 대량 변경 감지가 작은 값에 속지 않게)
+  if (e.mismatch) {
+    notes.push(`변경 폭 대조: 요청 ${round1(c.changePct as number)}% · 값 기준 ${round1(e.computed)}% — 큰 쪽(${round1(e.pct)}%)으로 판정`);
+    changePct = round1(e.pct);
+  }
   if (isNewCampaign(c)) {
     required = 'CLIENT';
     if (LEVEL_RANK[c.approver] < LEVEL_RANK.CLIENT) notes.push(`신규 캠페인 → ${APPROVER_LABEL.CLIENT} 승인 (p.15 위임 범위)`);
@@ -105,10 +110,6 @@ export function routeApprover(c: Pick<ChangeRequest, 'kind' | 'targetId' | 'befo
     const idx = delegationIndexByPct(e.pct);
     const row = GFA_DELEGATION[idx];
     required = row.approver;
-    if (e.mismatch) {
-      notes.push(`변경 폭 대조: 요청 ${round1(c.changePct as number)}% · 값 기준 ${round1(e.computed)}% — 큰 쪽으로 판정`);
-      changePct = round1(e.pct);
-    }
     if (LEVEL_RANK[required] > LEVEL_RANK[c.approver]) {
       notes.push(finite(e.pct)
         ? `변경 폭 ${round1(e.pct)}% → ${row.range} (p.15 위임 범위) · 승인 주체 ${APPROVER_LABEL[c.approver]} → ${APPROVER_LABEL[required]}`

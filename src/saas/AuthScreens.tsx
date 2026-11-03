@@ -9,7 +9,10 @@ import { Icon } from '@/ui/Icon';
 import { api, ApiError } from './api';
 import { useSaas } from './context';
 import { AuthFrame } from './Splash';
-import { apiErrorMessage, normalizeInvite, passwordProblem, readAuthTokens, stripAuthTokens, type AuthTokens, type InviteInfo } from './sync';
+import {
+  apiErrorMessage, normalizeInvite, normalizeResetCheck, passwordProblem, readAuthTokens, resetLinkProblem, serverKoreanMessage, stripAuthTokens,
+  type AuthTokens, type InviteInfo, type ResetCheck,
+} from './sync';
 import { hardReload, isShellLoaded } from './runtime';
 
 /* ---------- 토큰 쿼리 ---------- */
@@ -30,14 +33,29 @@ export function clearAuthTokensFromUrl(): void {
   }
 }
 
-/** 로그인 · 토큰 오류 문구 */
+/**
+ * 로그인 · 토큰 오류 문구. 서버가 한국어 사유를 보내는 오류(로그인 잠금 · 속도 제한 · 비활성 계정 · 워크스페이스 잠김 · 보안 토큰 ·
+ * 비밀번호 정책 · 재설정 링크 사용됨/만료)는 서버 문구를 그대로 쓴다 — 대기 시간 · 잠금 기준이 서버 설정에 따라 달라서.
+ */
 export function authErrorMessage(e: unknown, kind: 'login' | 'invite' | 'reset' | 'forgot'): string {
   if (e instanceof ApiError) {
-    if (e.status === 429) return kind === 'login' ? '로그인 시도가 너무 많습니다. 1분쯤 뒤에 다시 시도해 주세요.' : '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.';
+    const ko = serverKoreanMessage(e);
     if (e.status === 0) return '서버에 연결할 수 없습니다. 네트워크를 확인해 주세요.';
-    if (kind === 'login' && e.status === 401) return e.message || '이메일 또는 비밀번호가 맞지 않습니다';
-    if ((kind === 'invite' || kind === 'reset') && (e.status === 404 || e.status === 410)) {
-      return kind === 'invite' ? '초대 링크가 만료되었거나 이미 사용되었습니다. 초대한 관리자에게 새 링크를 요청해 주세요.' : '재설정 링크가 만료되었거나 이미 사용되었습니다. 재설정 메일을 다시 받아 주세요.';
+    if (e.status === 429) return ko ?? (kind === 'login' ? '로그인 시도가 너무 많습니다. 1분쯤 뒤에 다시 시도해 주세요.' : '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.');
+    if (e.status === 403 && e.code === 'csrf') return ko ?? '보안 토큰이 맞지 않습니다. 새로고침 후 다시 시도해 주세요.';
+    if (kind === 'login' && e.status === 401) return ko ?? '이메일 또는 비밀번호가 맞지 않습니다';
+    if (kind === 'invite') {
+      if (e.status === 409 && (e.code === 'invite_used' || e.code === 'invite_accepted')) return '이미 수락한 초대입니다. 로그인해 주세요.';
+      if (e.status === 404) return '초대 링크가 만료되었거나 취소 · 사용된 링크입니다. 초대한 관리자에게 새 링크를 요청해 주세요.';
+      if (e.status === 410) return ko ?? '초대 링크가 만료되었습니다. 초대한 관리자에게 새 링크를 요청해 주세요.';
+      // 401 password_required · invalid_credentials, 403 account_disabled, 423 workspace_locked, 400 weak_password
+      if (ko && (e.status === 400 || e.status === 401 || e.status === 403 || e.status === 409 || e.status === 423)) return ko;
+    }
+    if (kind === 'reset') {
+      const link = resetLinkProblem(e.code);
+      if (link) return ko ?? link;
+      if (e.status === 404 || e.status === 410) return '재설정 링크가 만료되었거나 이미 사용되었습니다. 재설정 메일을 다시 받아 주세요.';
+      if (ko && e.status === 400) return ko; // weak_password 등
     }
   }
   return apiErrorMessage(e);
@@ -85,9 +103,9 @@ function Submit({ busy, children, disabled }: { busy: boolean; children: ReactNo
 
 /* ---------- 로그인 ---------- */
 
-export function LoginScreen() {
+export function LoginScreen({ initialView = 'login' }: { initialView?: 'login' | 'forgot' } = {}) {
   const saas = useSaas();
-  const [view, setView] = useState<'login' | 'forgot'>('login');
+  const [view, setView] = useState<'login' | 'forgot'>(initialView);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -168,9 +186,13 @@ export function LoginScreen() {
 
 /* ---------- 초대 수락 ---------- */
 
-export function InviteScreen({ token, onDone }: { token: string; onDone: () => void }) {
+export function InviteScreen({ token, onDone, initialInfo = null }: {
+  token: string; onDone: () => void;
+  /** 미리보기 · 테스트용 초대 정보 (기본: 열자마자 GET /api/invites/:token) */
+  initialInfo?: InviteInfo | null;
+}) {
   const saas = useSaas();
-  const [info, setInfo] = useState<InviteInfo | null>(null);
+  const [info, setInfo] = useState<InviteInfo | null>(initialInfo);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [pw, setPw] = useState('');
@@ -179,12 +201,13 @@ export function InviteScreen({ token, onDone }: { token: string; onDone: () => v
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (initialInfo) return undefined;
     let alive = true;
     api(`/api/invites/${encodeURIComponent(token)}`, { silent: true })
       .then((j) => { if (alive) setInfo(normalizeInvite(j)); })
       .catch((e) => { if (alive) setLoadError(authErrorMessage(e, 'invite')); });
     return () => { alive = false; };
-  }, [token]);
+  }, [token, initialInfo]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -212,6 +235,9 @@ export function InviteScreen({ token, onDone }: { token: string; onDone: () => v
       await saas.refreshMe().catch(() => null);
       onDone();
     } catch (err) {
+      // 그 사이 다른 탭 · 기기에서 수락했거나 만료됐으면 폼 대신 상태 안내로
+      if (err instanceof ApiError && err.status === 409 && err.code === 'invite_used') setInfo((i) => (i ? { ...i, accepted: true } : i));
+      else if (err instanceof ApiError && err.status === 410) setInfo((i) => (i ? { ...i, expired: true } : i));
       setError(authErrorMessage(err, 'invite'));
     } finally {
       setBusy(false);
@@ -274,12 +300,33 @@ export function InviteScreen({ token, onDone }: { token: string; onDone: () => v
 
 /* ---------- 비밀번호 재설정 ---------- */
 
-export function ResetScreen({ token, onDone }: { token: string; onDone: () => void }) {
+/** 재설정 링크 → 쓸 수 있는지 먼저 확인(사전 확인 API) → 새 비밀번호. onDone('forgot') = 재설정 메일 다시 받기 화면으로 */
+export function ResetScreen({ token, onDone, initialCheck = 'checking' }: {
+  token: string; onDone: (next?: 'forgot') => void;
+  /** 미리보기 · 테스트용 사전 확인 결과 (기본: 열자마자 서버에 확인) */
+  initialCheck?: ResetCheck | null | 'checking';
+}) {
   const saas = useSaas();
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 'checking' = 확인 중, null = 확인하지 못함(폼을 보여 주고 서버 confirm이 판정) */
+  const [check, setCheck] = useState<ResetCheck | null | 'checking'>(initialCheck);
+
+  useEffect(() => {
+    if (initialCheck !== 'checking') return undefined;
+    let alive = true;
+    api('/api/auth/password-reset/check', { method: 'POST', body: { token }, silent: true })
+      .then((j) => { if (alive) setCheck(normalizeResetCheck(j)); })
+      .catch(() => { if (alive) setCheck(null); });
+    return () => { alive = false; };
+  }, [token, initialCheck]);
+
+  const leave = (next?: 'forgot') => {
+    clearAuthTokensFromUrl();
+    onDone(next);
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -297,25 +344,57 @@ export function ResetScreen({ token, onDone }: { token: string; onDone: () => vo
       await saas.refreshMe().catch(() => null);
       onDone();
     } catch (err) {
+      // 링크 자체를 더 쓸 수 없으면(사용됨 · 만료 · 잘못됨) 폼을 닫고 다시 받기 안내로
+      const code = err instanceof ApiError ? err.code : '';
+      if (code === 'reset_used' || code === 'reset_expired' || code === 'reset_invalid') {
+        setCheck({ valid: false, reason: code === 'reset_used' ? 'used' : code === 'reset_expired' ? 'expired' : 'invalid', email: null, expiresAt: null });
+      }
       setError(authErrorMessage(err, 'reset'));
     } finally {
       setBusy(false);
     }
   };
 
+  const unusable = check !== 'checking' && check !== null && !check.valid;
   return (
     <AuthFrame>
       <form className="auth-form" onSubmit={submit} noValidate aria-labelledby="reset-title">
         <h1 id="reset-title" className="auth-title">새 비밀번호 정하기</h1>
-        <p className="small ink2">재설정 링크는 한 번만 쓸 수 있습니다.</p>
-        <FormError>{error}</FormError>
-        <TextField id="reset-password" label="새 비밀번호" type="password" value={pw} onChange={setPw} autoComplete="new-password" autoFocus hint="10자 이상 · 영문 대소문자 · 숫자 · 기호 중 2가지 이상" />
-        <TextField id="reset-password2" label="새 비밀번호 확인" type="password" value={pw2} onChange={setPw2} autoComplete="new-password" />
-        <Submit busy={busy}>비밀번호 바꾸기</Submit>
-        <button type="button" className="auth-link" onClick={() => { clearAuthTokensFromUrl(); onDone(); }}>로그인 화면으로</button>
+        {check === 'checking' ? (
+          <div className="auth-loading" role="status"><span className="auth-spinner" aria-hidden="true" /> 재설정 링크를 확인하는 중</div>
+        ) : unusable ? (
+          <>
+            <FormError>{error ?? resetLinkProblem(check.reason)}</FormError>
+            <button type="button" className="btn primary lg auth-submit" onClick={() => leave('forgot')}>재설정 메일 다시 받기</button>
+            <button type="button" className="auth-link" onClick={() => leave()}>로그인 화면으로</button>
+          </>
+        ) : (
+          <>
+            <p className="small ink2">재설정 링크는 한 번만 쓸 수 있습니다. 바꾸면 이 계정의 다른 로그인은 모두 종료됩니다.</p>
+            {check?.email ? (
+              <dl className="auth-facts">
+                <div><dt>계정</dt><dd className="num">{check.email}</dd></div>
+                {check.expiresAt ? <div><dt>링크 유효</dt><dd className="num">{fmtKstDateTime(check.expiresAt)}까지</dd></div> : null}
+              </dl>
+            ) : null}
+            <FormError>{error}</FormError>
+            <TextField id="reset-password" label="새 비밀번호" type="password" value={pw} onChange={setPw} autoComplete="new-password" autoFocus hint="10자 이상 · 영문 대소문자 · 숫자 · 기호 중 2가지 이상" />
+            <TextField id="reset-password2" label="새 비밀번호 확인" type="password" value={pw2} onChange={setPw2} autoComplete="new-password" />
+            <Submit busy={busy}>비밀번호 바꾸기</Submit>
+            <button type="button" className="auth-link" onClick={() => leave()}>로그인 화면으로</button>
+          </>
+        )}
       </form>
     </AuthFrame>
   );
+}
+
+/** ISO 시각 → 'M/D HH:mm' (KST) */
+function fmtKstDateTime(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return iso;
+  const k = new Date(ms + 9 * 3600_000);
+  return `${k.getUTCMonth() + 1}/${k.getUTCDate()} ${String(k.getUTCHours()).padStart(2, '0')}:${String(k.getUTCMinutes()).padStart(2, '0')}`;
 }
 
 /* ---------- 워크스페이스 없음 · 오류 ---------- */
@@ -347,9 +426,10 @@ export function WorkspaceErrorScreen({ message }: { message: string }) {
   );
 }
 
-/** 토큰 쿼리에 따라 초대 · 재설정 · 로그인 화면 */
+/** 토큰 쿼리에 따라 초대 · 재설정 · 로그인 화면 (재설정 링크를 쓸 수 없으면 '재설정 메일 다시 받기' 화면으로) */
 export function AuthScreens({ tokens, onTokensUsed }: { tokens: AuthTokens; onTokensUsed: () => void }) {
+  const [loginView, setLoginView] = useState<'login' | 'forgot'>('login');
   if (tokens.invite) return <InviteScreen token={tokens.invite} onDone={onTokensUsed} />;
-  if (tokens.reset) return <ResetScreen token={tokens.reset} onDone={onTokensUsed} />;
-  return <LoginScreen />;
+  if (tokens.reset) return <ResetScreen token={tokens.reset} onDone={(next) => { setLoginView(next === 'forgot' ? 'forgot' : 'login'); onTokensUsed(); }} />;
+  return <LoginScreen key={loginView} initialView={loginView} />;
 }

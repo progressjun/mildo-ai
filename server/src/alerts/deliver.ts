@@ -241,6 +241,8 @@ export async function notifySendJob(ctx: JobContext): Promise<SendOutcome & { ch
     },
   });
   await markChannel(db, ch.id, out);
+  // 발송 결과 → 알림 설정 화면(발송 이력 · 채널 마지막 결과) 갱신용 이벤트. 이벤트 실패가 발송 결과를 바꾸지 않게 삼킨다
+  await ctx.publish(wsId, { type: 'notify', id: ch.id }).catch(() => undefined);
   if (out.status === 'failed' && out.retryable) throw new Error(out.reason ?? '발송 실패');
   return { ...out, channelId: ch.id };
 }

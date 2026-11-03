@@ -7,6 +7,7 @@
  *
  * API (docs/SAAS_SPEC.md §6): GET/POST /api/w/:ws/connections · PATCH/DELETE …/:id · POST …/:id/test · POST …/:id/sync
  * 권한: 읽기 read, 생성 · 수정 · 삭제 · 연결 확인 configure, 수동 수집 operate, write_mode='live'로 켜기 live_write.
+ *   live 커넥션의 자격증명 교체도 live_write — 반영 대상 계정을 바꾸는 일이라 live를 켜는 것과 같은 권한으로 본다.
  */
 import type { FastifyPluginAsync } from 'fastify';
 import type { Db, Queryable } from '../db/pool';
@@ -56,6 +57,14 @@ export const sourceKindOf = (provider: string): SourceKind => (provider === 'dem
 /** 웨어하우스 출처 키 — 데모는 'demo', 나머지는 커넥션 id (업로드는 'csv:<업로드 id>') */
 export const sourceKeyOf = (c: { id: string; provider: string }): string => (c.provider === 'demo' ? 'demo' : c.id);
 const iso = (v: Date | string | null | undefined) => (v ? new Date(v).toISOString() : null);
+
+/** 설정에 비밀값처럼 보이는 키가 섞여 들어와도 응답에는 내보내지 않는다 (자격증명은 credentials로만 받는다) */
+const SECRET_SETTING = /(secret|token|password|passwd|apikey|api_key|credential|private|signature)/i;
+export function safeSettings(settings: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(settings ?? {})) out[k] = SECRET_SETTING.test(k) ? (v === undefined || v === null || v === '' ? null : '••••') : v;
+  return out;
+}
 
 /* ---------- 컨텍스트 빌더 ---------- */
 
@@ -178,7 +187,7 @@ export function toConnectionView(row: ConnectionRow, config: AppConfig, extras: 
     priority: row.priority,
     sourceKind: sourceKindOf(row.provider),
     source: sourceKeyOf(row),
-    settings: row.settings ?? {},
+    settings: safeSettings(row.settings),
     credentials: maskedCredentials(def, creds),
     hasCredentials: !!row.credentials_enc && Object.keys(creds).length > 0,
     verifiedLive: def?.verifiedLive ?? false,
@@ -293,7 +302,11 @@ async function maybeInitialBackfill(q: Queryable, row: ConnectionRow, def: Conne
 export const connectionRoutes: FastifyPluginAsync = async (app) => {
   const { db, config } = app.ctx;
   const list = (wsId: string) => listConnectionViews(db, config, wsId);
-  const viewOf = async (wsId: string, id: string) => (await list(wsId)).find((c) => c.id === id) ?? null;
+  /** 변경 응답: 바뀐 커넥션 + 전체 목록 (목록 한 번만 읽는다) */
+  const withList = async <T extends object>(wsId: string, id: string, extra: T) => {
+    const connections = await list(wsId);
+    return { ...extra, connection: connections.find((c) => c.id === id) ?? null, connections };
+  };
 
   app.get('/w/:ws/connections', async (req) => {
     const c = await req.workspace('read');
@@ -334,7 +347,7 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
       await publish(q, ws, { type: 'connection', id: row!.id });
       return row!;
     });
-    return { connection: await viewOf(ws, created.id), connections: await list(ws) };
+    return withList(ws, created.id, {});
   });
 
   app.patch('/w/:ws/connections/:id', async (req) => {
@@ -354,6 +367,7 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
     const after: Record<string, unknown> = {};
     const track = (k: string, b: unknown, a: unknown) => { if (JSON.stringify(b) !== JSON.stringify(a)) { before[k] = b; after[k] = a; } };
     let credsChanged: string[] = [];
+    const liveAfter = (body.writeMode ?? row.write_mode) === 'live';
     if (body.label !== undefined) { track('label', row.label, body.label); set('label', body.label); }
     if (body.priority !== undefined) { track('priority', row.priority, body.priority); set('priority', body.priority); }
     if (body.writeMode !== undefined) { track('writeMode', row.write_mode, body.writeMode); set('write_mode', body.writeMode); }
@@ -369,6 +383,9 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
       const next = mergeCredentials(prev, body.credentials, body.clearCredentials);
       validateWith(def.credentialsSchema, next, '자격증명');
       credsChanged = Object.keys({ ...prev, ...next }).filter((k) => JSON.stringify(prev[k]) !== JSON.stringify(next[k]));
+      if (credsChanged.length && liveAfter && !can(c.role, 'live_write')) {
+        throw forbidden('실제 반영(live) 중인 커넥션의 자격증명은 관리자 · 소유자만 바꿀 수 있습니다 — 먼저 쓰기 모드를 dry_run으로 내리세요');
+      }
       if (credsChanged.length) {
         set('credentials_enc', Object.keys(next).length ? encryptCredentials(next, config.encryptionKey) : null);
         // 자격증명이 바뀌면 다시 연결 확인을 받아야 한다
@@ -382,7 +399,7 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
       track('status', row.status, nextStatus);
       set('status', nextStatus);
     }
-    if (!sets.length) return { connection: await viewOf(ws, id), connections: await list(ws) };
+    if (!sets.length) return withList(ws, id, {});
     await db.tx(async (q) => {
       await q.query(`UPDATE connections SET ${sets.join(', ')}, updated_at = now() WHERE workspace_id = $1 AND id = $2`, [ws, id, ...vals]);
       if (Object.keys(after).length || credsChanged.length) {
@@ -393,7 +410,7 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
       }
       await publish(q, ws, { type: 'connection', id });
     });
-    return { connection: await viewOf(ws, id), connections: await list(ws) };
+    return withList(ws, id, {});
   });
 
   app.delete('/w/:ws/connections/:id', async (req) => {
@@ -403,8 +420,15 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
     const row = await loadConnection(db, ws, id);
     if (!row) throw notFound('커넥션을 찾을 수 없습니다');
     const purged = await db.tx(async (q) => {
+      // 먼저 행을 잠근다 — 진행 중인 수집의 쓰기(같은 행을 잠근다)가 끝난 뒤 지우므로, 지운 뒤 고아 행이 생기지 않는다
+      if (!(await one(q, 'SELECT id FROM connections WHERE workspace_id = $1 AND id = $2 FOR UPDATE', [ws, id]))) throw notFound('커넥션을 찾을 수 없습니다');
       const n = await purgeSource(q, ws, sourceKeyOf(row));
-      await q.query(`UPDATE jobs SET status = 'failed', finished_at = now(), last_error = '커넥션 삭제로 취소' WHERE workspace_id = $1 AND status = 'queued' AND payload->>'connectionId' = $2`, [ws, id]);
+      // 대기 중 수집은 취소 (실패가 아니므로 done + 사유)
+      await q.query(
+        `UPDATE jobs SET status = 'done', finished_at = now(), result = $3, last_error = NULL
+          WHERE workspace_id = $1 AND status = 'queued' AND payload->>'connectionId' = $2`,
+        [ws, id, JSON.stringify({ cancelled: '커넥션 삭제로 취소' })],
+      );
       await q.query('DELETE FROM connections WHERE workspace_id = $1 AND id = $2', [ws, id]);
       await audit(q, { workspaceId: ws, userId: c.user.id, actor: c.actor, action: 'connection.delete', targetType: 'connection', targetId: id, ip: c.ip, detail: { provider: row.provider, label: row.label, purgedRows: n } });
       await publish(q, ws, { type: 'connection', id });
@@ -435,7 +459,7 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
       if (result.ok && row.status !== 'disabled') backfillQueued = await maybeInitialBackfill(q, row, def);
       await publish(q, ws, { type: 'connection', id });
     });
-    return { result, backfillQueued, connection: await viewOf(ws, id), connections: await list(ws) };
+    return withList(ws, id, { result, backfillQueued });
   });
 
   app.post('/w/:ws/connections/:id/sync', limited, async (req) => {
@@ -474,7 +498,7 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
       await publish(q, ws, { type: 'connection', id });
     });
     const queued = jobIds.some((x) => x !== null);
-    return { queued, alreadyQueued: !queued, jobIds: jobIds.filter((x) => x !== null), range, connection: await viewOf(ws, id), connections: await list(ws) };
+    return withList(ws, id, { queued, alreadyQueued: !queued, jobIds: jobIds.filter((x) => x !== null), range });
   });
 };
 

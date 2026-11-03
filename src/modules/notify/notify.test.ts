@@ -39,6 +39,12 @@ describe('입력 검증 (화면 즉시 안내)', () => {
     expect(urlProblem(url)).toBeTruthy();
     expect(draftProblems({ ...emptyDraft('webhook'), name: 'h', url }).url).toBeTruthy();
   });
+  it.each(['https://hooks.local-partner.com/x', 'https://api.internalapps.io/x', 'https://10x.example.com/x', 'https://10.example.com/hook', 'https://lan.partner.co.kr/x', 'https://8.8.8.8/x', 'https://[2606:4700:4700::1111]/x'])('공인 주소는 막지 않는다 %s (서버 규칙과 같게)', (url) => {
+    expect(urlProblem(url)).toBeNull();
+  });
+  it.each(['https://192.0.2.1/x', 'https://[fd00::1]/x', 'https://[fe80::1]/x', 'https://[::ffff:127.0.0.1]/x', 'https://0x7f000001/x', 'https://printer.local/x', 'https://metadata.google.internal/x', 'https://224.0.0.1/x'])('내부 · 예약 주소 차단 %s', (url) => {
+    expect(urlProblem(url)).toBeTruthy();
+  });
   it('웹훅 허용 · 비밀값 길이 · 이메일', () => {
     expect(urlProblem('https://hooks.partner.example.com/mildo')).toBeNull();
     expect(draftProblems({ ...emptyDraft('webhook'), name: 'h', url: 'https://hooks.example.com/x', secret: 'short' }).secret).toBeTruthy();
@@ -178,6 +184,21 @@ describe('화면 렌더 (SSR · 데모 모드)', () => {
     expect(html).not.toMatch(/NaN|undefined/);
     if (name === 'PolicyTab') expect(html).toContain('15분');
     if (name === 'RosterTab') expect(html).toContain('당번');
+  });
+  it('서버 모드 감지가 TEST DATA면 라우팅 안내 (test 이벤트 채널 유무에 따라)', async () => {
+    const run = { ...demoRuns()[0], dataMode: 'demo' };
+    const noTest = summarize(DEMO_CHANNELS, []);
+    expect(noTest.testCovered).toBe(false);
+    const html = await render((m) => h(m.CoverageNotes as ComponentType<Record<string, unknown>>, { sum: noTest, runStale: false, lastRun: run, demo: false }));
+    expect(html).toContain('최근 감지가 TEST DATA로 돌았습니다');
+    expect(html).toContain('나가지 않습니다');
+    const withTest = summarize([...DEMO_CHANNELS, { ...DEMO_CHANNELS[0], id: 'demo-test', events: ['test'] }], []);
+    expect(withTest.testCovered).toBe(true);
+    const html2 = await render((m) => h(m.CoverageNotes as ComponentType<Record<string, unknown>>, { sum: withTest, runStale: false, lastRun: run, demo: false }));
+    expect(html2).toContain('시연 알림은 나갑니다');
+    // 데모 모드(예시 화면)에서는 이 안내를 띄우지 않는다
+    const html3 = await render((m) => h(m.CoverageNotes as ComponentType<Record<string, unknown>>, { sum: noTest, runStale: false, lastRun: run, demo: true }));
+    expect(html3).not.toContain('TEST DATA로 돌았습니다');
   });
   it('채널 편집 창 (편집: 기존 값 유지 안내 · 비밀값 미표시)', async () => {
     const html = await render((m) => h(m.ChannelForm as ComponentType<Record<string, unknown>>, {

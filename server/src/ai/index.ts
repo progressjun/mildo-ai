@@ -7,8 +7,8 @@
  *        event: tool_use  data: { id, name, input }            (stop_reason이 tool_use일 때만, done 직전)
  *        event: done      data: { stopReason, usage: { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens }, content, model }
  *        event: error     data: { code, message }               (스트림 시작 뒤 오류 — 한국어 메시지)
- *      스트림 시작 전 오류는 일반 JSON 오류 응답: 401 · 403(권한 · ai_disabled) · 404(멤버 아님) · 400(형식 · too_many_tools) ·
- *      413(prompt_too_large) · 429(budget_exceeded · rate_limited) · 503(ai_not_configured)
+ *      스트림 시작 전 오류는 일반 JSON 오류 응답: 401 · 403(권한 · ai_disabled · csrf) · 404(멤버 아님) · 423(잠긴 워크스페이스) ·
+ *      400(형식 · too_many_tools) · 413(prompt_too_large) · 429(budget_exceeded · rate_limited) · 503(ai_not_configured)
  *   GET  /api/w/:ws/ai/usage?month=YYYY-MM  (read)  → { month, inputTokens, outputTokens, limit, byPurpose, ... }
  *
  * 한 요청은 모델 한 라운드다. 도구는 프런트(src/ai/claude.ts)가 실행하고 tool_result를 붙여 다시 호출한다.
@@ -108,7 +108,8 @@ export const routes: FastifyPluginAsync = async (app) => {
       month: q.month ?? kstMonth(),
       model: cfg.anthropicModel,
       configured: Boolean(cfg.anthropicApiKey),
-      canUse: can(c.role, 'request'),
+      // 읽기 전용(잠긴) 워크스페이스는 POST가 423이므로 호출할 수 없다
+      canUse: can(c.role, 'request') && c.workspace.status === 'active',
       includeUsers: can(c.role, 'configure'),
     });
     return { ...summary, available: summary.configured && summary.enabled && summary.canUse };

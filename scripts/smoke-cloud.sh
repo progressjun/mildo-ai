@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # MILDO OS Cloud 통합 스모크 (로컬 · CI)
-#   새 DB 생성 → 마이그레이션 · 시드(데모 데이터) → 서버 · 워커를 시험 포트로 기동 → /api/health 대기
-#   → 데모 백필 잡 처리(db CLI run-jobs) → /api/ready → curl 로그인(쿠키 · CSRF) → /api/w/<ws>/dataset 날짜 수 확인
+#   새 DB 생성 → 마이그레이션 · 시드(데모 데이터 · 데모 역할 계정) → 서버 · 워커를 시험 포트로 기동 → /api/health 대기
+#   → 데모 백필 잡 처리(db CLI run-jobs + 워커) → /api/ready(워커 자체 하트비트 포함) → curl 로그인(쿠키 · CSRF)
+#   → /api/w/<ws>/dataset 날짜 수 확인 → SSE 연결(hello 이벤트 · 보안 헤더) → 두 역할 권한 확인(client 거부 · owner 허용)
 #   → 보안 헤더 · CSRF 거부 · 로그아웃 → 프로세스 종료(우아한 종료 시간 확인) → DB 삭제.
 #   실패하면 어느 단계에서 왜 멈췄는지와 서버 · 워커 로그 끝부분을 보여 주고 0이 아닌 코드로 끝난다.
 #
@@ -11,10 +12,12 @@
 #   SMOKE_ADMIN_URL     DB를 만들고 지울 관리 접속 URL (기본 postgres://mildo@/postgres?host=/tmp&port=55432)
 #   SMOKE_RUNTIME       tsx(기본: 소스 실행) | dist(server/dist 번들)
 #   SMOKE_PORT          API 포트 (기본 18080)
+#   SMOKE_DB            만들고 지울 DB 이름 (기본 mildo_smoke_<시각>_<pid>, 영문 소문자 · 숫자 · _만)
 #   SMOKE_EXPECT_DATES  Dataset 날짜 수 기대값 (기본 120 — src/data/demo.ts와 같은 기간)
 #   SMOKE_TIMEOUT       잡 처리 대기 최대 초 (기본 240)
 #   SMOKE_SCHEDULER     워커 스케줄 on|off (기본 off: 결과를 결정적으로)
 #   SMOKE_KEEP=1        끝나도 DB · 로그 폴더를 남긴다 (디버깅)
+#   STATIC_DIR          서빙할 프런트 빌드 폴더 (기본 dist). index.html이 있으면 화면 CSP · 캐시 헤더까지 확인한다
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,19 +27,23 @@ ADMIN_URL="${SMOKE_ADMIN_URL:-postgres://mildo@/postgres?host=/tmp&port=55432}"
 RUNTIME="${SMOKE_RUNTIME:-tsx}"
 PORT="${SMOKE_PORT:-18080}"
 EXPECT_DATES="${SMOKE_EXPECT_DATES:-120}"
+STATIC="${STATIC_DIR:-dist}"
 TIMEOUT="${SMOKE_TIMEOUT:-240}"
 BASE="http://127.0.0.1:$PORT"
-DB="mildo_smoke_$(date +%s)_$$"
+DB="${SMOKE_DB:-mildo_smoke_$(date +%s)_$$}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/mildo-smoke.XXXXXX")"
 JAR="$WORK/cookies.txt"
 OWNER_EMAIL="smoke-owner@mildo.local"
 OWNER_PASSWORD="SmokeOwner#2027"
+# 데모 역할 계정 (db/cli.ts seed, SEED_DEMO_USERS=true) — 권한 거부 확인용
+CLIENT_EMAIL="client@mildo.local"
+CLIENT_PASSWORD="MildoClient#2027"
 SERVER_PID=""
 WORKER_PID=""
 DB_CREATED=0
 STEP="준비"
 STEP_N=0
-STEP_TOTAL=13
+STEP_TOTAL=15
 START_TS=$(date +%s)
 
 c_red=$'\e[31m'; c_grn=$'\e[32m'; c_dim=$'\e[2m'; c_off=$'\e[0m'
@@ -141,6 +148,7 @@ run_cli() { # cli 명령 → $WORK/cli.log
 
 # ─────────────────────────────────────────────
 step "사전 확인 (node · curl · 의존성 · 실행 파일 · 포트)"
+[[ "$DB" =~ ^[a-z_][a-z0-9_]{0,62}$ ]] || fail "SMOKE_DB 이름은 영문 소문자 · 숫자 · _만 쓸 수 있습니다: $DB"
 command -v node >/dev/null || fail "node가 없습니다 (Node 22 필요)"
 command -v curl >/dev/null || fail "curl이 없습니다"
 [ -d node_modules/pg ] || fail "node_modules가 없습니다 — npm ci를 먼저 실행하세요"
@@ -177,13 +185,14 @@ export SECURE_COOKIES=false
 export APP_URL="$BASE"
 export PORT HOST=127.0.0.1
 export LOG_LEVEL=warn
+export STATIC_DIR="$STATIC"
 export MIGRATE_ON_START=false
 export SEED_OWNER_EMAIL="$OWNER_EMAIL" SEED_OWNER_PASSWORD="$OWNER_PASSWORD" SEED_OWNER_NAME="스모크 owner"
-export SEED_DEMO_DATA=true SEED_DEMO_USERS=false
+export SEED_DEMO_DATA=true SEED_DEMO_USERS=true
 unset ANTHROPIC_API_KEY SMTP_HOST || true
 
 # ─────────────────────────────────────────────
-step "마이그레이션 · 시드 (owner 1명 + 데모 커넥션 · 백필 잡 예약)"
+step "마이그레이션 · 시드 (owner + 데모 역할 계정 + 데모 커넥션 · 백필 잡 예약)"
 run_cli migrate || fail "마이그레이션 실패: $(tail -3 "$WORK/cli.log" | tr '\n' ' ')"
 run_cli seed || fail "시드 실패: $(tail -3 "$WORK/cli.log" | tr '\n' ' ')"
 MIGS=$(pg_val "SELECT count(*) FROM schema_migrations")
@@ -238,7 +247,11 @@ http GET /api/ready ""
 [ "$HTTP_CODE" = "200" ] || fail "/api/ready HTTP $HTTP_CODE: $(jget "$WORK/resp.json" 'd.notes')"
 READY=$(jget "$WORK/resp.json" 'd.status')
 [ "$READY" = "ready" ] || fail "/api/ready status=$READY · 근거: $(jget "$WORK/resp.json" 'd.notes')"
-ok "ready · 워커 $(jget "$WORK/resp.json" 'd.checks.worker.workers.map(w => w.id).join(", ")')"
+ok "ready · 워커 $(jget "$WORK/resp.json" 'd.checks.worker.workers.map(w => w.id + (w.cli ? "(CLI)" : "")).join(", ")')"
+# 워커 프로세스 자체 하트비트(worker.ts, 60초마다)가 보여야 한다 — CLI(run-jobs) 처리 기록만으로는 ready가 아니다
+[ "$(jget "$WORK/resp.json" 'd.checks.worker.workers.some(w => w.id === "smoke-worker" && !w.cli)')" = "true" ] \
+  || fail "/api/ready에 워커(smoke-worker) 하트비트가 없습니다: $(jget "$WORK/resp.json" 'd.checks.worker.workers')"
+[ -n "$(jget "$WORK/resp.json" 'd.checks.worker.lastHeartbeatAt')" ] || fail "/api/ready worker.lastHeartbeatAt이 비어 있습니다"
 # 외부(공인 IP)에는 판정만 — 워커 이름 · 워크스페이스 수가 나가지 않아야 한다
 http GET /api/ready "" -H 'x-forwarded-for: 203.0.113.50'
 [ "$(jget "$WORK/resp.json" 'd.detail')" = "summary" ] || fail "외부 IP의 /api/ready가 요약(detail=summary)이 아닙니다: $(jget "$WORK/resp.json" 'd.detail')"
@@ -284,18 +297,62 @@ MODE=$(jget "$WORK/resp.json" 'd.meta && d.meta.mode')
 ok "dates $NDATES개 ($FIRST ~ $LAST) · mediaDaily $NMEDIA행 · meta.mode=$MODE"
 
 # ─────────────────────────────────────────────
+step "SSE 연결 (GET /api/w/:ws/events — hello 이벤트 · 보안 헤더 · 요청 id)"
+# --max-time으로 3초 뒤 끊는다(SSE는 끝나지 않는 응답이라 curl 종료 코드 28은 정상)
+curl -sS -N --max-time 3 -b "$JAR" -D "$WORK/sse.h" -o "$WORK/sse.txt" "$BASE/api/w/$WS/events" 2>/dev/null || true
+grep -q '^event: hello' "$WORK/sse.txt" || fail "SSE 응답에 hello 이벤트가 없습니다: $(head -c 200 "$WORK/sse.txt")"
+grep -qi '^content-type: text/event-stream' "$WORK/sse.h" || fail "SSE content-type이 text/event-stream이 아닙니다"
+for h in x-request-id x-content-type-options content-security-policy; do
+  grep -qi "^$h:" "$WORK/sse.h" || fail "SSE 응답에 $h 헤더가 없습니다 (hijack 응답 헤더 누락)"
+done
+ok "hello 수신 · 헤더 확인"
+
+# ─────────────────────────────────────────────
+step "권한 (두 역할: client는 감사 로그 거부 · owner는 허용)"
+OWNER_JAR="$JAR"
+JAR="$WORK/client-cookies.txt"
+http POST /api/auth/login "{\"email\":\"$CLIENT_EMAIL\",\"password\":\"$CLIENT_PASSWORD\"}"
+[ "$HTTP_CODE" = "200" ] || fail "client 로그인 HTTP $HTTP_CODE: $(jget "$WORK/resp.json" 'd.error && d.error.message')"
+http GET /api/auth/me ""
+CROLE=$(jget "$WORK/resp.json" 'd.workspaces[0] && d.workspaces[0].role')
+[ "$CROLE" = "client" ] || fail "데모 client 계정의 역할이 client가 아닙니다: $CROLE"
+http GET "/api/w/$WS/audit" ""
+[ "$HTTP_CODE" = "403" ] || fail "client가 감사 로그(configure 권한)를 조회했는데 HTTP $HTTP_CODE (403이어야 함)"
+DENY_MSG=$(jget "$WORK/resp.json" 'd.error && d.error.message')
+http GET "/api/w/$WS/dataset" ""
+[ "$HTTP_CODE" = "200" ] || fail "client의 Dataset 조회(read)가 HTTP $HTTP_CODE"
+JAR="$OWNER_JAR"
+# auth=1: 워크스페이스 구성원의 계정 기록(로그인 등, workspace_id 없음)도 함께 (team 도메인 audit API)
+http GET "/api/w/$WS/audit?auth=1" ""
+[ "$HTTP_CODE" = "200" ] || fail "owner의 감사 로그 조회가 HTTP $HTTP_CODE"
+[ "$(jget "$WORK/resp.json" 'Array.isArray(d.entries) && d.entries.some(e => e.action === "auth.login")')" = "true" ] || fail "감사 로그에 auth.login 기록이 없습니다"
+ok "client 거부(403: $DENY_MSG) · client 읽기 허용 · owner 감사 로그 조회 허용"
+
+# ─────────────────────────────────────────────
 step "보안 헤더"
 http GET /api/health ""
 for h in content-security-policy x-content-type-options x-frame-options x-request-id permissions-policy cross-origin-opener-policy; do
   [ -n "$(header "$h")" ] || fail "/api/health 응답에 $h 헤더가 없습니다"
 done
-if [ -f dist/index.html ]; then
+[ "$(header content-security-policy)" = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" ] || fail "/api 응답 CSP가 API용(default-src 'none')이 아닙니다: $(header content-security-policy)"
+if [ -f "$STATIC/index.html" ]; then
   http GET / ""
+  [ "$HTTP_CODE" = "200" ] || fail "/ (index.html) HTTP $HTTP_CODE"
   CSP=$(header content-security-policy)
-  echo "$CSP" | grep -q "script-src 'self'" || fail "/ 응답 CSP에 script-src 'self'가 없습니다: $CSP"
-  ok "API · 정적 화면 헤더 확인 (dist 서빙)"
+  for d in "default-src 'self'" "script-src 'self'" "connect-src 'self'" "frame-ancestors 'none'" "object-src 'none'"; do
+    echo "$CSP" | grep -qF "$d" || fail "/ 응답 CSP에 $d 가 없습니다: $CSP"
+  done
+  echo "$CSP" | grep -q "unsafe-eval" && fail "/ 응답 CSP에 unsafe-eval이 있습니다"
+  [ "$(header cache-control)" = "no-cache" ] || fail "index.html cache-control이 no-cache가 아닙니다: $(header cache-control)"
+  ASSET=$(grep -o 'src="/assets/[^"]*\.js"' "$WORK/resp.json" | head -1 | sed 's/^src="//; s/"$//')
+  if [ -n "$ASSET" ]; then
+    http GET "$ASSET" ""
+    [ "$HTTP_CODE" = "200" ] || fail "$ASSET HTTP $HTTP_CODE"
+    echo "$(header cache-control)" | grep -q immutable || fail "해시 자산 $ASSET 의 cache-control이 immutable이 아닙니다: $(header cache-control)"
+  fi
+  ok "API · 정적 화면 헤더 확인 ($STATIC 서빙 · 자산 ${ASSET:-없음})"
 else
-  ok "API 헤더 확인 (dist 없음 — 정적 화면 CSP는 건너뜀)"
+  ok "API 헤더 확인 ($STATIC/index.html 없음 — 정적 화면 CSP는 건너뜀)"
 fi
 
 # ─────────────────────────────────────────────

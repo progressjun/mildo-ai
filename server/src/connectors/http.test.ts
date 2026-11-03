@@ -1,14 +1,14 @@
 /** 커넥터 HTTP 래퍼: 타임아웃 · 재시도(429 · 5xx · 네트워크, Retry-After) · 쿼리 · 본문 · 헤더 소문자 · 로그 마스킹 · 테스트 중 실네트워크 차단 */
 import { describe, expect, it } from 'vitest';
-import { buildUrl, ConnectorHttpError, createConnectorHttp, expectOk, maskHeaders, maskUrl, parseRetryAfter, scrubSecrets, type FetchLike } from './http';
+import { buildUrl, ConnectorHttpError, createConnectorHttp, expectOk, isPrivateIp, maskHeaders, maskUrl, parseRetryAfter, scrubSecrets, urlProblem, type FetchLike } from './http';
 
-interface Call { url: string; method: string; headers: Record<string, string>; body?: string }
+interface Call { url: string; method: string; headers: Record<string, string>; body?: string; redirect?: string }
 
 function fakeFetch(responses: (Partial<{ status: number; body: string; headers: Record<string, string>; throws: string; hang: boolean }>)[]): { fetch: FetchLike; calls: Call[] } {
   const calls: Call[] = [];
   let i = 0;
   const fetch: FetchLike = async (url, init) => {
-    calls.push({ url, method: init.method, headers: init.headers, body: init.body });
+    calls.push({ url, method: init.method, headers: init.headers, body: init.body, redirect: init.redirect });
     const r = responses[Math.min(i++, responses.length - 1)];
     if (r.hang) {
       return new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
@@ -141,5 +141,72 @@ describe('비밀값 마스킹', () => {
   it('테스트 환경에서 fetch 주입 없이 호출하면 실제 네트워크 대신 오류', async () => {
     const h = createConnectorHttp({ log: () => undefined, maxRetries: 3, timeoutMs: 1000 });
     await expect(h.request({ method: 'GET', url: 'https://api.example.com/?token=abc' })).rejects.toMatchObject({ code: 'network_disabled_in_test' });
+  });
+});
+
+describe('주소 제한 (SSRF) · 리다이렉트 · 응답 크기', () => {
+  it('http · IP 주소 · localhost · 내부 이름 · 비기본 포트 · 사용자 정보가 든 주소는 fetch 전에 거부한다', async () => {
+    const { fetch, calls } = fakeFetch([{ status: 200, body: '{}' }]);
+    const { h, logs } = http(fetch);
+    const bad = [
+      'http://api.example.com/x',
+      'https://127.0.0.1/x',
+      'https://10.0.0.5/admin',
+      'https://169.254.169.254/latest/meta-data/',
+      'https://[::1]/x',
+      'https://localhost/x',
+      'https://metadata.google.internal/computeMetadata/v1/',
+      'https://printer.local/x',
+      'https://intranet/x',
+      'https://api.example.com:8443/x',
+      'https://user:pw@api.example.com/x',
+      'file:///etc/passwd',
+    ];
+    for (const url of bad) {
+      const err = await h.request({ method: 'GET', url }).catch((e) => e);
+      expect(err, url).toBeInstanceOf(ConnectorHttpError);
+      expect(err.code, url).toBe('blocked_url');
+    }
+    expect(calls).toHaveLength(0);
+    expect(logs.join('\n')).not.toContain('pw@');
+    // 공식 API 호스트 형태는 통과 (몰 ID 하위 도메인 포함)
+    await h.request({ method: 'GET', url: 'https://mymall.cafe24api.com/api/v2/admin/orders' });
+    await h.request({ method: 'GET', url: 'https://api.searchad.naver.com:443/stats' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('DNS 결과가 사설 · 루프백 주소면 거부 (DNS 재바인딩 · 내부 망 하위 도메인)', async () => {
+    const { fetch, calls } = fakeFetch([{ status: 200, body: '{}' }]);
+    const table: Record<string, string[]> = { 'evil.example.com': ['93.184.216.34', '10.1.2.3'], 'ok.example.com': ['93.184.216.34'] };
+    const { h } = http(fetch, { resolveHost: async (host) => table[host] ?? [] });
+    await expect(h.request({ method: 'GET', url: 'https://evil.example.com/x' })).rejects.toMatchObject({ code: 'blocked_url' });
+    await h.request({ method: 'GET', url: 'https://ok.example.com/x' });
+    expect(calls.map((c) => c.url)).toEqual(['https://ok.example.com/x']);
+    expect(isPrivateIp('172.16.0.1')).toBe(true);
+    expect(isPrivateIp('172.32.0.1')).toBe(false);
+    expect(isPrivateIp('::ffff:192.168.0.1')).toBe(true);
+    expect(isPrivateIp('fd00::1')).toBe(true);
+    expect(isPrivateIp('2404:6800:4004::200e')).toBe(false);
+    expect(urlProblem('https://api.searchad.naver.com/ncc/campaigns')).toBeNull();
+  });
+
+  it('리다이렉트는 따라가지 않고(redirect: manual) 3xx 응답을 그대로 돌려준다', async () => {
+    const { fetch, calls } = fakeFetch([{ status: 302, headers: { location: 'http://169.254.169.254/' } }]);
+    const { h } = http(fetch);
+    const r = await h.request({ method: 'GET', url: 'https://api.example.com/x' });
+    expect(calls[0].redirect).toBe('manual');
+    expect(r.status).toBe(302);
+    expect(calls).toHaveLength(1);
+    expect(() => expectOk(r, '조회')).toThrow(/HTTP 302/);
+  });
+
+  it('응답 크기 상한을 넘으면 재시도 없이 too_large', async () => {
+    const big = 'x'.repeat(2048);
+    const { fetch, calls } = fakeFetch([{ status: 200, body: big, headers: { 'content-type': 'text/plain' } }]);
+    const { h } = http(fetch, { maxResponseBytes: 1024 });
+    await expect(h.request({ method: 'GET', url: 'https://api.example.com/x' })).rejects.toMatchObject({ code: 'too_large' });
+    expect(calls).toHaveLength(1);
+    const { fetch: f2 } = fakeFetch([{ status: 200, body: '{}', headers: { 'content-type': 'application/json', 'content-length': '999999' } }]);
+    await expect(http(f2, { maxResponseBytes: 1024 }).h.request({ method: 'GET', url: 'https://api.example.com/y' })).rejects.toMatchObject({ code: 'too_large' });
   });
 });

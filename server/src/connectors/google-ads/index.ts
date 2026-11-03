@@ -54,7 +54,7 @@ export const settingsSchema = z.object({
   apiVersion: z.string().regex(/^v\d{2}$/).default('v26'),
   hourlyDays: z.number().int().min(0).max(35).default(35),
   keywordDays: z.number().int().min(0).max(92).default(31),
-  /** 키워드를 Dataset 키워드 목록에 넣는다 (광고그룹 이름 앞에 'Google ·') */
+  /** 키워드를 Dataset 키워드 목록에 넣는다 (media='google' · campaignId · adgroupId로 구분) */
   emitKeywords: z.boolean().default(true),
   /** 검색어(search_term_view) 수집 */
   searchTerms: z.boolean().default(true),
@@ -76,7 +76,7 @@ const between = (a: string, b: string) => `segments.date BETWEEN ${gaqlString(a)
 const METRICS = 'metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value';
 
 export const QUERIES = {
-  customer: 'SELECT customer.id, customer.descriptive_name, customer.currency_code, customer.time_zone FROM customer LIMIT 1',
+  customer: 'SELECT customer.id, customer.descriptive_name, customer.currency_code, customer.time_zone, customer.manager, customer.test_account FROM customer LIMIT 1',
   daily: (a: string, b: string) => `SELECT segments.date, ${METRICS} FROM customer WHERE ${between(a, b)}`,
   hourly: (a: string, b: string) => `SELECT segments.date, segments.hour, ${METRICS} FROM customer WHERE ${between(a, b)}`,
   campaigns:
@@ -91,7 +91,7 @@ export const QUERIES = {
   criterionNow: (cid: string, ag: string, crit: string) =>
     `SELECT ad_group_criterion.resource_name, ad_group_criterion.cpc_bid_micros, ad_group_criterion.status, campaign.bidding_strategy_type FROM ad_group_criterion WHERE ad_group_criterion.resource_name = ${gaqlString(`customers/${cid}/adGroupCriteria/${ag}~${crit}`)}`,
   budgetNow: (campaignId: string) =>
-    `SELECT campaign.id, campaign_budget.resource_name, campaign_budget.amount_micros, campaign_budget.explicitly_shared, campaign_budget.reference_count, campaign_budget.period FROM campaign WHERE campaign.id = ${Number(campaignId)}`,
+    `SELECT campaign.id, campaign_budget.resource_name, campaign_budget.amount_micros, campaign_budget.explicitly_shared, campaign_budget.reference_count, campaign_budget.period FROM campaign WHERE campaign.id = ${String(campaignId).replace(/\D/g, '')}`,
 };
 
 /* ------------------------------ 수집 ------------------------------ */
@@ -323,6 +323,7 @@ export const connector: ConnectorDef = {
       if (c?.currencyCode && c.currencyCode !== 'KRW') notes.push(`통화 ${c.currencyCode}(원 환산 안 함)`);
       if (c?.timeZone && c.timeZone !== 'Asia/Seoul') notes.push(`시간대 ${c.timeZone}(KST 아님)`);
       if (c?.manager) notes.push('관리자 계정입니다 — 성과는 하위 광고 계정 고객 ID로 연결해 주세요');
+      if (c?.testAccount) notes.push('테스트 계정입니다 (실제 집행 데이터 아님)');
       const name = c?.descriptiveName ?? g.customerId;
       return {
         ok: !c?.manager,

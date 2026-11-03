@@ -87,11 +87,17 @@ export function useNotifyData(ws: string | null): NotifyData {
     setLoading(true);
     void reload('init');
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let chTimer: ReturnType<typeof setTimeout> | null = null;
     const offInc = onServerEvent('incident', () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => { void reload('runs'); void reload('log'); }, 1500);
     });
-    return () => { offInc(); if (timer) clearTimeout(timer); };
+    // 'notify' = 다른 사용자의 채널 생성 · 수정 · 삭제 · 테스트 발송, 서버의 발송 결과 (id = 채널 id)
+    const offNotify = onServerEvent('notify', () => {
+      if (chTimer) clearTimeout(chTimer);
+      chTimer = setTimeout(() => { void reload('channels'); void reload('log'); }, 800);
+    });
+    return () => { offInc(); offNotify(); if (timer) clearTimeout(timer); if (chTimer) clearTimeout(chTimer); };
   }, [ws, reload]);
 
   useEffect(() => { if (ws) void loadLog().catch((e) => setError(errText(e))); }, [ws, filter, loadLog]);
@@ -136,7 +142,7 @@ export default function View() {
           <span className="xs muted">{d.demo ? '예시 상태 · 읽기 전용' : `워크스페이스 ${saas.workspace?.brand_name ?? saas.workspace?.name ?? ''} · 권한 ${canConfigure ? '채널 관리 가능' : '읽기 전용 (채널 관리는 PM 이상)'}`}</span>
         </>}
         actions={<>
-          <Pill tone={regime.off ? 'dark' : 'neutral'} icon="calendar">{regime.off ? `${regime.label} · 당번 ${regime.duty?.role ?? '—'}` : '평일 운영 체계'}</Pill>
+          <Pill tone={regime.off ? 'dark' : 'neutral'} icon="calendar">{regime.off ? `${regime.label}${regime.forced ? ' (설정: 당번 체계 강제)' : ''} · 당번 ${regime.duty?.role ?? '—'}` : '평일 운영 체계'}</Pill>
           {!d.demo ? <Button size="sm" icon="refresh" onClick={once(() => void d.reload('all'))}>새로고침</Button> : null}
         </>}
       />
@@ -156,7 +162,7 @@ export default function View() {
         <Stat label="인지 목표 (P1 · 주말 · 공휴일)" value={`${d.policy.sla.P1.label.ack} · ${d.policy.weekendAckMin}분`} foot={<span className="xs muted">1차 조치 {d.policy.sla.P1.label.action} · 결과 보고 {d.policy.sla.P1.label.report} (P1 기준)</span>} />
       </div>
 
-      {!d.loading ? <CoverageNotes sum={sum} runStale={runStale} lastRun={lastRun} /> : null}
+      {!d.loading ? <CoverageNotes sum={sum} runStale={runStale} lastRun={lastRun} demo={d.demo} /> : null}
 
       <Tabs<TabId> value={tab} onChange={setTab} tabs={[
         { id: 'channels', label: '채널', badge: sum.failing.length ? <Pill tone="critical">{sum.failing.length}</Pill> : undefined },
@@ -175,8 +181,16 @@ export default function View() {
   );
 }
 
-function CoverageNotes({ sum, runStale, lastRun }: { sum: ReturnType<typeof summarize>; runStale: boolean; lastRun?: ScanRun }) {
-  const notes: { tone: 'warning' | 'critical'; title: string; body: string }[] = [];
+export function CoverageNotes({ sum, runStale, lastRun, demo }: { sum: ReturnType<typeof summarize>; runStale: boolean; lastRun?: ScanRun; demo: boolean }) {
+  const notes: { tone: 'warning' | 'critical' | 'info'; title: string; body: string }[] = [];
+  if (!demo && (lastRun?.dataMode === 'demo' || lastRun?.dataMode === 'mixed')) {
+    const all = lastRun.dataMode === 'demo';
+    notes.push({
+      tone: sum.testCovered ? 'info' : 'warning',
+      title: all ? '최근 감지가 TEST DATA로 돌았습니다' : '일부 매체가 TEST DATA입니다',
+      body: `${all ? '감지한 이슈는 전부' : '출처가 데모뿐인 매체의 이슈는'} TEST DATA로 표시되어 '테스트 데이터 이슈' 이벤트를 켠 채널로만 갑니다 (기준: 마지막 감지의 데이터 출처 ${all ? 'demo' : 'demo + 실연동'}). ${sum.testCovered ? '그 이벤트를 켠 채널이 있어 시연 알림은 나갑니다.' : '지금은 그 이벤트를 켠 채널이 없어 TEST DATA 이슈 알림은 나가지 않습니다.'} 실데이터를 연결하면 '새 이슈' 채널로 갑니다.`,
+    });
+  }
   if (!sum.p1Covered) notes.push({ tone: 'critical', title: '새 이슈를 받을 채널이 없습니다', body: "서버가 이슈를 감지해도 아무에게도 알림이 가지 않습니다. '새 이슈' 이벤트를 켠 채널을 하나 이상 두세요 (기준: 켜진 채널 중 이벤트 '새 이슈' 0개)." });
   if (sum.p1Covered && !sum.slaCovered) notes.push({ tone: 'warning', title: 'SLA 기한 초과 에스컬레이션을 받을 채널이 없습니다', body: "기한이 지나면 타임라인에는 기록되지만 백업 · PM에게 알림이 가지 않습니다. 백업 · PM이 보는 채널에 'SLA 기한 초과'를 켜세요." });
   for (const c of sum.failing) notes.push({ tone: 'warning', title: `${c.name} · 마지막 발송 실패`, body: `${c.lastError ?? '사유 미상'} · 5xx · 시간 초과는 최대 4회 자동 재시도, 4xx(주소 삭제 · 권한)는 재시도하지 않으니 채널 설정을 확인하세요.` });

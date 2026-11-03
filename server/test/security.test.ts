@@ -1,6 +1,7 @@
 /**
- * devops: 보안 헤더 · 요청 id · 정적 파일 캐시(304 포함) · /api/ready(외부 요약 · 내부 세부) · 워커 하트비트 · 속도 제한 ·
- * 경로 인코딩 우회 차단 · 로그인 잠금(익숙한 IP · 재설정 후 초기화) · SSE 우아한 종료 · 키 회전 도구
+ * devops: 보안 헤더(hijack 스트림 포함) · 요청 id(Fastify reqId와 같은 값) · 정적 파일 캐시(304 포함) · /api/ready(외부 요약 · 내부 세부) ·
+ * 워커 하트비트(worker.ts 하트비트 · 트리거 · CLI 제외) · 스케줄러 판정 · 속도 제한(키 상한) · 경로 인코딩 우회 차단 ·
+ * 로그인 잠금(익숙한 IP · 재설정 후 초기화) · SSE · AI 스트림 우아한 종료 · 키 회전 도구
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
@@ -9,9 +10,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTestApp, TEST_PASSWORD, type TestApp } from './app';
 import {
-  API_CSP, HSTS, PERMISSIONS_POLICY, WindowLimiter, appCsp, clientIp, decodedPath, isInternalIp, loginLockState, parseCspSources, rateKeyOf, readiness,
-  routePath, securityOptionsFromEnv, securityPlugin, summarizeReadiness,
+  API_CSP, HSTS, PERMISSIONS_POLICY, SHUTDOWN_AI_EVENT, WindowLimiter, appCsp, clientIp, decodedPath, isInternalIp, loginLockState, parseCspSources, rateKeyOf,
+  readiness, requestIdFor, routePath, securityOptionsFromEnv, securityPlugin, summarizeReadiness,
 } from '../src/http/security';
+import { registerAllJobs } from '../src/domains';
+import { runScheduleNow, scheduleContext } from '../src/jobs/scheduler';
+import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { sha256 } from '../src/lib/ids';
 import { _resetJobsForTest, claim, drain, enqueue, registerJob, runJob } from '../src/jobs/queue';
 import { decryptSecret, encryptSecret } from '../src/lib/crypto';
@@ -78,6 +83,54 @@ describe('보안 헤더 (API)', () => {
     expect(String(bad.headers['x-request-id'])).toMatch(UUID);
     const two = await Promise.all([t.anon().get('/api/health'), t.anon().get('/api/health')]);
     expect(two[0].headers['x-request-id']).not.toBe(two[1].headers['x-request-id']);
+    // 길이 규칙은 app.ts genReqId와 같다(8~64자) — 65자는 이어 쓰지 않는다(Fastify reqId와 어긋나지 않게)
+    const id64 = 'a'.repeat(64);
+    expect((await t.anon().raw({ method: 'GET', url: '/api/health', headers: { 'x-request-id': id64 } })).headers['x-request-id']).toBe(id64);
+    const long = await t.anon().raw({ method: 'GET', url: '/api/health', headers: { 'x-request-id': 'a'.repeat(65) } });
+    expect(String(long.headers['x-request-id'])).toMatch(UUID);
+  });
+
+  it('요청 id = Fastify 요청 id (로그의 reqId와 응답 헤더가 같은 값)', async () => {
+    const mini = Fastify({ genReqId: () => 'gen-req-0001-abcdef' });
+    mini.decorate('ctx', { db: t.db, config: t.config, events: t.events });
+    await mini.register(securityPlugin);
+    mini.get('/api/whoami', async (req) => ({ id: req.id, requestId: req.requestId }));
+    await mini.ready();
+    try {
+      const r = await mini.inject({ method: 'GET', url: '/api/whoami' });
+      expect(r.json()).toEqual({ id: 'gen-req-0001-abcdef', requestId: 'gen-req-0001-abcdef' });
+      expect(r.headers['x-request-id']).toBe('gen-req-0001-abcdef');
+    } finally {
+      await mini.close();
+    }
+    expect(requestIdFor({ headers: { 'x-request-id': ['edge-0000-1111', 'x'] }, id: 'other-id-000' })).toBe('edge-0000-1111');
+    expect(requestIdFor({ headers: {}, id: 'req-1' })).toMatch(UUID); // Fastify 기본 id(req-1)는 형식이 짧아 새로 만든다
+  });
+
+  it('reply.hijack()으로 직접 쓰는 스트림(SSE)에도 보안 헤더 · 요청 id가 실린다', async () => {
+    const mini = Fastify();
+    mini.decorate('ctx', { db: t.db, config: { ...t.config, secureCookies: true }, events: t.events });
+    await mini.register(securityPlugin);
+    mini.get('/api/w/:ws/events', async (_req, reply) => {
+      reply.hijack();
+      reply.raw.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform' });
+      reply.raw.end('event: hello\ndata: {}\n\n');
+    });
+    await mini.ready();
+    try {
+      const r = await mini.inject({ method: 'GET', url: '/api/w/abc/events', headers: { 'x-request-id': 'sse-req-0001' } });
+      expect(r.statusCode).toBe(200);
+      expect(r.headers['x-request-id']).toBe('sse-req-0001');
+      expect(r.headers['content-security-policy']).toBe(API_CSP);
+      expect(r.headers['x-content-type-options']).toBe('nosniff');
+      expect(r.headers['x-frame-options']).toBe('DENY');
+      expect(r.headers['strict-transport-security']).toBe(HSTS);
+      // 라우트가 정한 값은 그대로(원시 헤더보다 writeHead 값이 우선)
+      expect(r.headers['cache-control']).toBe('no-cache, no-transform');
+      expect(r.headers['content-type']).toContain('text/event-stream');
+    } finally {
+      await mini.close();
+    }
   });
 
   it('라우트가 정한 cache-control은 덮어쓰지 않는다 (no-store는 기본값일 때만)', async () => {
@@ -208,6 +261,14 @@ describe('/api/ready · 워커 하트비트', () => {
     const hb = await t.db.query<{ worker_id: string; jobs_seen: number; last_status: string }>('SELECT worker_id, jobs_seen, last_status FROM worker_heartbeats');
     expect(hb.rows).toEqual([{ worker_id: 'drain', jobs_seen: 2, last_status: 'done' }]); // running + done
 
+    // DB CLI(run-jobs = drain)가 처리한 기록만 있으면 워커가 떠 있다는 근거가 아니다 → 여전히 no_activity(degraded)
+    const cliOnly = await t.anon().get('/api/ready');
+    expect(cliOnly.json.status).toBe('degraded');
+    expect(cliOnly.json.checks.worker).toMatchObject({ status: 'no_activity', lastActivityAt: null, lastHeartbeatAt: null });
+    expect(Date.parse(cliOnly.json.checks.worker.lastFinishedAt)).not.toBeNaN(); // 큐는 움직였다(참고 값)
+    expect(cliOnly.json.checks.worker.workers).toEqual([expect.objectContaining({ id: 'drain', cli: true })]);
+    expect(cliOnly.json.notes.join(' ')).toContain('DB CLI run-jobs 처리 기록만');
+
     // 워커 레인 이름(worker-1#0)은 # 앞부분으로 묶는다 · 최종 실패도 하트비트
     await enqueue(t.db, { type: 'test.ops.fail', workspaceId: t.ws, maxAttempts: 1 });
     const job = await claim(t.db, 'worker-7#1', ['test.ops.fail']);
@@ -227,8 +288,35 @@ describe('/api/ready · 워커 하트비트', () => {
     expect(w.ok).toBe(true);
     expect(w.failedJobs24h).toBe(1);
     expect(w.workers.map((x: { id: string }) => x.id).sort()).toEqual(['drain', 'worker-7']);
+    expect(w.workers.find((x: { id: string }) => x.id === 'worker-7').cli).toBe(false);
     expect(Date.parse(w.lastActivityAt)).not.toBeNaN();
     expect(r.json.notes.join(' ')).toContain('최종 실패 1건');
+  });
+
+  it('워커 프로세스가 60초마다 쓰는 하트비트(worker.ts)만 있어도 생존으로 본다 — 잡이 없는 한가한 시간', async () => {
+    // 잡 기록 · 트리거 하트비트를 모두 오래된 것으로 만든다
+    await t.db.query(`UPDATE jobs SET finished_at = now() - interval '2 hours', locked_at = now() - interval '2 hours'`);
+    await t.db.query(`UPDATE worker_heartbeats SET last_seen_at = now() - interval '2 hours'`);
+    const before = await t.anon().get('/api/ready');
+    expect(before.json.checks.worker.status).toBe('stale');
+    // worker.ts의 하트비트 SQL 그대로
+    await t.db.query(
+      `INSERT INTO worker_heartbeats (worker_id, last_seen_at, last_status) VALUES ($1, now(), 'idle')
+       ON CONFLICT (worker_id) DO UPDATE SET last_seen_at = now()`,
+      ['worker-idle-host'],
+    );
+    const r = await t.anon().get('/api/ready');
+    expect(r.json.status).toBe('ready');
+    expect(r.json.checks.worker).toMatchObject({ status: 'ok', ok: true });
+    expect(r.json.checks.worker.activityAgeSec).toBeLessThan(60);
+    expect(r.json.checks.worker.lastHeartbeatAt).toBe(r.json.checks.worker.lastActivityAt);
+    expect(r.json.checks.worker.basis).toContain('60초마다');
+    // 같은 하트비트 행이라도 CLI 이름(drain)이면 세지 않는다
+    await t.db.query(`DELETE FROM worker_heartbeats WHERE worker_id = 'worker-idle-host'`);
+    await t.db.query(`UPDATE worker_heartbeats SET last_seen_at = now() WHERE worker_id = 'drain'`);
+    expect((await t.anon().get('/api/ready')).json.checks.worker.status).toBe('stale');
+    await t.db.query(`UPDATE worker_heartbeats SET last_seen_at = now(), first_seen_at = now()`);
+    await t.db.query(`UPDATE jobs SET finished_at = now() WHERE finished_at IS NOT NULL`);
   });
 
   it('재시도(실패 → 대기열 복귀)는 하트비트를 늘리지 않고 잡 처리를 막지 않는다', async () => {
@@ -249,7 +337,7 @@ describe('/api/ready · 워커 하트비트', () => {
     expect((await t.db.query<{ status: string }>('SELECT status FROM jobs WHERE id = $1', [id])).rows[0].status).toBe('done');
   });
 
-  it('밀린 잡이 있는데 5분 넘게 처리가 없으면 stalled, 오래 조용하면 stale (둘 다 degraded)', async () => {
+  it('밀린 잡이 있는데 5분 넘게 큐가 움직이지 않으면 stalled, 오래 조용하면 stale (둘 다 degraded)', async () => {
     await t.db.query(`UPDATE jobs SET finished_at = now() - interval '40 minutes', locked_at = now() - interval '40 minutes'`);
     await t.db.query(`UPDATE worker_heartbeats SET last_seen_at = now() - interval '40 minutes'`);
     const overdue = await enqueue(t.db, { type: 'test.ops.noop', workspaceId: t.ws, runAt: new Date(Date.now() - 10 * 60_000) });
@@ -260,18 +348,77 @@ describe('/api/ready · 워커 하트비트', () => {
     expect(a.json.checks.worker.activityAgeSec).toBeGreaterThanOrEqual(39 * 60);
     expect(a.json.notes.join(' ')).toContain('대기 잡 1건');
 
+    // 하트비트 타이머가 살아 있어도(이벤트 루프는 돌지만 잡 레인이 멈춤) 큐가 안 움직이면 stalled — 하트비트가 멈춤을 가리지 않는다
+    await t.db.query(`UPDATE worker_heartbeats SET last_seen_at = now()`);
+    const hung = await t.anon().get('/api/ready');
+    expect(hung.json.checks.worker.status).toBe('stalled');
+    expect(hung.json.status).toBe('degraded');
+
     await t.db.query('DELETE FROM jobs WHERE id = $1', [overdue]);
+    await t.db.query(`UPDATE worker_heartbeats SET last_seen_at = now() - interval '40 minutes'`);
     const b = await t.anon().get('/api/ready');
     expect(b.json.checks.worker.status).toBe('stale');
     expect(b.json.status).toBe('degraded');
 
-    // 활동이 최근이면 밀린 잡이 있어도 busy(정상 범위)
+    // 큐가 최근에 움직였으면 밀린 잡이 있어도 busy(정상 범위)
     await t.db.query(`UPDATE worker_heartbeats SET last_seen_at = now()`);
+    await t.db.query(`UPDATE jobs SET finished_at = now() WHERE id = (SELECT max(id) FROM jobs WHERE status = 'done')`);
     const again = await enqueue(t.db, { type: 'test.ops.noop', workspaceId: t.ws, runAt: new Date(Date.now() - 10 * 60_000) });
     const c = await t.anon().get('/api/ready');
     expect(c.json.checks.worker.status).toBe('busy');
     expect(c.json.status).toBe('ready');
-    await t.db.query('DELETE FROM jobs WHERE id = $1', [again]);
+
+    // 긴 잡이 레인을 차지(실행 중 · 15분 안에 잡음)하고 하트비트가 살아 있으면 큐가 멈춰 보여도 busy
+    await t.db.query(`UPDATE jobs SET finished_at = now() - interval '40 minutes' WHERE finished_at IS NOT NULL`);
+    const long = await enqueue(t.db, { type: 'test.ops.long', workspaceId: t.ws });
+    await t.db.query(`UPDATE jobs SET status = 'running', locked_by = 'worker-9#0', locked_at = now() - interval '8 minutes' WHERE id = $1`, [long]);
+    const d = await t.anon().get('/api/ready');
+    expect(d.json.checks.worker).toMatchObject({ status: 'busy', runningJobs: 1, stuckJobs: 0 });
+
+    // 15분 넘게 잠긴 잡만 남았으면(워커가 회수하지 못함) stalled + 메모
+    await t.db.query(`UPDATE jobs SET locked_at = now() - interval '20 minutes' WHERE id = $1`, [long]);
+    const e = await t.anon().get('/api/ready');
+    expect(e.json.checks.worker).toMatchObject({ status: 'stalled', stuckJobs: 1 });
+    expect(e.json.notes.join(' ')).toContain('15분 넘게 잠긴 실행 중 잡 1건');
+    await t.db.query('DELETE FROM jobs WHERE id = ANY($1)', [[again, long]]);
+    await t.db.query(`DELETE FROM worker_heartbeats WHERE worker_id = 'worker-9'`);
+    await t.db.query(`UPDATE jobs SET finished_at = now() WHERE finished_at IS NOT NULL`);
+    expect((await t.anon().get('/api/ready')).json.checks.worker.status).toBe('ok');
+  });
+
+  it('스케줄러: 워커는 살아 있는데 예약 감지 잡(alerts.scan)이 25분 넘게 안 생기면 no_scheduler(degraded) — 실제 alerts.scan 스케줄로 회복', async () => {
+    // 워커 · 워크스페이스가 판정 기간보다 오래 떠 있었던 상황
+    await t.db.query(`UPDATE worker_heartbeats SET first_seen_at = now() - interval '2 hours', last_seen_at = now()`);
+    await t.db.query(`UPDATE workspaces SET created_at = now() - interval '2 hours'`);
+    const a = await t.anon().get('/api/ready');
+    expect(a.json.status).toBe('degraded');
+    expect(a.json.checks.worker).toMatchObject({ status: 'no_scheduler', ok: false, lastScheduledAt: null, schedulerStaleAfterMin: 25 });
+    expect(a.json.notes.join(' ')).toContain('SCHEDULER=on');
+
+    // 갓 뜬 워커(첫 하트비트가 25분 안)면 첫 예약 시각 전이라 판정을 미룬다
+    await t.db.query(`UPDATE worker_heartbeats SET first_seen_at = now() - interval '3 minutes'`);
+    expect((await t.anon().get('/api/ready')).json.checks.worker.status).toBe('ok');
+    await t.db.query(`UPDATE worker_heartbeats SET first_seen_at = now() - interval '2 hours'`);
+
+    // 수동 감지(trigger가 schedule이 아님)는 스케줄러 생존 근거가 아니다
+    const manual = await enqueue(t.db, { type: 'alerts.scan', workspaceId: t.ws, payload: { trigger: 'manual' } });
+    expect((await t.anon().get('/api/ready')).json.checks.worker.status).toBe('no_scheduler');
+    await t.db.query('DELETE FROM jobs WHERE id = $1', [manual]);
+
+    // alerts 도메인의 실제 스케줄 함수가 만드는 잡으로 판정한다 (잡 계약: type alerts.scan · payload.trigger 'schedule')
+    registerAllJobs();
+    await runScheduleNow('alerts.scan', scheduleContext(t.db, t.config));
+    const b = await t.anon().get('/api/ready');
+    expect(b.json.status).toBe('ready');
+    expect(b.json.checks.worker.status).toBe('ok');
+    expect(Date.parse(b.json.checks.worker.lastScheduledAt)).not.toBeNaN();
+
+    // 오래된 예약 잡만 있으면 다시 no_scheduler
+    await t.db.query(`UPDATE jobs SET created_at = now() - interval '40 minutes' WHERE type = 'alerts.scan'`);
+    expect((await t.anon().get('/api/ready')).json.checks.worker.status).toBe('no_scheduler');
+    await t.db.query(`DELETE FROM jobs WHERE type = 'alerts.scan'`);
+    await t.db.query(`UPDATE worker_heartbeats SET first_seen_at = now()`);
+    expect((await t.anon().get('/api/ready')).json.checks.worker.status).toBe('ok');
   });
 
   it('외부 IP에는 판정만(워커 이름 · 워크스페이스 수 · 파일명 · 오류 문구 없음), 내부망 · READY_TOKEN에는 세부 항목', async () => {
@@ -321,8 +468,9 @@ describe('/api/ready · 워커 하트비트', () => {
       checks: {
         db: { ok: false, latencyMs: null, error: 'password authentication failed for user "mildo" at 10.0.0.5' },
         migrations: { ok: false, expected: 9, applied: 0, pending: ['001_core.sql'], unknownApplied: [], error: 'x' },
-        worker: { ok: false, status: 'unknown' as const, staleAfterMin: 15, lastActivityAt: null, lastFinishedAt: null, lastHeartbeatAt: null, activityAgeSec: null,
-          runningJobs: 0, queuedDue: 0, overdueJobs: 0, failedJobs24h: 3, activeWorkspaces: 12, workers: [], basis: 'b', error: 'e' },
+        worker: { ok: false, status: 'unknown' as const, staleAfterMin: 15, schedulerStaleAfterMin: 25, lastActivityAt: '2026-11-03T00:00:00.000Z', lastFinishedAt: null,
+          lastHeartbeatAt: null, activityAgeSec: 9, lastScheduledAt: '2026-11-03T00:00:00.000Z', runningJobs: 2, queuedDue: 0, overdueJobs: 0, stuckJobs: 1, failedJobs24h: 3, activeWorkspaces: 12,
+          workers: [{ id: 'worker-secret-host', lastSeenAt: '2026-11-03T00:00:00.000Z', jobsSeen: 1, lastJobType: 'x', cli: false }], basis: 'b', error: 'e' },
       },
       notes: ['DB: 연결할 수 없습니다 (password authentication failed ... 10.0.0.5)'],
     };
@@ -331,7 +479,9 @@ describe('/api/ready · 워커 하트비트', () => {
     const text = JSON.stringify(s);
     expect(text).not.toContain('10.0.0.5');
     expect(text).not.toContain('001_core');
-    expect(s.checks.worker.activeWorkspaces).toBe(0);
+    expect(text).not.toContain('worker-secret-host');
+    expect(text).not.toContain('2026-11-03T00:00:00');
+    expect(s.checks.worker).toMatchObject({ activeWorkspaces: 0, stuckJobs: 0, runningJobs: 0, workers: [], lastScheduledAt: null, status: 'unknown', ok: false });
     expect(s.notes).toHaveLength(1);
   });
 
@@ -443,7 +593,7 @@ describe('속도 제한 · 로그인 잠금 (환경변수로 낮춘 한도)', ()
     const locked = await login('VIEWER@test.local', TEST_PASSWORD);
     expect(locked.status).toBe(429);
     expect(locked.json.error.code).toBe('login_locked');
-    expect(locked.json.error.message).toContain('로그인 실패가 15분 안에 3회를 넘어');
+    expect(locked.json.error.message).toContain('로그인 실패가 15분 안에 3회에 이르러');
     expect(Number(locked.headers['retry-after'])).toBeGreaterThan(0);
     expect(locked.headers['set-cookie']).toBeUndefined();
     const logs = await r.db.query<{ actor: string; detail: { failures: number } }>(`SELECT actor, detail FROM audit_log WHERE action = 'auth.login_locked'`);
@@ -592,11 +742,80 @@ describe('우아한 종료', () => {
       expect(res).not.toBeNull();
       expect(res!.body).toContain('event: hello');
       expect(res!.body).toContain('retry: 3000');
+      // 실제 SSE 라우트(events/routes.ts, hijack)에도 헤더가 붙는다
+      expect(String(res!.headers['x-request-id'])).toMatch(UUID);
+      expect(res!.headers['x-content-type-options']).toBe('nosniff');
+      expect(res!.headers['content-security-policy']).toBe(API_CSP);
       await closing;
     } finally {
       await g.events.stop();
       await g.testDb.dispose();
     }
+  });
+});
+
+describe('우아한 종료 — AI 응답 스트림', () => {
+  /** AI 라우트와 같은 모양(hijack → SSE)으로 delayMs 뒤 done을 보내는 가짜 라우트를 띄운다 */
+  async function aiServer(env: Record<string, string>, delayMs: number) {
+    const seen: { closedBeforeFinish?: boolean } = {};
+    const app = await withEnv(env, async () => {
+      const f = Fastify();
+      f.decorate('ctx', { db: t.db, config: t.config, events: t.events });
+      await f.register(securityPlugin);
+      f.post('/api/w/:ws/ai/messages', async (_req, reply) => {
+        reply.hijack();
+        const res = reply.raw;
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' });
+        res.on('close', () => {
+          seen.closedBeforeFinish = !res.writableFinished; // ai/index.ts는 이때 Anthropic 스트림을 중단한다
+        });
+        res.write('event: text\ndata: {"delta":"부분"}\n\n');
+        setTimeout(() => {
+          if (!res.writableEnded && !res.destroyed) res.end('event: done\ndata: {"stop_reason":"end_turn"}\n\n');
+        }, delayMs);
+      });
+      await f.listen({ port: 0, host: '127.0.0.1' });
+      return f;
+    });
+    const port = (app.server.address() as AddressInfo).port;
+    const body = new Promise<{ text: string; headers: Record<string, unknown> }>((ok) => {
+      const rq = httpRequest({ host: '127.0.0.1', port, method: 'POST', path: '/api/w/abc/ai/messages', headers: { 'content-type': 'application/json' } }, (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => (text += c));
+        res.on('close', () => ok({ text, headers: res.headers }));
+      });
+      rq.on('error', () => ok({ text: '', headers: {} }));
+      rq.end('{}');
+    });
+    // 첫 이벤트가 올 때까지 기다린 뒤 종료를 시작한다
+    await new Promise((r) => setTimeout(r, 100));
+    return { app, body, seen };
+  }
+
+  it('유예 시간 안에 끝나는 답은 끝까지 보낸 뒤 닫는다', async () => {
+    const { app, body, seen } = await aiServer({ SHUTDOWN_STREAM_GRACE_MS: '3000' }, 400);
+    const started = Date.now();
+    await app.close();
+    const r = await body;
+    expect(r.text).toContain('event: done');
+    expect(r.text).not.toContain('server_restarting');
+    expect(seen.closedBeforeFinish).toBe(false);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    expect(r.headers['x-content-type-options']).toBe('nosniff'); // hijack 응답에도 보안 헤더
+  });
+
+  it('유예 시간을 넘기면 error 이벤트(server_restarting)를 보내고 끊는다 → 라우트가 업스트림을 중단할 수 있다', async () => {
+    const { app, body, seen } = await aiServer({ SHUTDOWN_STREAM_GRACE_MS: '150' }, 10_000);
+    const started = Date.now();
+    await app.close();
+    expect(Date.now() - started).toBeLessThan(5000);
+    const r = await body;
+    expect(r.text).toContain('event: text');
+    expect(r.text).toContain(SHUTDOWN_AI_EVENT.trim());
+    expect(r.text).toContain('서버를 다시 시작하는 중');
+    expect(r.text).not.toContain('event: done');
+    expect(seen.closedBeforeFinish).toBe(true);
   });
 });
 
@@ -613,6 +832,18 @@ describe('순수 함수', () => {
     now += 30_001;
     expect(l.hit('a').ok).toBe(true);
     expect(l.size).toBe(1); // b는 만료되어 정리
+  });
+
+  it('WindowLimiter: 키 수 상한 — 한 창 안에 키를 쌓아도 상한을 넘지 않고, 가장 먼저 들어온 키부터 버린다', () => {
+    const now = 5_000_000;
+    const l = new WindowLimiter(2, 60_000, () => now, 3);
+    l.hit('k1'); l.hit('k1'); l.hit('k2'); l.hit('k3');
+    expect(l.hit('k1').ok).toBe(false); // 아직 상한 전: k1은 3회째로 막힘
+    for (let i = 0; i < 50; i++) l.hit(`spray-${i}`);
+    expect(l.size).toBe(3);
+    // 버려진 k1은 새 창으로 다시 센다(대신 메모리는 상한 안)
+    expect(l.hit('k1').ok).toBe(true);
+    expect(l.size).toBe(3);
   });
 
   it('rateKeyOf: IPv4-mapped · 포트 · IPv6 /64', () => {
@@ -662,7 +893,12 @@ describe('순수 함수', () => {
 
   it('환경변수 기본값: 프로덕션은 켜짐, 테스트는 꺼짐, 잘못된 값은 기본값', () => {
     const prod = securityOptionsFromEnv({}, 'production');
-    expect(prod).toMatchObject({ apiRateMax: 600, apiRateWindowMs: 60_000, authRateMax: 20, loginFailMax: 10, loginFailWindowMin: 15, proxyHops: 1, workerStaleMin: 15 });
+    expect(prod).toMatchObject({
+      apiRateMax: 600, apiRateWindowMs: 60_000, authRateMax: 20, loginFailMax: 10, loginFailWindowMin: 15, proxyHops: 1, workerStaleMin: 15,
+      schedulerStaleMin: 25, shutdownStreamGraceMs: 20_000,
+    });
+    // 스케줄러 판정은 예약 간격(10분)보다 짧게 둘 수 없다
+    expect(securityOptionsFromEnv({ READY_SCHEDULER_STALE_MIN: '5' }, 'production').schedulerStaleMin).toBe(11);
     const test = securityOptionsFromEnv({}, 'test');
     expect(test).toMatchObject({ apiRateMax: 0, authRateMax: 0, loginFailMax: 0 });
     const odd = securityOptionsFromEnv({ API_RATE_LIMIT_MAX: '-3', TRUST_PROXY_HOPS: '0' }, 'production');

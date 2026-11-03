@@ -200,7 +200,9 @@ export function sourceModeOf(meta: DatasetMeta | undefined): { mode: 'demo' | 'l
   const demo = meta.sources.filter((s) => s.kind === 'demo').map((s) => channelLabel(s.channel));
   if (meta.mode === 'demo') return { mode: 'demo', label: 'TEST DATA', basis: `모든 매체 · 채널이 데모 출처 (${demo.length}개)` };
   if (meta.mode === 'mixed') return { mode: 'mixed', label: '일부 LIVE', basis: `실데이터 ${[...new Set(live)].join(' · ')} / 데모 ${[...new Set(demo)].join(' · ')}` };
-  return { mode: 'live', label: 'LIVE DATA', basis: live.length ? `실데이터 ${[...new Set(live)].join(' · ')}` : '연결된 출처 없음' };
+  // 출처가 하나도 없으면 LIVE라고 부르지 않는다 (플랫폼 배지와 같은 '데이터 없음')
+  if (!live.length) return { mode: 'live', label: '데이터 없음', basis: '연결된 출처 없음 — 매체 API를 연결하거나 CSV를 올리세요' };
+  return { mode: 'live', label: 'LIVE DATA', basis: `실데이터 ${[...new Set(live)].join(' · ')}` };
 }
 
 /** 출처별 최신 날짜가 기준일 전날보다 오래되면 지연 */

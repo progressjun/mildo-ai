@@ -1122,8 +1122,8 @@ export function parseAiAnswer(text: string): LiveParse {
   };
 }
 
-/** Claude를 쓸 수 없게 된 응답 코드 — 버튼을 끄고 다시 요청하지 않는다 (no_backend: 거부 직후 백엔드가 규칙 엔진으로 바뀐 경우) */
-export const DENIED_CODES: ReadonlySet<string> = new Set(['not_granted', 'sampling_disabled', 'no_backend']);
+/** Claude를 쓸 수 없게 된 응답 코드 — 버튼을 끄고 다시 요청하지 않는다 (no_backend: 거부 직후 백엔드가 규칙 엔진으로 바뀐 경우 · 서버 모드: ai_not_configured 키 없음 · ai_disabled AI 꺼짐 · forbidden 권한 없음) */
+export const DENIED_CODES: ReadonlySet<string> = new Set(['not_granted', 'sampling_disabled', 'no_backend', 'ai_not_configured', 'ai_disabled', 'forbidden']);
 
 export function liveVerdict(r: LiveParse | null | undefined): Verdict {
   if (!r) return { id: 'none', label: '미진단', tone: 'outline', basis: 'Claude 연결 시 버튼으로 진단' };

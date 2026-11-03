@@ -20,6 +20,7 @@ describe('데이터 연결 모델', () => {
     expect(mixed).toMatchObject({ mode: 'mixed', label: '일부 LIVE' });
     expect(mixed.basis).toBe('실데이터 Google / 데모 Meta');
     expect(sourceModeOf({ mode: 'live', builtAt: '', sources: [s('csv', 'brandstore')] }).basis).toBe('실데이터 네이버 브랜드스토어');
+    expect(sourceModeOf({ mode: 'live', builtAt: '', sources: [] })).toMatchObject({ mode: 'live', label: '데이터 없음' });
   });
 
   it('어제 데이터가 없는 출처 = 지연', () => {

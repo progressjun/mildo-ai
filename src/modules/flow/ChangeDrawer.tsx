@@ -11,6 +11,8 @@ import {
 import { ApproverBadge, ChangeValue, ConfirmButton, KV, LeadBadge, ModuleTag, SeedTag, StatusPill, settled } from './parts';
 import type { FlowCtx } from './useFlow';
 import { Button } from '@/ui/primitives';
+import { ExecBadge, ExecutionPanel } from './ExecutionPanel';
+import { isExecuting } from './execution';
 
 export function ChangeDrawer({ ctx, id, onClose: close }: { ctx: FlowCtx; id: string; onClose: () => void }) {
   const { changes, state, data, incidents, clock, act, bulkAlerts } = ctx;
@@ -39,6 +41,7 @@ export function ChangeDrawer({ ctx, id, onClose: close }: { ctx: FlowCtx; id: st
         <div className="row" style={{ gap: 6 }}>
           <ApproverBadge c={c} />
           <LeadBadge l={lead} />
+          <ExecBadge c={c} />
           {isSeed(c) ? <Src kind="DEMO" title="시연용 이력 · 실제 운영 이력 아님" /> : null}
         </div>
       </div>
@@ -76,16 +79,19 @@ export function ChangeDrawer({ ctx, id, onClose: close }: { ctx: FlowCtx; id: st
         </Callout>
       ) : null}
 
+      <ExecutionPanel c={c} />
+
       {avail.length ? (
         <div className="stack-sm">
           <div className="zone-label">액션</div>
+          {isExecuting(c) ? <div className="xs muted">매체 반영 · 롤백이 서버에서 진행 중입니다. 끝나면 결과가 자동으로 갱신되고, 그때까지 다른 처리는 서버가 받지 않습니다.</div> : null}
           <Field label="메모 · 사유 (반려 · 보류 · 실행 취소는 필수)" id="flow-note">
             <input id="flow-note" className="input" value={note} placeholder="예: 근거 보완 후 재요청 · 결제 확인 후 반영" onChange={(e) => setNote(e.target.value)} />
           </Field>
           <div className="row">
             {avail.map((a) => {
               const m = ACTION_META[a.action];
-              const disabled = !a.ok || (m.needsNote && !note.trim());
+              const disabled = !a.ok || (m.needsNote && !note.trim()) || isExecuting(c);
               const title = !a.ok ? a.reason : m.needsNote && !note.trim() ? '사유를 입력하세요' : a.reason;
               return m.confirm
                 ? <ConfirmButton key={a.action} label={m.label} icon={m.icon} variant={m.variant} disabled={disabled} title={title} onConfirm={() => run(a.action)} />

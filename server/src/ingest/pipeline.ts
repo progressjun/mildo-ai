@@ -7,6 +7,10 @@
  *   backfill  : 지정 기간을 31일 단위로 나눠 수집 (capabilities.maxBackfillDays · 400일 상한)
  *   upload    : CSV 업로드 (출처 'csv:<업로드 id>')
  * 성공하면 alerts.scan을 enqueue(dedupe alerts.scan:<ws>)하고 'dataset' · 'connection' 이벤트를 발행한다.
+ *
+ * 동시성: 웨어하우스 쓰기 트랜잭션은 먼저 커넥션 행(업로드는 업로드 행)을 잠근다(FOR NO KEY UPDATE).
+ *  - 같은 커넥션의 수집(예약 daily · 수동 daily · 백필)이 겹쳐도 쓰기는 하나씩 — 엔티티 스냅샷 교체가 섞이지 않는다
+ *  - 삭제(DELETE 라우트도 같은 행을 먼저 잠근다)와 겹치면 둘 중 하나가 기다린다. 이미 삭제됐으면 쓰지 않고 끝낸다(고아 행 방지 · 재시도 없음)
  */
 import type { Db, Queryable } from '../db/pool';
 import { one } from '../db/pool';
@@ -33,6 +37,8 @@ export interface IngestRunResult {
   issues: QualityIssue[];
   error?: string;
   range: DateRange;
+  /** 쓰기 직전에 커넥션 · 업로드가 삭제됨 (취소) */
+  gone?: boolean;
 }
 
 export interface IngestOptions {
@@ -78,6 +84,15 @@ async function loadHistory(q: Queryable, wsId: string, source: string, range: Da
 
 const errMsg = (e: unknown) => scrubSecrets((e as Error)?.message ?? String(e)).slice(0, 1000);
 
+/** 쓰기 직전에 커넥션 · 업로드가 지워진 경우 — 실패가 아니라 취소 (재시도하지 않는다) */
+export class SourceGoneError extends Error {
+  constructor(what: string) {
+    super(`${what}이(가) 삭제되어 수집 결과를 쓰지 않았습니다`);
+    this.name = 'SourceGoneError';
+  }
+}
+export const GONE_MESSAGE = '커넥션이 삭제되어 수집 결과를 쓰지 않았습니다';
+
 /** 커넥션 하나 · 기간 하나 수집. 실패하면 ingest_runs(failed) · 커넥션 오류 상태를 남기고 예외를 다시 던진다(잡 재시도). */
 export async function ingestConnection(db: Db, config: AppConfig, conn: ConnectionRow, o: IngestOptions): Promise<IngestRunResult> {
   const def = getConnector(conn.provider);
@@ -101,7 +116,9 @@ export async function ingestConnection(db: Db, config: AppConfig, conn: Connecti
       range: o.range, job: o.job, today: now.date, hour: now.hour, provider: conn.provider, channel: conn.channel, reads: def.capabilities.reads, history,
     });
     const written = await db.tx(async (q) => {
-      const w = await writeBatch(q, wsId, source, batch, { replaceEntities: o.job === 'daily' || o.job === 'backfill', keywordChannel: conn.channel && conn.channel !== 'naver_sa' ? conn.channel : 'naver_sa' });
+      const alive = await one(q, 'SELECT id FROM connections WHERE id = $1 AND workspace_id = $2 FOR NO KEY UPDATE', [conn.id, wsId]);
+      if (!alive) throw new SourceGoneError('커넥션');
+      const w = await writeBatch(q, wsId, source, batch, { replaceEntities: o.job === 'daily' || o.job === 'backfill', keywordChannel: conn.channel ?? 'naver_sa' });
       const status = hasErrors(issues) ? 'partial' : 'succeeded';
       await q.query(
         `UPDATE ingest_runs SET status = $2, rows_in = $3, rows_written = $4, issues = $5, stats = $6, finished_at = clock_timestamp() WHERE id = $1`,
@@ -116,6 +133,9 @@ export async function ingestConnection(db: Db, config: AppConfig, conn: Connecti
     });
     return { runId, status: written.status, rowsIn, rowsWritten: written.w.total, issues, range: o.range };
   } catch (e) {
+    if (e instanceof SourceGoneError) {
+      return { runId, status: 'failed', rowsIn: 0, rowsWritten: 0, issues: [], error: GONE_MESSAGE, range: o.range, gone: true };
+    }
     const msg = errMsg(e);
     await db.query(`UPDATE ingest_runs SET status = 'failed', error = $2, finished_at = clock_timestamp() WHERE id = $1`, [runId, msg]);
     await db.query(`UPDATE connections SET status = CASE WHEN status = 'disabled' THEN status ELSE 'error' END, last_error = $2, updated_at = now() WHERE id = $1`, [conn.id, msg]);
@@ -131,7 +151,11 @@ export async function backfillConnection(db: Db, config: AppConfig, conn: Connec
   const def = getConnector(conn.provider);
   if (!def) throw new Error(`알 수 없는 공급자: ${conn.provider}`);
   const results: IngestRunResult[] = [];
-  for (const r of chunkRange(range)) results.push(await ingestConnection(db, config, conn, { ...o, job: 'backfill', range: r, notify: false }));
+  for (const r of chunkRange(range)) {
+    const res = await ingestConnection(db, config, conn, { ...o, job: 'backfill', range: r, notify: false });
+    results.push(res);
+    if (res.gone) return results; // 삭제됨 — 나머지 묶음 · 후처리 생략
+  }
   const today = kstParts().date;
   if (def.capabilities.intraday && range.to >= addDaysStr(today, -1)) {
     results.push(await ingestConnection(db, config, conn, { ...o, job: 'intraday', range: { from: today, to: today }, intradayDate: today, notify: false }));
@@ -197,9 +221,10 @@ export async function brandTerms(q: Queryable, wsId: string): Promise<string[]> 
 }
 
 /** 업로드 가져오기 (잡 ingest.upload). 원본은 가져온 뒤 비운다. */
-export async function importUpload(db: Db, uploadId: string, o: { trigger?: string } = {}): Promise<IngestRunResult> {
+export async function importUpload(db: Db, uploadId: string, o: { trigger?: string; finalAttempt?: boolean } = {}): Promise<IngestRunResult> {
   const up = await one<UploadRow>(db, 'SELECT * FROM uploads WHERE id = $1', [uploadId]);
-  if (!up) throw new Error(`업로드를 찾을 수 없습니다: ${uploadId}`);
+  // 지워진 업로드 — 재시도할 일이 아니다
+  if (!up) return { runId: '', status: 'failed', rowsIn: 0, rowsWritten: 0, issues: [], error: '업로드를 찾을 수 없습니다 (삭제됨)', range: { from: '', to: '' }, gone: true };
   const wsId = up.workspace_id;
   const source = `csv:${up.id}`;
   const now = kstParts();
@@ -229,6 +254,8 @@ export async function importUpload(db: Db, uploadId: string, o: { trigger?: stri
     const checked = checkBatch(batch, { range, job: 'upload', today: now.date, hour: now.hour, provider: 'csv', channel: null });
     const issues = [...norm.issues, ...checked.issues];
     const result = await db.tx(async (q) => {
+      const alive = await one(q, 'SELECT id FROM uploads WHERE id = $1 AND workspace_id = $2 FOR NO KEY UPDATE', [up.id, wsId]);
+      if (!alive) throw new SourceGoneError('업로드');
       const w = await writeBatch(q, wsId, source, checked.batch, { replaceEntities: false });
       const status = issues.some((i) => i.severity === 'error') ? 'partial' : 'succeeded';
       await q.query(
@@ -242,9 +269,14 @@ export async function importUpload(db: Db, uploadId: string, o: { trigger?: stri
     });
     return { runId, status: result.status, rowsIn: norm.summary.rows, rowsWritten: result.w.total, issues, range };
   } catch (e) {
+    if (e instanceof SourceGoneError) return { runId, status: 'failed', rowsIn: 0, rowsWritten: 0, issues: [], error: e.message, range: { from: '', to: '' }, gone: true };
     const msg = errMsg(e);
     await db.query(`UPDATE ingest_runs SET status = 'failed', error = $2, finished_at = clock_timestamp() WHERE id = $1`, [runId, msg]);
-    await db.query(`UPDATE uploads SET status = 'failed', summary = summary || $2::jsonb WHERE id = $1 AND status <> 'imported'`, [up.id, JSON.stringify({ error: msg })]);
+    // 마지막 시도면 원본을 비운다 (재시도 안 함 — 원본 CSV를 DB에 남겨 두지 않는다)
+    await db.query(
+      `UPDATE uploads SET status = 'failed', summary = summary || $2::jsonb, content = CASE WHEN $3 THEN NULL ELSE content END WHERE id = $1 AND status <> 'imported'`,
+      [up.id, JSON.stringify({ error: msg }), !!o.finalAttempt],
+    );
     throw e;
   }
 }

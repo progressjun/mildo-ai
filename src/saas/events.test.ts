@@ -53,7 +53,9 @@ describe('ServerEvents', () => {
     s.es().emit('change', { ws: 'ws1', type: 'change', id: 'chg_1', at: '2026-11-02T00:00:00Z' });
     s.es().emit('incident', { ws: 'ws1', type: 'incident', id: 'i9' });
     s.es().emit('state');
-    expect(s.got).toEqual(['change:chg_1', 'incident:i9', 'state:']);
+    // alerts 알림 채널 이벤트도 같은 연결로 받는다 (알림 설정 화면이 onServerEvent('notify')로 구독)
+    s.es().emit('notify', { ws: 'ws1', type: 'notify', id: 'ch_1' });
+    expect(s.got).toEqual(['change:chg_1', 'incident:i9', 'state:', 'notify:ch_1']);
     expect(s.ev.lastEventAt).toBeTruthy();
     expect(s.reconnected).toBe(0);
   });

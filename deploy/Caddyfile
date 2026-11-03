@@ -14,7 +14,8 @@
 	# respond @readyExternal 404
 
 	reverse_proxy app:8080 {
-		# SSE(/api/w/:ws/events · AI 스트리밍)는 버퍼링 없이 바로 흘려보낸다
+		# SSE(/api/w/:ws/events)와 AI 응답 스트림(/api/w/:ws/ai/messages)은 버퍼링 없이 바로 흘려보낸다.
+		# Caddy는 응답 읽기 시간 제한이 기본으로 없다(수 분 걸리는 AI 답도 끊지 않는다) — transport에 read_timeout을 넣지 않는다
 		flush_interval -1
 		# 요청 추적 id: 클라이언트가 보낸 값 대신 프록시가 새로 붙인다 (app 응답 헤더 x-request-id와 같다)
 		header_up X-Request-Id {http.request.uuid}

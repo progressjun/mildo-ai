@@ -115,6 +115,10 @@ describe('가져오기', () => {
     expect(kw.id).toMatch(/^csv:[0-9a-f]{12}$/);
     expect(kw.daily).toHaveLength(14);
     expect(kw.last14).toEqual({ impressions: 14000, clicks: 280, cost: 336000, conversions: 14, revenue: 14000000 });
+    // 추정값은 추정이라고 수집 실행 이슈에 남는다
+    const run = (await t.db.query<{ issues: { code: string; severity: string; message: string }[] }>(`SELECT issues FROM ingest_runs WHERE upload_id = $1`, [r.json.upload.id])).rows[0];
+    expect(run.issues.find((i) => i.code === 'estimated_bid')).toMatchObject({ severity: 'warning', message: expect.stringContaining('추정') });
+    expect(run.issues.find((i) => i.code === 'estimated_intent')).toMatchObject({ message: expect.stringContaining('추정') });
   });
 
   it('업로드 삭제: configure만, 그 업로드의 웨어하우스 행 정리 · 감사, 다른 워크스페이스 업로드는 404', async () => {
@@ -133,6 +137,21 @@ describe('가져오기', () => {
     expect((await owner.post(`/api/w/${other}/uploads`, { template: 'media_daily', filename: 'a.csv', content: MEDIA_CSV, dryRun: true })).status).toBe(404);
     const foreignConn = (await t.db.query<{ id: string }>(`INSERT INTO connections (workspace_id, provider, kind, label) VALUES ($1, 'csv', 'other', '남의 CSV') RETURNING id`, [other])).rows[0].id;
     expect((await owner.post(url(), { template: 'media_daily', filename: 'a.csv', content: MEDIA_CSV, connectionId: foreignConn })).status).toBe(404);
+  });
+
+  it('가져오기 전에 지운 업로드: 대기 잡은 취소(done), 워커가 돌아도 웨어하우스에 아무것도 쓰지 않는다', async () => {
+    const ae = await as('ae');
+    const r = await ae.post(url(), { template: 'media_daily', filename: 'cancel.csv', content: MEDIA_CSV });
+    expect(r.status).toBe(200);
+    const id = r.json.upload.id as string;
+    expect((await (await as('pm')).del(`${url()}/${id}`)).status).toBe(200);
+    const j = (await t.db.query<{ status: string; result: { cancelled: string } }>(`SELECT status, result FROM jobs WHERE type = 'ingest.upload' AND payload->>'uploadId' = $1`, [id])).rows[0];
+    expect(j).toMatchObject({ status: 'done', result: { cancelled: '업로드 삭제로 취소' } });
+    await drainIngest(t.db, t.config);
+    expect((await t.db.query('SELECT 1 FROM wh_media_daily WHERE source = $1', [`csv:${id}`])).rowCount).toBe(0);
+    // 잡이 이미 실행 중이었다면(삭제된 업로드를 찾지 못함) 재시도 없이 끝난다
+    const { importUpload } = await import('./pipeline');
+    expect(await importUpload(t.db, id)).toMatchObject({ status: 'failed', gone: true });
   });
 });
 

@@ -2,10 +2,13 @@
  * 웨어하우스 쓰기 — NormalizedBatch → wh_* 테이블 멱등 upsert (키에 출처 source 포함).
  * 같은 기간을 다시 수집하면 같은 키 행을 덮어쓴다(늦게 잡힌 전환 반영). unnest 배열로 묶어 보내 행 수와 무관하게 쿼리 수가 일정하다.
  * 배치 안 중복 키는 호출 전에 제거되어 있어야 한다(품질 검사 dedupe) — ON CONFLICT가 같은 행을 두 번 갱신할 수 없기 때문.
+ * 단위: 금액(광고비 · 매출 · 광고 경유 매출)은 원 단위 정수로 반올림(원화에는 소수 단위가 없다), 전환 · 신규 고객은 소수 둘째 자리(기여 분할),
+ * 숫자가 아니거나 무한대면 0.
  */
 import type { Queryable } from '../db/pool';
 import type { NormalizedBatch } from '../connectors/types';
 import { nowMs } from '../lib/time';
+import { MEDIA_IDS } from '@/data/constants';
 
 type ColType = 'date' | 'text' | 'int' | 'bigint' | 'numeric' | 'smallint' | 'jsonb';
 interface Col { name: string; type: ColType; get: (r: any) => unknown }
@@ -36,6 +39,11 @@ async function upsert(q: Queryable, table: string, wsId: string, source: string,
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const int = (v: unknown) => Math.round(num(v));
+/** 원 단위 금액 */
+const krw = int;
+/** 소수 둘째 자리 (전환 · 신규 고객) */
+const dec2 = (v: unknown) => Math.round(num(v) * 100) / 100;
+const MEDIA_CHANNELS = new Set<string>(MEDIA_IDS);
 
 export interface WriteResult { total: number; byTable: Record<string, number> }
 
@@ -56,10 +64,10 @@ export async function writeBatch(q: Queryable, wsId: string, source: string, b: 
     { name: 'media', type: 'text', get: (r) => r.media },
     { name: 'impressions', type: 'bigint', get: (r) => int(r.impressions) },
     { name: 'clicks', type: 'bigint', get: (r) => int(r.clicks) },
-    { name: 'cost', type: 'numeric', get: (r) => num(r.cost) },
-    { name: 'conversions', type: 'numeric', get: (r) => num(r.conversions) },
-    { name: 'revenue', type: 'numeric', get: (r) => num(r.revenue) },
-    { name: 'new_customers', type: 'numeric', get: (r) => num(r.newCustomers) },
+    { name: 'cost', type: 'numeric', get: (r) => krw(r.cost) },
+    { name: 'conversions', type: 'numeric', get: (r) => dec2(r.conversions) },
+    { name: 'revenue', type: 'numeric', get: (r) => krw(r.revenue) },
+    { name: 'new_customers', type: 'numeric', get: (r) => dec2(r.newCustomers) },
   ], b.mediaDaily ?? []);
   byTable.mediaHourly = await upsert(q, 'wh_media_hourly', wsId, source, at, ['date', 'hour', 'media'], [
     { name: 'date', type: 'date', get: (r) => r.date },
@@ -67,9 +75,9 @@ export async function writeBatch(q: Queryable, wsId: string, source: string, b: 
     { name: 'media', type: 'text', get: (r) => r.media },
     { name: 'impressions', type: 'bigint', get: (r) => int(r.impressions) },
     { name: 'clicks', type: 'bigint', get: (r) => int(r.clicks) },
-    { name: 'cost', type: 'numeric', get: (r) => num(r.cost) },
-    { name: 'conversions', type: 'numeric', get: (r) => num(r.conversions) },
-    { name: 'revenue', type: 'numeric', get: (r) => num(r.revenue) },
+    { name: 'cost', type: 'numeric', get: (r) => krw(r.cost) },
+    { name: 'conversions', type: 'numeric', get: (r) => dec2(r.conversions) },
+    { name: 'revenue', type: 'numeric', get: (r) => krw(r.revenue) },
   ], b.mediaHourly ?? []);
   byTable.salesDaily = await upsert(q, 'wh_sales_daily', wsId, source, at, ['date', 'channel'], [
     { name: 'date', type: 'date', get: (r) => r.date },
@@ -78,17 +86,17 @@ export async function writeBatch(q: Queryable, wsId: string, source: string, b: 
     { name: 'detail_views', type: 'bigint', get: (r) => int(r.detailViews) },
     { name: 'carts', type: 'bigint', get: (r) => int(r.carts) },
     { name: 'orders', type: 'bigint', get: (r) => int(r.orders) },
-    { name: 'revenue', type: 'numeric', get: (r) => num(r.revenue) },
-    { name: 'ad_attributed_revenue', type: 'numeric', get: (r) => num(r.adAttributedRevenue) },
+    { name: 'revenue', type: 'numeric', get: (r) => krw(r.revenue) },
+    { name: 'ad_attributed_revenue', type: 'numeric', get: (r) => krw(r.adAttributedRevenue) },
   ], b.salesDaily ?? []);
   byTable.keywordDaily = await upsert(q, 'wh_keyword_daily', wsId, source, at, ['date', 'keyword_id'], [
     { name: 'date', type: 'date', get: (r) => r.date },
     { name: 'keyword_id', type: 'text', get: (r) => r.keywordId },
     { name: 'impressions', type: 'bigint', get: (r) => int(r.impressions) },
     { name: 'clicks', type: 'bigint', get: (r) => int(r.clicks) },
-    { name: 'cost', type: 'numeric', get: (r) => num(r.cost) },
-    { name: 'conversions', type: 'numeric', get: (r) => num(r.conversions) },
-    { name: 'revenue', type: 'numeric', get: (r) => num(r.revenue) },
+    { name: 'cost', type: 'numeric', get: (r) => krw(r.cost) },
+    { name: 'conversions', type: 'numeric', get: (r) => dec2(r.conversions) },
+    { name: 'revenue', type: 'numeric', get: (r) => krw(r.revenue) },
     { name: 'avg_rank', type: 'numeric', get: (r) => (typeof r.avgRank === 'number' && Number.isFinite(r.avgRank) ? r.avgRank : null) },
   ], b.keywordDaily ?? []);
   byTable.searchTermDaily = await upsert(q, 'wh_search_term_daily', wsId, source, at, ['date', 'term'], [
@@ -96,9 +104,9 @@ export async function writeBatch(q: Queryable, wsId: string, source: string, b: 
     { name: 'term', type: 'text', get: (r) => r.term },
     { name: 'impressions', type: 'bigint', get: (r) => int(r.impressions) },
     { name: 'clicks', type: 'bigint', get: (r) => int(r.clicks) },
-    { name: 'cost', type: 'numeric', get: (r) => num(r.cost) },
-    { name: 'conversions', type: 'numeric', get: (r) => num(r.conversions) },
-    { name: 'revenue', type: 'numeric', get: (r) => num(r.revenue) },
+    { name: 'cost', type: 'numeric', get: (r) => krw(r.cost) },
+    { name: 'conversions', type: 'numeric', get: (r) => dec2(r.conversions) },
+    { name: 'revenue', type: 'numeric', get: (r) => krw(r.revenue) },
   ], b.searchTermDaily ?? []);
   byTable.brandSearchDaily = await upsert(q, 'wh_brand_search_daily', wsId, source, at, ['date'], [
     { name: 'date', type: 'date', get: (r) => r.date },
@@ -106,7 +114,8 @@ export async function writeBatch(q: Queryable, wsId: string, source: string, b: 
   ], b.brandSearchDaily ?? []);
 
   const ent: { type: 'keyword' | 'campaign' | 'account' | 'product' | 'promotion'; list: any[] | undefined; channel: (x: any) => string | null }[] = [
-    { type: 'keyword', list: b.keywords, channel: () => o.keywordChannel ?? 'naver_sa' },
+    // 키워드 채널: 문서의 매체(Google Ads 키워드는 'google') → 커넥션 채널 → 네이버 SA
+    { type: 'keyword', list: b.keywords, channel: (x) => (typeof x.media === 'string' && MEDIA_CHANNELS.has(x.media) ? x.media : o.keywordChannel ?? 'naver_sa') },
     { type: 'campaign', list: b.campaigns, channel: (x) => x.media ?? null },
     { type: 'account', list: b.accounts, channel: (x) => x.media ?? null },
     { type: 'product', list: b.products, channel: () => null },

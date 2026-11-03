@@ -57,6 +57,15 @@ export function Shell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [emptyState]);
 
+  // 모듈 화면은 위 시작 적재(이슈 · 시연 이력)가 끝난 다음 렌더에서 붙인다 (데모 모드).
+  // 셸이 지연 로드되면 React가 셸과 모듈 화면을 한 번에 커밋할 수 있는데, 그러면 자식(Flow useFlow)의 적재가 셸보다 먼저 돌아
+  // 같은 시연 이력이 두 번 쌓인다(#flow로 바로 열 때). 이 효과는 위 효과 다음에 실행되므로 첫 적재가 상태에 들어간 뒤 모듈이 마운트된다.
+  const [modulesReady, setModulesReady] = useState(serverMode);
+  useEffect(() => {
+    if (!modulesReady) setModulesReady(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 대량 변경 실수 감지 (p.45) — 어느 화면에서 변경을 요청 · 반영해도 MILDO Alert 이슈로 적재
   const seenBulk = useRef(new Set<string>());
   useEffect(() => {
@@ -142,7 +151,7 @@ export function Shell() {
         <main className="content" ref={contentRef} id="main">
           <ModuleErrorBoundary key={`${mod.id}:${state.resetSeq ?? 0}`} title={mod.title}>
             <Suspense fallback={<div className="page muted">불러오는 중…</div>}>
-              <mod.Component />
+              {modulesReady ? <mod.Component /> : <div className="page muted">불러오는 중…</div>}
             </Suspense>
           </ModuleErrorBoundary>
         </main>

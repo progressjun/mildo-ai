@@ -102,11 +102,18 @@ export function csvToBatch(r: NormalizeResult, o: CsvBatchOptions = {}): Normali
         return { date: x.date, keywordId: id, impressions: x.impressions, clicks: x.clicks, cost: x.cost, conversions: x.conversions, revenue: x.revenue, avgRank: x.avgRank };
       });
       if (entities.size) {
+        const estimatedBid: string[] = [];
         batch.keywords = [...entities.values()].map(({ _clicks, _cost, _rankSum, _rankW, ...k }) => {
           // 입찰가 열이 없으면 평균 CPC를 현재 입찰가 추정치로, 최대 입찰가는 그 1.6배(데모 기본 SAFETY와 같은 비율)로 둔다
+          if (!k.bid) estimatedBid.push(k.text);
           const bid = k.bid || (_clicks > 0 ? Math.round(_cost / _clicks / 10) * 10 : 0);
           return { ...k, bid, maxBid: Math.round((bid * 1.6) / 10) * 10, avgRank: _rankW > 0 ? Math.round((_rankSum / _rankW) * 10) / 10 : 0 };
         });
+        // 추정값은 추정이라고 남긴다 — 수집 현황 · 데이터 품질 탭에 표시
+        batch.warnings = [
+          { code: 'estimated_intent', message: `새 키워드 ${entities.size}개의 의도(브랜드 · 비교 · 문제 · 라이프 · 일반)는 문구 기준 추정입니다 — 매체에 등록된 분류가 아닙니다`, detail: { keywords: [...entities.values()].slice(0, 20).map((k) => ({ text: k.text, intent: k.intent })) } },
+          ...(estimatedBid.length ? [{ code: 'estimated_bid', message: `입찰가 열이 없는 키워드 ${estimatedBid.length}개는 평균 CPC를 현재 입찰가 추정치로, 그 1.6배를 최대 입찰가로 두었습니다 (추정 — AD Pilot 제안 전에 매체 화면 입찰가를 확인하세요)`, detail: { keywords: estimatedBid.slice(0, 20) } }] : []),
+        ];
       }
       break;
     }

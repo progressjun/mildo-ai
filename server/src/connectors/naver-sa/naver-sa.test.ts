@@ -1,6 +1,6 @@
 /** 네이버 검색광고 커넥터 — 서명 · 정규화 · 페이지 · 오류 · 반영(dry_run · live). 실제 네트워크 호출 없음 (가짜 ConnectorHttp). */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connector, naverTarget } from './index';
+import { connector, naverTarget, parseTestRegistration } from './index';
 import { NaverSaClient, naverAuthHeaders, signNaver, statRows } from './client';
 import { funnelOf, landingOf, normCampaign } from './normalize';
 import { fakeCtx, fakeHttp } from './fake-http';
@@ -305,8 +305,63 @@ describe('반영 (apply)', () => {
 
     const bad = await connector.apply!(fakeCtx(CREDS, {}, fakeHttp([])), change({ kind: 'status', after: 'maybe' }));
     expect(bad.ok).toBe(false);
-    const unsupported = await connector.apply!(fakeCtx(CREDS, {}, fakeHttp([])), change({ kind: 'keyword_add' }));
+    const unsupported = await connector.apply!(fakeCtx(CREDS, {}, fakeHttp([])), change({ kind: 'keyword_exclude' }));
     expect(unsupported.ok).toBe(false);
+    expect(unsupported.error).toMatch(/keyword_exclude/);
+  });
+
+  describe('테스트 키워드 등록 (keyword_add)', () => {
+    const GRP_TEST = 'grp-a001-01-000000099999999';
+    const add = (p: Partial<ChangeRequest> = {}) => change({ kind: 'keyword_add', target: '퀸 매트리스 추천 → GENERIC_TEST 등록', targetId: 'term:퀸 매트리스 추천', before: '미등록', after: 'GENERIC_TEST · 입찰 1,200원', ...p });
+
+    it('after 해석: 의도 · 입찰가 (AD Pilot proposalChangeInput 형식)', () => {
+      expect(parseTestRegistration('GENERIC_TEST · 입찰 1,200원')).toEqual({ intent: 'generic', bid: 1200 });
+      expect(parseTestRegistration('BRAND_TEST · 입찰 70원')).toEqual({ intent: 'brand', bid: 70 });
+      expect(parseTestRegistration('TEST 그룹 · 입찰 상한 내')).toEqual({ intent: null, bid: null });
+    });
+
+    it('dry_run: 네트워크 없이 중복 확인 GET → POST /ncc/keywords?nccAdgroupId=<설정한 테스트 광고그룹> 단계', async () => {
+      const http = fakeHttp([]);
+      const r = await connector.apply!(fakeCtx(CREDS, { testAdgroups: { generic: GRP_TEST } }, http, { dryRun: true }), add());
+      expect(http.calls).toHaveLength(0);
+      expect(r).toMatchObject({ ok: true, appliedValue: 1200 });
+      const steps = (r.request as { steps: { method: string; url: string; query?: unknown; body?: unknown }[] }).steps;
+      expect(steps.map((x) => `${x.method} ${x.url}`)).toEqual(['GET https://api.searchad.naver.com/ncc/keywords', 'POST https://api.searchad.naver.com/ncc/keywords']);
+      expect(steps[1]).toMatchObject({ query: { nccAdgroupId: GRP_TEST }, body: [{ keyword: '퀸 매트리스 추천', bidAmt: 1200, useGroupBidAmt: false, userLock: false }] });
+      expect(JSON.stringify(r.request)).not.toContain(CREDS.secretKey);
+    });
+
+    it('테스트 광고그룹 설정이 없거나 값이 해석되지 않으면 보내지 않고 이유를 돌려준다', async () => {
+      const http = fakeHttp([]);
+      const noGrp = await connector.apply!(fakeCtx(CREDS, {}, http), add());
+      expect(noGrp.ok).toBe(false);
+      expect(noGrp.error).toMatch(/testAdgroups\.generic/);
+      const badAfter = await connector.apply!(fakeCtx(CREDS, { testAdgroups: { generic: GRP_TEST } }, http), add({ after: 'TEST 그룹 · 입찰 상한 내' }));
+      expect(badAfter.error).toMatch(/구매 의도/);
+      const tooLow = await connector.apply!(fakeCtx(CREDS, { testAdgroups: { generic: GRP_TEST } }, http), add({ after: 'GENERIC_TEST · 입찰 50원' }));
+      expect(tooLow.error).toMatch(/70~100,000원/);
+      const notTerm = await connector.apply!(fakeCtx(CREDS, { testAdgroups: { generic: GRP_TEST } }, http), add({ targetId: 'lab:term:abc' }));
+      expect(notTerm.ok).toBe(false);
+      expect(http.calls).toHaveLength(0);
+      expect(connector.settingsSchema.safeParse({ testAdgroups: { generic: 'not-a-group' } }).success).toBe(false);
+    });
+
+    it('live: 같은 키워드가 이미 있으면 다시 만들지 않고, 없으면 POST(서명 경로 /ncc/keywords) 후 새 키워드 id를 반영 값으로', async () => {
+      const dup = fakeHttp([{ method: 'GET', match: '/ncc/keywords', reply: { data: [{ nccKeywordId: 'nkw-a001-01-000000000000777', nccAdgroupId: GRP_TEST, keyword: '퀸매트리스 추천' }] } }]);
+      const d = await connector.apply!(fakeCtx(CREDS, { testAdgroups: { generic: GRP_TEST } }, dup), add());
+      expect(d).toMatchObject({ ok: true, appliedValue: 'nkw-a001-01-000000000000777' });
+      expect(dup.calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+
+      const http = fakeHttp([
+        { method: 'GET', match: '/ncc/keywords', reply: { data: [{ nccKeywordId: 'nkw-a001-01-000000000000001', nccAdgroupId: GRP_TEST, keyword: '다른 키워드' }] } },
+        { method: 'POST', match: '/ncc/keywords', reply: (req) => ({ data: (req.body as { keyword: string; bidAmt: number }[]).map((k) => ({ ...k, nccKeywordId: 'nkw-a001-01-000000000000888', nccAdgroupId: GRP_TEST })) }) },
+      ]);
+      const r = await connector.apply!(fakeCtx(CREDS, { testAdgroups: { generic: GRP_TEST } }, http), add());
+      expect(r).toMatchObject({ ok: true, appliedValue: 'nkw-a001-01-000000000000888' });
+      const post = http.calls.find((c) => c.method === 'POST')!;
+      expect(post.query).toEqual({ nccAdgroupId: GRP_TEST });
+      expect(post.headers?.['X-Signature']).toBe(signNaver(CREDS.secretKey, post.headers!['X-Timestamp'], 'POST', '/ncc/keywords'));
+    });
   });
 
   it('live 실패(400)는 ok:false + 한국어 오류, 요청 요약 유지', async () => {
@@ -327,7 +382,7 @@ describe('정의', () => {
     expect(connector.docsUrl).toMatch(/^https:\/\/naver\.github\.io\/searchad-apidoc/);
     expect(connector.credentialFields.map((f) => [f.key, f.secret])).toEqual([['apiKey', true], ['secretKey', true], ['customerId', false]]);
     expect(connector.credentialFields.every((f) => /[가-힣]/.test(f.label) && !!f.help)).toBe(true);
-    expect(connector.capabilities.writes).toEqual(['bid', 'budget', 'status']);
+    expect(connector.capabilities.writes).toEqual(['bid', 'budget', 'status', 'keyword_add']);
     expect(connector.capabilities.reads).not.toContain('searchTermDaily');
     expect(connector.credentialsSchema.parse({ apiKey: 'abcdefgh1', secretKey: 'abcdefgh2', customerId: 1234567 })).toEqual({ apiKey: 'abcdefgh1', secretKey: 'abcdefgh2', customerId: '1234567' });
     expect(connector.settingsSchema.parse({})).toMatchObject({ conversionMetric: 'purchase', costBasis: 'vat_included', keywordDays: 31, hourlyDays: 7, allowDrift: false });

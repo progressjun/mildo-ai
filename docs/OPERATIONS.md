@@ -38,7 +38,27 @@
 
 - 이미지 하나(`deploy/Dockerfile`)로 migrate · app · worker를 모두 돌린다. 컨테이너는 비root(uid 10001), 루트 파일시스템 읽기 전용, 모든 커널 권한 제거로 실행한다.
 - app과 worker는 DB로만 대화한다. 잡은 `jobs` 테이블, 실시간 알림은 PostgreSQL NOTIFY → app의 SSE.
-- 워커 스케줄(KST): `ingest.daily` 07:00 전일 확정 수집, `ingest.intraday` 매시 10분 당일 시간대, `alerts.scan` · `changes.sweep` 10분마다, `alerts.sla` 1분마다, `team.cleanup` 04:17. 리포트 · 성과 측정 스케줄은 해당 도메인이 등록한다.
+- **워커는 반드시 하나 이상 떠 있어야 한다.** app은 요청을 받아 잡을 `jobs`에 넣기만 하고, 실제 처리는 워커가 한다. 워커가 없으면 아래가 모두 멈춘다(화면은 열리지만 숫자가 갱신되지 않는다).
+  - 데모 시드 직후 TEST DATA 120일 백필(`ingest.backfill`), 커넥션 '수집' 버튼 · 백필, CSV 업로드 반영(`ingest.upload`)
+  - 매체 반영 · 롤백 실행(`changes.execute`), 알림 발송(`notify.send`), 리포트 생성(`reports.generate`), 성과 측정(`impact.measure`)
+  - 예약 작업(KST, `SCHEDULER=on`인 워커가 돌린다):
+
+| 스케줄 | 시각 | 하는 일 |
+| --- | --- | --- |
+| `ingest.daily` | 매일 07:00 | 전일 확정 수집 |
+| `ingest.intraday` | 매시 10분 | 당일 시간대 수집 |
+| `alerts.scan` | 10분마다 | 24시간 이상 감지 (수집 직후에도 실행) |
+| `alerts.sla` | 1분마다 | 열린 이슈의 SLA 타이머 · 에스컬레이션 |
+| `changes.sweep` | 10분마다 | 멈춘 매체 반영 실행(10분 넘게 진행 표시만 남은 것)을 다시 예약 |
+| `reports.daily` | 매일 08:00 | 일간 리포트(전일) |
+| `reports.weekly` | 매일 10:00 확인 | 주간 리포트(월요일, 휴무면 다음 영업일) |
+| `reports.monthly` | 매일 10:00 확인 | 월간 리포트(익월 3영업일) |
+| `reports.value` | 매월 1일 09:00 | 월간 가치 리포트(성과 증명) |
+| `reports.issue` | 5분마다 | P1 이슈 리포트 |
+| `impact.measure` | 매일 06:00 | 성과 증명 장부 측정 |
+| `team.cleanup` | 매일 04:17 | 만료 세션 · 비밀번호 재설정 토큰 정리 |
+
+  워커를 여러 대 두면 같은 스케줄이 여러 번 돌지만 잡마다 dedupe 키가 있어 한 번만 만들어진다. `/api/ready`는 워커 하트비트와 함께 예약 감지 잡(`alerts.scan`)이 실제로 생기는지도 본다(아래 '모니터링').
 
 ---
 
@@ -73,7 +93,24 @@ curl -s http://127.0.0.1:8080/api/ready      # status: ready 또는 degraded(아
 ```
 
 - HTTPS 없이 사내망에서 먼저 시험할 때는 `--profile tls`를 빼고 `.env`에 `SECURE_COOKIES=false`(시험 한정), `APP_URL=http://<VM IP>:8080`, `APP_BIND=0.0.0.0`, `TRUST_PROXY_HOPS=0`을 둔다. 운영 전환 전 반드시 되돌린다.
-- 호스트에 이미 nginx 등 리버스 프록시가 있으면 Caddy 대신 그 프록시에서 `127.0.0.1:8080`으로 넘긴다. SSE를 위해 버퍼링을 끈다(nginx: `proxy_buffering off; proxy_read_timeout 1h;`). 프록시가 하나면 `TRUST_PROXY_HOPS=1`(기본값)이 맞다.
+- 호스트에 이미 nginx 등 리버스 프록시가 있으면 Caddy 대신 그 프록시에서 `127.0.0.1:8080`으로 넘긴다. 프록시가 하나면 `TRUST_PROXY_HOPS=1`(기본값)이 맞다.
+  스트리밍 응답 두 종류는 **버퍼링 없이 바로 흘려보내고, 읽기 시간 제한을 10분 이상**으로 둔다. 실시간 알림 SSE `GET /api/w/<ws>/events`(끝나지 않는 연결, 25초마다 ping)와 AI 응답 스트림 `POST /api/w/<ws>/ai/messages`(adaptive thinking 동안 15초마다 ping만 오고 답이 수 분 걸릴 수 있다). 버퍼링하면 화면 갱신 · AI 답이 끝날 때까지 안 보이고, 시간 제한이 짧으면 AI 답이 중간에 끊긴다.
+  nginx 예:
+
+  ```nginx
+  location ~ ^/api/w/[^/]+/(events|ai/messages)$ {
+      proxy_pass http://127.0.0.1:8080;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 1h;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Request-Id $request_id;
+  }
+  ```
+
+  Caddy(`deploy/Caddyfile`)는 `flush_interval -1`로 버퍼링을 끄고, 응답 읽기 시간 제한이 기본으로 없다. 앞에 클라우드 로드밸런서를 두면 그 유휴 시간 제한(예: AWS ALB 기본 60초)도 10분 이상으로 올린다.
   nginx는 기본으로 X-Forwarded-For를 붙이지 않는다. `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`를 반드시 넣는다. 빠지면 모든 사용자가 프록시 IP 하나로 묶여 속도 제한(IP당 분당 600회)을 함께 쓰고 로그인 잠금의 '익숙한 IP' 판정도 틀어진다. 요청 추적 id를 이으려면 `proxy_set_header X-Request-Id $request_id;`.
 - 사내 SSL 검사 프록시 때문에 이미지 빌드의 `npm ci`가 인증서 오류로 실패하면, 그 CA 파일을 `deploy/` 안에 두고 `.env`에 `EXTRA_CA_FILE=./corp-ca.crt`를 넣는다(빌드에만 쓰이고 이미지에는 남지 않는다).
 
@@ -114,7 +151,8 @@ docker compose -f docker-compose.yml -f docker-compose.managed-db.yml --profile 
 | `WORKER_ID` | - | `worker-<호스트명>`(compose) | 하트비트 · 잡 잠금 표시 |
 | `WORKER_CONCURRENCY` | - | 2 | 워커 동시 처리 잡 수 |
 | `SCHEDULER` | - | on | off면 이 워커는 스케줄을 돌리지 않는다 |
-| `ANTHROPIC_API_KEY` · `ANTHROPIC_MODEL` | - | 없음 · `claude-opus-5-5` | 서버 AI 호출. 키는 브라우저로 내려가지 않는다 |
+| `ANTHROPIC_API_KEY` | - | 없음 | 서버 AI 호출 키(조직 키). **서버 환경변수에만** 둔다 — 브라우저 · API 응답 · 로그로 내려가지 않는다. 비우면 AI 기능은 '서버 AI 미설정'으로 꺼진다(503 `ai_not_configured`) |
+| `ANTHROPIC_MODEL` | - | `claude-opus-5-5` | 서버 AI 모델. 서버가 adaptive thinking으로 호출하므로 **adaptive thinking을 지원하는 모델**이어야 한다(지원하지 않는 모델로 바꾸면 호출이 오류로 끝난다) |
 | `SMTP_HOST` · `SMTP_PORT` · `SMTP_SECURE` · `SMTP_USER` · `SMTP_PASS` · `SMTP_FROM` | - | 없음 · 587 · false | 메일. `SMTP_HOST`가 비면 메일을 보내지 않는다 |
 | `SEED_OWNER_EMAIL` · `SEED_OWNER_PASSWORD` · `SEED_OWNER_NAME` | 시드 시 O | - | 첫 owner 계정 |
 | `SEED_DEMO_DATA` | - | true(CLI) · false(.env.example) | 데모 커넥션 + TEST DATA 120일 백필 |
@@ -122,9 +160,11 @@ docker compose -f docker-compose.yml -f docker-compose.managed-db.yml --profile 
 | `API_RATE_LIMIT_MAX` · `API_RATE_LIMIT_WINDOW_SEC` | - | 600 · 60 | /api 전역 속도 제한(IP당, IPv6는 /64). SSE 제외. 0 = 끔 |
 | `AUTH_RATE_LIMIT_MAX` | - | 20 | 로그인 · 재설정 · 초대 수락 IP당 분당 |
 | `LOGIN_FAIL_MAX` · `LOGIN_FAIL_WINDOW_MIN` | - | 10 · 15 | 같은 이메일 실패 잠금(성공 로그인 · 비밀번호 재설정 뒤 새로 셈, 최근 30일 성공 IP는 그 IP의 실패만 셈) |
-| `TRUST_PROXY_HOPS` | - | 1 | 앞단 프록시 수(클라이언트 IP 판정). 직접 노출이면 0 |
+| `TRUST_PROXY_HOPS` | - | 1 | 앞단 프록시 수(클라이언트 IP 판정). Fastify `trustProxy`(`req.ip` → 감사 로그 ip · 라우트별 속도 제한 키)와 security.ts(전역 속도 제한 · 로그인 잠금 · /api/ready 공개 범위)가 같은 값을 쓴다. 직접 노출이면 0 |
 | `CSP_CONNECT_SRC_EXTRA` | - | 없음 | CSP connect-src에 더할 https/wss 출처 |
-| `READY_WORKER_STALE_MIN` | - | 15 | 워커 활동이 이보다 오래되면 /api/ready degraded |
+| `READY_WORKER_STALE_MIN` | - | 15 | 워커 하트비트 · 잡 처리 기록이 이보다 오래되면 /api/ready degraded |
+| `READY_SCHEDULER_STALE_MIN` | - | 25 (최소 11) | 예약 감지 잡(`alerts.scan`, 10분마다)이 이 시간 동안 안 생기면 /api/ready degraded(`no_scheduler`) |
+| `SHUTDOWN_STREAM_GRACE_MS` | - | 20000 | 종료(배포 · 재시작) 때 진행 중인 AI 응답 스트림이 끝나기를 기다리는 최대 시간. compose의 app `stop_grace_period`(30s)보다 짧게 |
 | `READY_TOKEN` | - | 없음 | 외부에서 /api/ready 세부 항목을 볼 때 `x-ready-token` 헤더 값(16자 이상). 없으면 세부 항목은 내부망에만 |
 | `SLOW_REQUEST_MS` | - | 3000 | 느린 요청 warn 로그 기준 |
 | `POSTGRES_DB` · `POSTGRES_USER` · `POSTGRES_PASSWORD` | 로컬 DB O | mildo · mildo · - | compose db 서비스 |
@@ -299,12 +339,12 @@ docker compose up -d       # app · worker · backup이 새 비밀번호로 다�
   "detail": "full",
   "checks": {
     "db": { "ok": true, "latencyMs": 2 },
-    "migrations": { "ok": true, "expected": 8, "applied": 8, "pending": [], "unknownApplied": [] },
+    "migrations": { "ok": true, "expected": 14, "applied": 14, "pending": [], "unknownApplied": [] },
     "worker": {
-      "ok": true, "status": "ok", "staleAfterMin": 15,
-      "lastActivityAt": "…", "lastFinishedAt": "…", "lastHeartbeatAt": "…", "activityAgeSec": 42,
-      "runningJobs": 0, "queuedDue": 0, "overdueJobs": 0, "failedJobs24h": 0, "activeWorkspaces": 1,
-      "workers": [{ "id": "worker-3f2a9c", "lastSeenAt": "…", "jobsSeen": 1520, "lastJobType": "alerts.scan" }],
+      "ok": true, "status": "ok", "staleAfterMin": 15, "schedulerStaleAfterMin": 25,
+      "lastActivityAt": "…", "lastFinishedAt": "…", "lastHeartbeatAt": "…", "activityAgeSec": 42, "lastScheduledAt": "…",
+      "runningJobs": 0, "queuedDue": 0, "overdueJobs": 0, "stuckJobs": 0, "failedJobs24h": 0, "activeWorkspaces": 1,
+      "workers": [{ "id": "worker-3f2a9c", "lastSeenAt": "…", "jobsSeen": 1520, "lastJobType": "alerts.scan", "cli": false }],
       "basis": "…판정 기준…"
     }
   },
@@ -316,8 +356,15 @@ docker compose up -d       # app · worker · backup이 새 비밀번호로 다�
 - `not_ready`(HTTP 503): DB에 연결할 수 없거나 적용되지 않은 마이그레이션이 있다. 로드밸런서는 이 인스턴스를 빼야 한다.
 - `degraded`(HTTP 200): API는 정상이지만 워커가 의심스럽다. 수집 · 감지 · 알림 · 반영이 멈췄을 수 있으니 바로 확인한다.
 - `ready`(HTTP 200): 정상.
-- 워커 판정: 워커 코드는 따로 하트비트를 쓰지 않으므로, `520_ops_heartbeat.sql`의 트리거가 워커가 잡을 집거나(running) 끝낼(done · failed) 때마다 `worker_heartbeats`에 워커별 마지막 시각을 남긴다. 활성 워크스페이스가 있으면 스케줄 잡이 최소 10분마다 생기므로, 최근 `READY_WORKER_STALE_MIN`(15분) 안에 잡 처리 기록이 없으면 `stale`, 처리 기록이 한 번도 없으면 `no_activity`, 실행 시각이 5분 넘게 지난 대기 잡이 있는데 최근 5분 처리 기록이 없으면 `stalled`(셋 다 degraded)로 본다. 활동은 최근인데 잡이 밀려 있으면 `busy`(정상 범위, 메모에 표시). 활성 워크스페이스가 없으면 `idle`(판정 보류).
-- 반례: 모든 워크스페이스가 일시 중지(suspended)면 스케줄 잡이 없어 `idle`로 보인다. 워커가 살아 있어도 스케줄을 끈(`SCHEDULER=off`) 워커만 있으면 잡이 생기지 않아 `stale`이 된다.
+- 워커 생존 신호는 두 가지다. 워커 프로세스가 60초마다 `worker_heartbeats`에 자기 행(`WORKER_ID`)을 갱신하고(`server/src/worker.ts`), `520_ops_heartbeat.sql`의 트리거가 워커가 잡을 집거나(running) 끝낼(done · failed) 때마다 같은 행을 갱신한다. DB CLI(`run-jobs` · `seed --run-jobs`, 잠금 이름 `drain`)가 처리한 기록은 `workers[].cli = true`로 보여 주기만 하고 워커 생존 근거로 세지 않는다(CLI로 잡을 돌렸다고 워커가 떠 있는 것은 아니다).
+- 워커 판정(`checks.worker.status`):
+  - `ok`: 최근 `READY_WORKER_STALE_MIN`(15분) 안에 하트비트나 워커 잡 처리 기록이 있다.
+  - `busy`(정상 범위): 실행 시각이 5분 넘게 지난 대기 잡이 있지만 큐가 최근 5분 안에 움직였거나, 실행 중인 잡(15분 안에 집은 것)이 있고 하트비트가 살아 있다(긴 백필이 레인을 차지한 경우).
+  - `stalled`(degraded): 밀린 잡이 있는데 큐가 5분 넘게 움직이지 않는다. **하트비트가 살아 있어도** 이렇게 본다 — 하트비트 타이머는 돌지만 잡 레인이 멈춘 경우를 가리지 않기 위해서다. `stuckJobs`(15분 넘게 잠긴 실행 중 잡)는 살아 있는 워커가 1분 안에 회수하므로 계속 남으면 워커가 없다는 뜻이다.
+  - `stale` · `no_activity`(degraded): 최근 15분 안에 생존 신호가 없다 · 한 번도 없었다.
+  - `no_scheduler`(degraded): 워커는 살아 있는데 예약 감지 잡(`alerts.scan`, `payload.trigger = 'schedule'`)이 `READY_SCHEDULER_STALE_MIN`(25분) 동안 생기지 않았다. `SCHEDULER=on`인 워커가 하나도 없으면 예약 수집 · 감지 · SLA · 리포트가 모두 멈추므로 따로 잡는다. 가장 오래 산 워커의 첫 하트비트와 가장 오래된 활성 워크스페이스가 25분보다 오래됐을 때만 판정한다(첫 배포 · 새 워크스페이스 직후 오탐 방지).
+  - `idle`(판정 보류, ready): 활성 워크스페이스가 없다.
+- 반례: 모든 워크스페이스가 일시 중지(suspended)면 스케줄 잡이 없어 `idle`로 보인다. 워커가 오랫동안 꺼져 있다가 막 다시 떴으면(같은 `WORKER_ID`) 다음 10분 예약 시각까지 `no_scheduler`가 남을 수 있다. 워커가 살아 있어도 `alerts.scan` 잡 처리 자체가 매번 실패하면 `failedJobs24h`와 메모로만 드러난다(상태는 `ok`).
 
 외부 감시(UptimeRobot · Better Stack · 사내 Zabbix 등)는 두 가지를 건다. `https://<도메인>/api/health` 200 확인(1분), `https://<도메인>/api/ready` 본문에 `"status":"ready"` 포함 확인(5분). 외부에서 세부 근거까지 받아야 하면 `.env`에 `READY_TOKEN=$(openssl rand -hex 24)`를 두고 감시 요청에 `x-ready-token` 헤더를 붙인다. 판정조차 외부에 보이기 싫으면 `deploy/Caddyfile`의 주석을 풀어 사내 IP만 허용한다.
 - 최근 24시간 최종 실패 수(`failedJobs24h`)는 워커가 실행하다 실패한 잡만 센다. 커넥션 · 업로드 삭제로 대기 중에 취소된 잡(`locked_by`가 비어 있는 failed)은 세지 않는다.
@@ -347,7 +394,7 @@ mpsql -c "UPDATE jobs SET status = 'queued', attempts = 0, run_at = now(), finis
 
 ### 로그
 
-- app은 JSON 구조화 로그(pino)를 낸다. 요청마다 `requestId`가 붙고 응답 헤더 `x-request-id`와 같다(Caddy가 붙인 값을 이어 쓴다). 사용자가 오류 화면을 캡처해 보내면 그 id로 찾는다: `docker compose logs app | grep <requestId>`.
+- app은 JSON 구조화 로그(pino)를 낸다. 요청마다 `requestId`(와 Fastify `reqId`)가 붙고 응답 헤더 `x-request-id`와 같은 값이다(Caddy가 붙인 값을 이어 쓴다. 형식: 영문 · 숫자 · `._:-` 8~64자, 아니면 새로 만든다). 초대 · 재설정 토큰은 요청 로그 URL에서 가려진다. 사용자가 오류 화면을 캡처해 보내면 그 id로 찾는다: `docker compose logs app | grep <requestId>`.
 - 쿠키 · Authorization · CSRF 헤더는 app 로그와 Caddy 로그 양쪽에서 지운다.
 - `SLOW_REQUEST_MS`(3초)보다 오래 걸린 요청은 `느린 요청` warn 로그로 남는다.
 - 컨테이너 로그는 서비스마다 20 MB × 5개로 돌려 쓴다(디스크 보호). 오래 보관하려면 로그 수집기(Loki · CloudWatch 등)로 보낸다.
@@ -380,7 +427,8 @@ curl -s http://127.0.0.1:8080/api/ready                                # ready �
 - 워커는 SIGTERM을 받으면 진행 중인 잡을 마치고 끝난다(최대 90초 대기 후 강제 종료). 강제 종료된 잡은 15분 뒤 다른 워커가 다시 집는다.
 - 프런트는 index.html을 캐시하지 않고(no-cache) 해시가 붙은 자산만 1년 캐시하므로, 배포 직후 새로고침하면 새 화면이 뜬다. 이미 열린 탭은 다음 화면 이동 때 옛 자산이 없어 오류가 날 수 있다 — 새로고침 안내.
 - 실패 시 되돌리기: 이전 이미지 태그로 `MILDO_IMAGE`를 돌리고 `docker compose up -d`. 새 마이그레이션이 이미 적용됐으면 옛 앱이 새 스키마와 맞지 않을 수 있으므로(/api/ready의 `unknownApplied`에 표시), 업그레이드 전 백업을 위의 '복원' 절차로 되돌린다.
-- 여러 app 인스턴스를 둘 때는 migrate를 반드시 한 번만 실행한다(동시 실행 잠금이 없다 — 알려진 한계).
+- 마이그레이션 러너는 스키마 단위 advisory lock을 잡으므로(`server/src/db/migrate.ts`) app · worker · migrate가 동시에 떠도 같은 파일을 두 번 적용하지 않는다. 그래도 compose처럼 migrate를 한 번 실행하고 app · worker는 `MIGRATE_ON_START=false`로 두는 편이 시작 순서가 분명하다.
+- app 종료(SIGTERM) 때 열린 실시간 알림 SSE는 바로 닫히고 브라우저가 3초 뒤 새 app에 다시 붙는다. 진행 중인 AI 답은 `SHUTDOWN_STREAM_GRACE_MS`(20초)까지 끝나기를 기다리고, 그래도 남으면 화면에 '서버를 다시 시작하는 중이라 응답이 중단되었습니다'(`server_restarting`)를 보내고 끊는다. 종료 중 새 요청은 503을 받는다.
 
 ---
 
@@ -465,18 +513,16 @@ mpsql -c "DELETE FROM workspaces WHERE slug = '<슬러그>'"                    
 
 - 네트워크: 밖으로 여는 포트는 80 · 443(Caddy)뿐이다. app은 127.0.0.1:8080, db는 내부 네트워크에만 있다.
 - 컨테이너: 비root(uid 10001), 읽기 전용 루트 파일시스템(/tmp만 tmpfs), `no-new-privileges`, 커널 권한 전부 제거. 코드 파일은 root 소유라 앱이 스스로 바꿀 수 없다.
-- 헤더(`server/src/http/security.ts`): 화면 응답 CSP `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`, API 응답 CSP `default-src 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`(카메라 · 마이크 · 위치 · 결제 등 차단), `Cross-Origin-Opener-Policy` · `Cross-Origin-Resource-Policy: same-origin`, API 응답 `Cache-Control: no-store`, `SECURE_COOKIES=true`일 때 HSTS 1년. 정적 파일은 index.html(304 재검증 응답 포함) no-cache, 해시가 붙은 `/assets/*`만 1년 immutable.
+- 헤더(`server/src/http/security.ts`): 스트림 응답(SSE · AI, `reply.hijack()`으로 직접 쓰는 응답)에도 같은 헤더와 `x-request-id`가 붙는다. 화면 응답 CSP `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`, API 응답 CSP `default-src 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`(카메라 · 마이크 · 위치 · 결제 등 차단), `Cross-Origin-Opener-Policy` · `Cross-Origin-Resource-Policy: same-origin`, API 응답 `Cache-Control: no-store`, `SECURE_COOKIES=true`일 때 HSTS 1년. 정적 파일은 index.html(304 재검증 응답 포함) no-cache, 해시가 붙은 `/assets/*`만 1년 immutable.
 - CSP 점검 결과(2026-11-02, 서버 모드 · Chromium · 로그인 뒤 주요 화면 순회): 차단으로 깨지는 기능은 없고, 위반 보고 1건이 남아 있다 — zod 4가 설정 검사(`src/data/config.ts`, 워크스페이스 설정 적용) 때 JIT 가능 여부를 `new Function("")`으로 시험하면서 `script-src` eval 보고를 낸다. 예외는 zod가 삼키고 일반 검사로 돌아가므로 동작은 같다. 프런트에서 `z.config({ jitless: true })`를 켜면 사라진다(해당 도메인에 요청함). CSP에 `'unsafe-eval'`을 더하지 않는다.
 - 경로 판정: 속도 제한 · 로그인 잠금 · API 헤더는 원시 URL 문자열이 아니라 라우터가 고른 라우트(`/api/auth/login`, `/api/w/:ws/events` 등)로 판정한다. `/%61pi/…`처럼 인코딩하거나 `#…`을 붙여 같은 라우트를 불러도 같은 제한을 받는다.
 - CSP 때문에 브라우저에서 외부 API를 직접 부르는 기능(예: AI 설정의 '브라우저에서 Anthropic 직접 호출')은 서버 모드에서 막힌다. 서버 모드 AI는 서버 키로 호출하므로 필요 없다. 꼭 써야 하면 `CSP_CONNECT_SRC_EXTRA=https://api.anthropic.com`.
 - 인증: 세션 쿠키 httpOnly · SameSite=Lax · Secure, 쓰기 요청 CSRF 토큰, 비밀번호 scrypt, 로그인 IP당 분당 10회(라우트) + 로그인 계열(로그인 · 재설정 요청 · 재설정 토큰 확인 · 재설정 · 초대 수락) IP당 분당 20회 + 같은 이메일 15분 10회 실패 잠금(재설정 뒤 초기화, 최근 성공 IP는 그 IP 실패만). 감사 로그에 로그인 성공 · 실패 · 잠금이 남는다.
-- '익숙한 IP' 판정: 이번 요청의 IP는 `TRUST_PROXY_HOPS` 기준으로 고르고(꾸민 X-Forwarded-For 앞부분을 믿지 않음), 감사 로그에 남은 성공 로그인 IP(`req.ip`)와 같을 때만 인정한다. 둘이 다르게 잡히는 환경(사용자 쪽 프록시가 X-Forwarded-For를 붙이는 사내망 등)에서는 익숙한 IP로 인정되지 않고 계정 전체 기준으로 센다 — 잠금이 느슨해지는 방향은 아니다.
+- '익숙한 IP' 판정: 이번 요청의 IP와 감사 로그에 남은 성공 로그인 IP(`req.ip`)를 같은 규칙(`TRUST_PROXY_HOPS`만큼의 프록시만 믿음, 꾸민 X-Forwarded-For 앞부분 무시)으로 고르므로 같은 사용자는 같은 IP로 이어진다. 사용자가 매번 다른 IP로 나가는 환경(모바일 망 등)에서는 익숙한 IP로 인정되지 않고 계정 전체 기준으로 센다 — 잠금이 느슨해지는 방향은 아니다.
 - 비밀값: 자격증명 · 웹훅 URL은 AES-256-GCM으로 DB에 저장, 화면 · 로그 · 감사에는 마스킹. `.env`는 `chmod 600`, git에 올리지 않는다.
 - 클라이언트 IP: `TRUST_PROXY_HOPS`만큼의 프록시만 믿는다. 앱을 프록시 없이 직접 노출하면서 1로 두면 클라이언트가 X-Forwarded-For를 꾸며 속도 제한을 피할 수 있다(→ 0).
 - 알려진 한계
-  - 속도 제한 카운터는 프로세스 메모리에 있어 app 인스턴스마다 따로 센다(로그인 실패 잠금은 DB 기준이라 공유된다).
-  - Fastify `trustProxy: true`가 고정이라 `req.ip`(감사 로그의 ip)는 X-Forwarded-For 맨 앞 값이다. 프록시 뒤에서는 정확하지만 직접 노출하면 꾸며질 수 있다.
-  - 마이그레이션 동시 실행 잠금이 없다(migrate 서비스 하나로 운영).
+  - 속도 제한 카운터는 프로세스 메모리에 있어 app 인스턴스마다 따로 센다(로그인 실패 잠금은 DB 기준이라 공유된다). 카운터 키 수는 20만 개로 묶여 있어 주소를 바꿔 가며 메모리를 키울 수 없다(넘치면 가장 오래된 키부터 버리고 새로 센다).
   - ENCRYPTION_KEY 회전은 짧은 중지가 필요하다. 외부 백업 복사는 자동화되어 있지 않다.
   - 매체 · 판매 채널 커넥터는 실계정 검증 전이다(화면 표시).
 - 취약점 점검: CI가 `npm audit --omit=dev`를 참고용으로 돌린다. 운영 이미지는 월 1회 이상 다시 빌드해 기반 이미지(node:22-bookworm-slim, postgres:16, caddy:2) 보안 패치를 받는다.

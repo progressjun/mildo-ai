@@ -8,8 +8,8 @@ import { STATE_KEY_RE as SERVER_KEY_RE } from '../../server/src/state/service';
 import { ApiError } from './api';
 import {
   apiErrorMessage, AUTH_ENTRY_RE, backoffDelay, dataSourceLabel, dataTimeLabel, decodeStorageValue, encodeStorageValue, EVENT_REFETCH, FLOW_SEED_PREFIX,
-  fromServerComment, isGlobalToastError, isSyncedStorageKey, mergeWithPending, normalizeInvite, passwordProblem, planStorageLoad, readAuthTokens, RECONNECT_TARGETS,
-  refetchTargetOf, STATE_KEY_RE, stripAuthTokens, visibleModuleIds,
+  fromServerComment, isGlobalToastError, isSyncedStorageKey, mergeWithPending, normalizeInvite, normalizeResetCheck, passwordProblem, planStorageLoad, readAuthTokens, RECONNECT_TARGETS,
+  refetchTargetOf, resetLinkProblem, SERVER_EVENT_TYPES, serverKoreanMessage, STATE_KEY_RE, stripAuthTokens, visibleModuleIds,
 } from './sync';
 
 describe('모듈 로컬 저장 키 필터', () => {
@@ -57,10 +57,13 @@ describe('SSE 이벤트 → 다시 불러오기', () => {
     expect(refetchTargetOf('member')).toBe('me');
     expect(refetchTargetOf('connection')).toBeNull();
     expect(refetchTargetOf('report')).toBeNull();
+    // 알림 채널 이벤트: 화면 구독만 (스토어 다시 읽기 · 워크스페이스 설정 새로고침 안내 없음)
+    expect(refetchTargetOf('notify')).toBeNull();
+    expect(SERVER_EVENT_TYPES).toContain('notify');
     expect(refetchTargetOf('hello')).toBeNull();
     expect(refetchTargetOf('unknown')).toBeNull();
     // 스펙 §3 이벤트 type 목록을 모두 다룬다
-    for (const t of ['change', 'incident', 'comment', 'dataset', 'connection', 'report', 'config', 'state']) expect(t in EVENT_REFETCH, t).toBe(true);
+    for (const t of ['change', 'incident', 'comment', 'dataset', 'connection', 'report', 'config', 'state', 'member', 'notify']) expect(t in EVENT_REFETCH, t).toBe(true);
     expect(RECONNECT_TARGETS).toEqual(expect.arrayContaining(['changes', 'incidents', 'comments', 'dataset', 'state']));
   });
   it('재연결 대기: 1 · 2 · 4 · 8 · 16 · 30초 상한, 흔들기 0~20%', () => {
@@ -187,6 +190,23 @@ describe('초대 · 재설정 링크 토큰', () => {
       .toEqual({ email: 'n@x.io', role: 'pm', workspaceName: '수면밀도 퍼포먼스', brandName: '수면밀도', expiresAt: '2026-11-09T00:00:00.000Z', invitedBy: '운영 책임자', expired: false, accepted: false, existingUser: true, signedInAsInvitee: false });
     expect(normalizeInvite(null)).toEqual({ email: null, role: null, workspaceName: null, brandName: null, expiresAt: null, invitedBy: null });
   });
+  it('재설정 링크 사전 확인 정규화 (team POST /auth/password-reset/check) · 쓸 수 없는 링크 안내', () => {
+    expect(normalizeResetCheck({ valid: true, email: 'r***@example.com', expiresAt: '2026-11-03T01:00:00.000Z' }))
+      .toEqual({ valid: true, reason: null, email: 'r***@example.com', expiresAt: '2026-11-03T01:00:00.000Z' });
+    expect(normalizeResetCheck({ valid: false, reason: 'used' })).toEqual({ valid: false, reason: 'used', email: null, expiresAt: null });
+    expect(normalizeResetCheck({ valid: false, reason: 'expired' })?.reason).toBe('expired');
+    expect(normalizeResetCheck({ valid: false })?.reason).toBe('invalid');
+    expect(normalizeResetCheck({ valid: false, reason: 'weird' })?.reason).toBe('invalid');
+    // 형식이 다르면 확인 불가(null) — 화면은 폼을 보여 주고 confirm이 판정
+    expect(normalizeResetCheck(null)).toBeNull();
+    expect(normalizeResetCheck({ ok: true })).toBeNull();
+    for (const r of ['used', 'reset_used', 'expired', 'reset_expired', 'invalid', 'reset_invalid']) expect(resetLinkProblem(r), r).toMatch(/재설정/);
+    expect(resetLinkProblem('weak_password')).toBeNull();
+    expect(resetLinkProblem(null)).toBeNull();
+    expect(serverKoreanMessage(new ApiError(429, 'login_locked', '잠시 막았습니다'))).toBe('잠시 막았습니다');
+    expect(serverKoreanMessage(new ApiError(500, 'internal', 'Internal Server Error'))).toBeNull();
+    expect(serverKoreanMessage(new Error('한국어지만 ApiError 아님'))).toBeNull();
+  });
 });
 
 describe('사용 모듈 (config.modules)', () => {
@@ -205,4 +225,13 @@ describe('사용 모듈 (config.modules)', () => {
 
 it('Flow 시연 이력 접두사는 flow 모듈과 같다', () => {
   expect(FLOW_SEED_PREFIX).toBe(SEED_PREFIX);
+});
+
+describe('서버 모드 AI 거부 코드 (ai 도메인 ↔ SearchTuneOS 진단 버튼)', () => {
+  it('서버가 AI를 쓸 수 없다고 답하는 코드(키 없음 · AI 꺼짐 · 권한 없음)는 진단 버튼을 끄는 거부 코드에 들어 있다', async () => {
+    const { DENIED_CODES } = await import('@/modules/geo/engine');
+    for (const code of ['not_granted', 'sampling_disabled', 'no_backend', 'ai_not_configured', 'ai_disabled', 'forbidden']) expect(DENIED_CODES.has(code), code).toBe(true);
+    // 일시적 오류는 거부로 보지 않는다 (사용자가 다시 시도할 수 있게)
+    for (const code of ['rate_limited', 'upstream_error', 'budget_exceeded']) expect(DENIED_CODES.has(code), code).toBe(false);
+  });
 });

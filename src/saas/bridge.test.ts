@@ -145,6 +145,19 @@ describe('변경 요청', () => {
     await h.bridge.settle();
     expect(h.toasts.map((t) => t.title)).toEqual(['dry-run으로 기록했습니다', '매체에 반영했습니다']);
   });
+  it('updateChange: 서버가 반영을 백그라운드로 이어가면(approved + executing) 응답 그대로 두고 "반영 중" 안내 (보류로 오판하지 않음)', async () => {
+    const running = chg('r', { status: 'approved' }) as ChangeRequest & { executing?: unknown };
+    running.executing = { phase: 'apply', since: '2026-11-03T00:00:00Z', background: true };
+    const h = harness({ 'PATCH /changes/r': () => ({ change: running }) });
+    h.state = { ...h.state, changes: [chg('r', { status: 'approved' })] };
+    h.bridge.updateChange('r', { status: 'applied' }, { by: 'PM', action: '반영' });
+    expect(h.state.changes[0].status).toBe('applied');
+    await h.bridge.settle();
+    // 서버 응답(response.change)으로 항상 교체 — 상태는 approved, 실행 중 표시 유지
+    expect(h.state.changes[0].status).toBe('approved');
+    expect((h.state.changes[0] as typeof running).executing).toMatchObject({ background: true });
+    expect(h.toasts.map((t) => t.title)).toEqual(['매체 반영 중']);
+  });
   it('updateChange 409 + 서버 현재 상태 → 되돌리지 않고 서버 값으로', async () => {
     const h = harness({ 'PATCH /changes/chg_1': () => new ApiError(409, 'invalid_transition', '이미 반영된 요청입니다', undefined, { error: {}, change: chg('chg_1', { status: 'applied' }) }) });
     h.state = { ...h.state, changes: [chg('chg_1', { status: 'approved' })] };

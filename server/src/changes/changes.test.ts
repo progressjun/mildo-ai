@@ -3,7 +3,7 @@
  * 대량 변경 이슈 · 반영 전 점검 → 보류 · 커넥터 dry_run / live / 실패 · 재배분 + 부분 실패 되돌림 · 롤백 · 동시 반영 1회 ·
  * 인라인 제한 초과 → 백그라운드 · 감시 잡 복구 · 감사 · 이벤트. 커넥터는 가짜(주입), 네트워크 호출 없음.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { ChangeRequest, Dataset } from '@/core/types';
 import { generateDemoData } from '@/data/demo';
 import { createTestApp, type TestApp, type TestClient } from '../../test/app';
@@ -13,6 +13,7 @@ import type { ApplyResult, ConnectorDef } from '../connectors/types';
 import { connector as naverSaStub } from '../connectors/naver-sa';
 import { configureChanges, jobs, resetChangesConfig, settleInflight } from './index';
 import { sweepStale } from './service';
+import { setNowForTest } from '../lib/time';
 import type { ConnectorResolver } from './connector-adapter';
 
 let t: TestApp;
@@ -910,5 +911,197 @@ describe('경합 · 감시 잡 (heartbeat · 계획 선저장)', () => {
     const late = await p;
     expect(late.json.change.status).toBe('held');
     expect(last(late.json.change.history).action).toBe('늦게 도착한 실행 결과');
+  });
+});
+
+/* ---------- 리뷰 3차 보강 ---------- */
+
+describe('대량 변경 가드 — 변경 건 기준 window · 날짜 넘김 · 종료 뒤 재발', () => {
+  const KST = (hhmm: string, day = '2026-11-02') => Date.parse(`${day}T${hhmm}:00+09:00`);
+  afterEach(() => setNowForTest(null));
+  async function burst(at: number, n: number, offset = 0): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      setNowForTest(at + i * 30_000);
+      const k = DATA.keywords[(i + offset) % DATA.keywords.length];
+      const after = Math.round(k.bid * 1.05);
+      ids.push((await create(u.ae, bid({ target: `${k.text} 입찰가`, targetId: k.id, before: k.bid, after, changePct: ((after - k.bid) / k.bid) * 100 }))).id);
+    }
+    return ids;
+  }
+  const incidents = async () => (await t.db.query<{ id: string; status: string; doc: any }>(`SELECT id, status, doc FROM incidents ORDER BY detected_at, id`)).rows;
+
+  it('같은 날 두 번째 일괄 변경은 종료된 첫 이슈와 별개로 감지 · 차단, 첫 묶음 건은 통과', async () => {
+    const first = await burst(KST('10:00'), 10);
+    let inc = await incidents();
+    expect(inc).toHaveLength(1);
+    expect(inc[0].id).toBe('bulk_change:adpilot · 테스트 ae:2026-11-02');
+    // PM이 11:00에 확인 · 종료
+    await t.db.query(`UPDATE incidents SET status = 'resolved', resolved_at = $1`, [new Date(KST('11:00'))]);
+    // 15:00 두 번째 묶음 (첫 묶음과 같은 크기 — 엔진 단독으로는 '가장 큰 window'만 보고해 놓친다)
+    const second = await burst(KST('15:00'), 10, 10);
+    inc = await incidents();
+    expect(inc).toHaveLength(2);
+    const follow = inc.find((i) => i.id !== 'bulk_change:adpilot · 테스트 ae:2026-11-02')!;
+    expect(follow.id).toBe(`bulk_change:adpilot · 테스트 ae:2026-11-02:${second[0]}`);
+    expect(follow.status).toBe('open');
+    expect(follow.doc.related).toEqual(second);
+    expect(follow.doc.title).toMatch(/이후 재발/);
+
+    setNowForTest(KST('15:30'));
+    await to(u.ae, second[3], 'approved');
+    const held = await to(u.ae, second[3], 'applied');
+    expect(held.json.change.status).toBe('held');
+    expect(held.json.change.execution.error).toContain(follow.id);
+    await to(u.ae, first[2], 'approved');
+    const ok = await to(u.ae, first[2], 'applied');
+    expect(ok.json.change.status).toBe('applied');
+    expect(ok.json.change.execution.checks.passes.join(' ')).toMatch(/대량 변경 이슈 .* 확인 · 종료됨/);
+    expect(await incidents()).toHaveLength(2);
+  });
+
+  it('어제 확인 · 종료된 묶음의 건을 오늘 반영해도 새 이슈를 만들지 않고 통과 (이슈 id 날짜 = 묶음 첫 건 날짜)', async () => {
+    const ids = await burst(KST('16:00'), 10);
+    await t.db.query(`UPDATE incidents SET status = 'resolved', resolved_at = $1`, [new Date(KST('17:00'))]);
+    setNowForTest(KST('09:00', '2026-11-03'));
+    await to(u.ae, ids[5], 'approved');
+    const r = await to(u.ae, ids[5], 'applied');
+    expect(r.json.change.status).toBe('applied');
+    const inc = await incidents();
+    expect(inc.map((i) => i.id)).toEqual(['bulk_change:adpilot · 테스트 ae:2026-11-02']);
+  });
+
+  it('이슈가 열려 있는 동안 묶음에 더해진 건은 종료 후 통과, 종료 뒤에 더해진 건은 재발로 차단', async () => {
+    const ids = await burst(KST('10:00'), 10);
+    const late = await burst(KST('10:05'), 1, 10); // 이슈 적재 뒤 같은 window에 추가 (열린 이슈의 related에는 없음)
+    expect((await incidents())).toHaveLength(1);
+    await to(u.ae, late[0], 'approved');
+    expect((await to(u.ae, late[0], 'applied')).json.change.status).toBe('held');
+    await t.db.query(`UPDATE incidents SET status = 'resolved', resolved_at = $1`, [new Date(KST('10:06'))]);
+    const retry = await to(u.ae, late[0], 'applied', { action: '재실행 · 반영' });
+    expect(retry.json.change.status).toBe('applied');
+    const after = await burst(KST('10:08'), 1, 11); // 종료 뒤 같은 window에 추가 → 재발
+    await to(u.ae, after[0], 'approved');
+    const blocked = await to(u.ae, after[0], 'applied');
+    expect(blocked.json.change.status).toBe('held');
+    expect(blocked.json.change.execution.error).toMatch(/대량 변경 실수 감지/);
+    expect((await incidents()).map((i) => i.id)).toContain(`bulk_change:adpilot · 테스트 ae:2026-11-02:${after[0]}`);
+    expect(ids).toHaveLength(10);
+  });
+});
+
+describe('값 · 단위 · 정직성 점검', () => {
+  it('change_pct는 숫자로 응답 · 같은 changePct를 실은 반영 요청은 수정으로 보지 않는다', async () => {
+    await saWithKeyword('dry_run');
+    const c = await approved();
+    const got = (await u.viewer.get(base(`/${c.id}`))).json.change;
+    expect(got.changePct).toBe(3.7);
+    const r = await patch(u.ae, c.id, { patch: { status: 'applied', changePct: 3.7, before: 270, after: 280 }, action: '반영' });
+    expect(r.status).toBe(200);
+    expect(r.json.change.status).toBe('applied');
+    expect(r.json.change.history.map((h: any) => h.action)).not.toContain('내용 수정');
+    const audit = await auditActions(c.id);
+    expect(typeof audit[0].detail.changePct).toBe('number');
+  });
+
+  it('요청 변경 폭이 값과 다르면 입찰도 큰 쪽을 저장, 값만 고치면 변경 폭을 다시 계산', async () => {
+    const lie = await create(u.ae, bid({ before: 270, after: 400, changePct: 3 }));
+    expect(lie.changePct).toBe(48.1);
+    expect(lie.history.map((h) => h.note).join(' ')).toMatch(/변경 폭 대조: 요청 3% · 값 기준 48.1%/);
+    const c = await create(u.ae, bid());
+    const e = await patch(u.ae, c.id, { patch: { after: 300 } });
+    expect(e.json.change).toMatchObject({ after: 300, changePct: 11.1 });
+  });
+
+  it('입찰가 · 예산은 원 단위 정수만 매체로 보낸다', async () => {
+    await saWithKeyword('live');
+    const c = await approved({ after: 280.5, changePct: 3.9 });
+    const r = await to(u.ae, c.id, 'applied');
+    expect(r.json.change.status).toBe('held');
+    expect(r.json.change.execution.error).toMatch(/원 단위 정수가 아닙니다/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('재배분 증액분이 감액 캠페인 예산 이상이면 0원으로 깎지 않고 보류 (총 예산 유지)', async () => {
+    const conn = await addConnection('naver_sa', 'naver_sa', 'live');
+    await addEntity('campaign', 'cmp_2', conn, { id: 'cmp_2', name: 'SA_일반 제품', dailyBudget: 2160000 });
+    await addEntity('campaign', 'cmp_5', conn, { id: 'cmp_5', name: 'SA_생활 상황', dailyBudget: 100000 });
+    const a = await approved({ kind: 'budget', target: 'SA_일반 제품 일 예산 ← SA_생활 상황', targetId: 'budget:cmp_2:cmp_5', before: 2160000, after: 2376000, changePct: 10 });
+    const r = await to(u.ae, a.id, 'applied');
+    expect(r.json.change.status).toBe('held');
+    expect(r.json.change.execution.error).toMatch(/감액 후 0원 이하/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('데모 커넥터는 live 설정이어도 dry_run 시뮬레이션으로 기록 (매체 반영됨으로 보이지 않게)', async () => {
+    const demo = await addConnection('demo', 'naver_sa', 'live', '데모 데이터');
+    await t.db.query(`UPDATE connections SET kind = 'other', channel = NULL WHERE id = $1`, [demo]);
+    await addEntity('keyword', 'kw_1', 'demo', { id: 'kw_1', text: '수면밀도', bid: 270, maxBid: 540 });
+    const demoDef: ConnectorDef = { ...fakeDef, provider: 'demo' };
+    configureChanges({ resolveConnector: async (db, cfg, conn) => (conn.provider === 'demo' ? { def: demoDef, context: async ({ dryRun, log }) => ({ workspaceId: conn.workspace_id, connectionId: conn.id, credentials: {}, settings: {}, dryRun, log, http: { request: async () => { throw new Error('no network'); } } }) } : resolver(db, cfg, conn)) });
+    const c = await approved();
+    const r = await to(u.ae, c.id, 'applied');
+    expect(r.json.change.execution).toMatchObject({ mode: 'dry_run', ok: true, provider: 'demo' });
+    expect(calls[0].dryRun).toBe(true);
+    expect(last(r.json.change.history).note).toMatch(/데모 커넥터\(TEST DATA\).*시뮬레이션/);
+  });
+
+  it('live인데 연결 확인 전(pending) 커넥션이면 보내지 않고 보류', async () => {
+    const conn = await saWithKeyword('live');
+    await t.db.query(`UPDATE connections SET status = 'pending' WHERE id = $1`, [conn]);
+    const c = await approved();
+    const r = await to(u.ae, c.id, 'applied');
+    expect(r.json.change.status).toBe('held');
+    expect(r.json.change.execution.error).toMatch(/연결 확인 전\(pending\)/);
+    expect(calls).toHaveLength(0);
+    // dry_run은 매체에 보내지 않으므로 그대로 진행
+    await t.db.query(`UPDATE connections SET write_mode = 'dry_run' WHERE id = $1`, [conn]);
+    expect((await to(u.ae, c.id, 'applied', { action: '재실행 · 반영' })).json.change.execution).toMatchObject({ mode: 'dry_run', ok: true });
+  });
+
+  it('live 실행 기록에 실계정 검증 여부(verifiedLive)와 확인 필요 문구 · 커넥터에는 대상 엔티티(광고그룹 id) 전달', async () => {
+    const conn = await addConnection('naver_sa', 'naver_sa', 'live');
+    await addEntity('keyword', 'kw_1', conn, { id: 'kw_1', text: '수면밀도', bid: 270, maxBid: 540, adgroupId: 'grp-a001-01-000000000001', campaignId: 'cmp-a001-01-000000000001', secretLike: 'x' });
+    const c = await approved();
+    const r = await to(u.ae, c.id, 'applied');
+    expect(r.json.change.execution).toMatchObject({ mode: 'live', ok: true, verifiedLive: false });
+    expect(last(r.json.change.history).note).toMatch(/실계정 연결 전 확인 필요/);
+    expect((calls[0].change as any).entity).toEqual({ type: 'keyword', externalId: 'kw_1', text: '수면밀도', adgroupId: 'grp-a001-01-000000000001', campaignId: 'cmp-a001-01-000000000001' });
+    expect((calls[0].change as any).execution).toBeUndefined();
+    // 롤백도 같은 엔티티 정보로
+    await to(u.ae, c.id, 'rolled_back');
+    expect((calls[1].change as any).entity?.adgroupId).toBe('grp-a001-01-000000000001');
+  });
+
+  it('일 누적 조정 폭은 첫 반영의 실행 계획 값(매체 현재 값 보정)을 시작 값으로 본다', async () => {
+    await saWithKeyword('dry_run'); // 수집값 270
+    const a = await approved({ module: 'flow', before: 300, after: 310, changePct: 3.3 }); // 요청 before 300은 오래된 값 → 계획 before 270
+    expect((await to(u.ae, a.id, 'applied')).json.change.status).toBe('applied');
+    const b = await approved({ module: 'flow', before: 310, after: 330, changePct: 6.5 });
+    const r = await to(u.ae, b.id, 'applied');
+    // 270 → 330 = 22.2% > 20% (요청 값 300 기준이면 10%라 통과했을 것)
+    expect(r.json.change.status).toBe('held');
+    expect(r.json.change.execution.error).toMatch(/오늘 시작 입찰가 270원 → 330원/);
+  });
+});
+
+describe('승인 시점 승인 주체 재판정', () => {
+  it('요청 뒤 위임 범위가 좁아지면 승인 시점에 올리고, 권한 밖이면 409 approver_changed (올린 값은 저장)', async () => {
+    const c = await create(u.ae, bid({ module: 'flow', kind: 'budget', target: 'SA 일 예산', targetId: 'flow:budget:cmp_2', before: 2000000, after: 2160000, changePct: 8 }));
+    expect(c.approver).toBe('AE');
+    await t.db.query(`UPDATE workspaces SET config = $2 WHERE id = $1`, [t.ws, JSON.stringify({ delegation: { aeMaxPct: 5, pmMaxPct: 30 } })]);
+    try {
+      const r = await to(u.ae, c.id, 'approved');
+      expect(r.status).toBe(409);
+      expect(r.json.error.code).toBe('approver_changed');
+      expect(r.json.change).toMatchObject({ status: 'pending', approver: 'PM' });
+      expect(last(r.json.change.history).action).toBe('승인 주체 재판정');
+      const ok = await to(u.pm, c.id, 'approved');
+      expect(ok.status).toBe(200);
+      expect(ok.json.change).toMatchObject({ status: 'approved', approver: 'PM' });
+      expect((await auditActions(c.id)).map((a) => a.action)).toEqual(['change.create', 'change.reroute', 'change.approve']);
+    } finally {
+      await t.db.query(`UPDATE workspaces SET config = '{}'::jsonb WHERE id = $1`, [t.ws]);
+    }
   });
 });

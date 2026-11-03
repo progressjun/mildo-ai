@@ -14,14 +14,15 @@
 import type { ApprovalLevel, ChangeRequest, Dataset, Incident } from '@/core/types';
 import { APPROVER_LABEL, executionCheck } from '@/modules/flow/engine';
 import { officialConfig } from '@/modules/adpilot/engine';
-import { activeConfig, detectBulkChange, type AlertIncident } from '@/modules/alert/engine';
+import type { AlertIncident } from '@/modules/alert/engine';
 import { GFA_DELEGATION } from '@/data/constants';
 import type { AppConfig } from '../config';
 import type { Db, Queryable } from '../db/pool';
 import { redact } from '../audit/audit';
 import { scrubSecrets } from '../connectors/http';
 import type { ConnectorBinding, ConnectorResolver } from './connector-adapter';
-import type { ExecOp, ExecPlan, OpResult, ServerExecution } from './model';
+import { bulkIncidentsFor, decideBulk, type StoredBulk } from './bulk';
+import type { ExecOp, ExecPlan, OpEntity, OpResult, ServerExecution } from './model';
 import { LEVEL_RANK, effectivePct, toNum } from './policy';
 import { connectionsForChannel, findEntities, getConnection, numOf, parseTarget, type ConnectionRow, type EntityHit } from './targets';
 
@@ -42,8 +43,10 @@ export interface GuardInput {
   today: string;
   /** 같은 키워드의 오늘 반영된 입찰 변경 (반영 시각 순) */
   todayAppliedBids: ChangeRequest[];
-  /** DB에 있는 대량 변경 이슈 상태 (id → status) */
-  bulkIncidentStatus: Map<string, string>;
+  /** DB에 적재된 대량 변경 이슈 (id · 상태 · related · 종료 시각) */
+  bulkStored?: StoredBulk[];
+  /** 이전 형식(id → 상태) — bulkStored가 없을 때만 쓴다 (다른 도메인 테스트 호환) */
+  bulkIncidentStatus?: Map<string, string>;
 }
 
 export interface GuardResult {
@@ -97,7 +100,10 @@ export function evaluateGuards(g: GuardInput): GuardResult {
 
   /* 키워드 일 누적 조정 폭 (p.14 '일 조정 폭 상한'은 하루 기준) */
   if (c.kind === 'bid' && g.todayAppliedBids.length) {
-    const startBid = toNum(g.todayAppliedBids[0].before);
+    // 오늘 첫 반영의 시작 값: 실행 계획의 before(매체 현재 값으로 보정된 값)가 있으면 그 값, 없으면 요청 값
+    const first = g.todayAppliedBids[0];
+    const planBefore = (first.execution as ServerExecution | undefined)?.plan?.ops?.find((o) => o.role === 'primary')?.before;
+    const startBid = finite(toNum(planBefore)) ? toNum(planBefore) : toNum(first.before);
     const after = toNum(c.after);
     if (finite(startBid) && startBid > 0 && finite(after)) {
       const cum = ((after - startBid) / startBid) * 100;
@@ -109,24 +115,13 @@ export function evaluateGuards(g: GuardInput): GuardResult {
     }
   }
 
-  /* 대량 변경 실수 (p.45) — 미해결 이슈가 걸린 건은 신규 반영 일시 차단 */
-  const bulkIncidents: AlertIncident[] = [];
-  let found: AlertIncident[] = [];
-  try {
-    found = detectBulkChange(changes, { today: g.today, config: activeConfig(changes) });
-  } catch {
-    found = [];
-  }
-  for (const b of found) {
-    if (!(b.related ?? []).includes(c.id)) continue;
-    const st = g.bulkIncidentStatus.get(b.id);
-    if (st === 'resolved') {
-      passes.push(`대량 변경 이슈 ${b.id} 확인 · 종료됨`);
-      continue;
-    }
-    if (!st) bulkIncidents.push(b);
-    blocks.push(`대량 변경 실수 감지 (P1 · ${b.title}) — 이슈 확인 · 종료 전 신규 반영 일시 차단 (p.45)`);
-  }
+  /* 대량 변경 실수 (p.45) — 이 건이 걸린 미해결 · 새 이슈가 있으면 신규 반영 일시 차단 (bulk.ts) */
+  const stored: StoredBulk[] = g.bulkStored
+    ?? [...(g.bulkIncidentStatus ?? new Map<string, string>())].map(([id, status]) => ({ id, status, related: [], resolvedAt: status === 'resolved' ? Infinity : null }));
+  const bulk = decideBulk(bulkIncidentsFor(changes, c), c, stored, changes);
+  blocks.push(...bulk.blocks);
+  passes.push(...bulk.passes);
+  const bulkIncidents: AlertIncident[] = bulk.toStore;
 
   return { ok: blocks.length === 0, blocks, warnings, passes, bulkIncidents };
 }
@@ -216,13 +211,44 @@ async function pickWritable(rc: ResolveCtx, hits: EntityHit[], kind: ChangeReque
   return null;
 }
 
-function modeOf(conns: ConnectionRow[]): { mode: 'dry_run' | 'live' } | { blocked: string } {
+/** 실제 매체가 없는 공급자 — write_mode가 live여도 매체 호출이 없으므로 dry_run(시뮬레이션)으로 기록한다 */
+const SIMULATED_PROVIDERS = new Set(['demo']);
+
+/**
+ * 실행 모드: off · 비활성 → 보류, 하나라도 live가 아니면 전체 dry_run, 데모 커넥터는 항상 dry_run(시뮬레이션 — 'live 반영됨'으로 보이지 않게),
+ * live인데 연결 확인 전(pending — 새 커넥션 · 자격증명 교체 뒤 미확인) 커넥션이 있으면 보류.
+ */
+function modeOf(conns: ConnectionRow[]): { mode: 'dry_run' | 'live'; notes: string[] } | { blocked: string } {
   for (const c of conns) {
     if (c.status === 'disabled') return { blocked: `대상 커넥션 '${c.label}'이(가) 비활성 상태입니다 — 데이터 연결 화면에서 활성화 후 재실행` };
     if (c.write_mode === 'off') return { blocked: `대상 커넥션 '${c.label}'의 쓰기 모드가 꺼져 있습니다(off) — dry_run 또는 live로 바꾼 뒤 재실행` };
   }
-  return { mode: conns.some((c) => c.write_mode !== 'live') ? 'dry_run' : 'live' };
+  const notes: string[] = [];
+  const simulated = conns.filter((c) => SIMULATED_PROVIDERS.has(c.provider));
+  if (simulated.length) {
+    if (simulated.some((c) => c.write_mode === 'live')) notes.push('데모 커넥터(TEST DATA)는 실제 매체가 없어 live 설정이어도 dry_run 시뮬레이션으로 기록합니다');
+    return { mode: 'dry_run', notes };
+  }
+  if (conns.some((c) => c.write_mode !== 'live')) {
+    if (conns.some((c) => c.write_mode === 'live')) notes.push('커넥션 쓰기 모드가 섞여 있어 전체를 dry_run으로 실행합니다');
+    return { mode: 'dry_run', notes };
+  }
+  const unverified = conns.find((c) => c.status === 'pending');
+  if (unverified) return { blocked: `대상 커넥션 '${unverified.label}'이(가) 연결 확인 전(pending)입니다 — 데이터 연결 화면에서 연결 확인을 통과한 뒤 live로 재실행` };
+  return { mode: 'live', notes };
 }
+
+const ENTITY_FIELDS = ['name', 'text', 'media', 'campaignId', 'adgroupId'] as const;
+export function entityOf(hit: EntityHit): OpEntity {
+  const e: OpEntity = { type: hit.entityType, externalId: hit.externalId };
+  for (const k of ENTITY_FIELDS) {
+    const v = hit.doc[k];
+    if (typeof v === 'string' && v.trim() && v.length <= 200) e[k] = v;
+  }
+  return e;
+}
+
+const isWonInt = (n: number) => Number.isInteger(n) && n >= 0 && n <= Number.MAX_SAFE_INTEGER;
 
 /** 변경 요청 → 실행 계획 (반영). limits가 있으면 현재 값 기준 변경 폭도 점검한다 */
 export async function resolvePlan(rc: ResolveCtx, ws: string, c: ChangeRequest, limits?: PlanLimits): Promise<Resolution> {
@@ -246,7 +272,7 @@ export async function resolvePlan(rc: ResolveCtx, ws: string, c: ChangeRequest, 
       externalId: c.targetId ?? '', entityType: 'new', kind: c.kind, target: c.target, before: c.before, after: c.after, role: 'primary',
       connectionId: ok[0].conn.id, provider: ok[0].conn.provider, idempotent: false,
     };
-    return { kind: 'plan', plan: { mode: m.mode, ops: [op] }, bindings: new Map([[ok[0].conn.id, ok[0].b]]), notes };
+    return { kind: 'plan', plan: { mode: m.mode, ops: [op] }, bindings: new Map([[ok[0].conn.id, ok[0].b]]), notes: [...notes, ...m.notes] };
   }
 
   const hits = await findEntities(rc.db, ws, ref.entityTypes, { id: ref.id, text: ref.text });
@@ -269,10 +295,14 @@ export async function resolvePlan(rc: ResolveCtx, ws: string, c: ChangeRequest, 
   const after = toNum(c.after);
   if (c.kind === 'bid') {
     if (!finite(after) || after <= 0) return { kind: 'blocked', reason: '실행 오류: 입찰가 값이 올바르지 않습니다' };
+    if (!isWonInt(after)) return { kind: 'blocked', reason: `실행 오류: 입찰가 ${after}는 원 단위 정수가 아닙니다 — 매체에 소수 금액을 보내지 않습니다` };
     const maxBid = numOf(doc.maxBid);
     if (finite(maxBid) && maxBid > 0 && after > maxBid) return { kind: 'blocked', reason: `실행 오류: 입찰가 ${after}원 > 최대 입찰가 ${maxBid}원 (${hit.externalId})` };
   }
-  if (c.kind === 'budget' && (!finite(after) || after < 0)) return { kind: 'blocked', reason: '실행 오류: 일 예산 값이 올바르지 않습니다' };
+  if (c.kind === 'budget') {
+    if (!finite(after) || after < 0) return { kind: 'blocked', reason: '실행 오류: 일 예산 값이 올바르지 않습니다' };
+    if (!isWonInt(after)) return { kind: 'blocked', reason: `실행 오류: 일 예산 ${after}는 원 단위 정수가 아닙니다 — 매체에 소수 금액을 보내지 않습니다` };
+  }
 
   let externalId = hit.externalId;
   let entityType: ExecOp['entityType'] = hit.entityType;
@@ -297,6 +327,7 @@ export async function resolvePlan(rc: ResolveCtx, ws: string, c: ChangeRequest, 
   const ops: ExecOp[] = [{
     externalId, entityType, kind: c.kind, target: c.target, before: primaryBefore, after: c.after, role: 'primary',
     connectionId: hit.connection!.id, provider: hit.connection!.provider, idempotent: !NON_IDEMPOTENT.has(c.kind) && entityType !== 'new',
+    entity: entityOf(hit),
   }];
   const bindings = new Map<string, ConnectorBinding>([[hit.connection!.id, binding]]);
   const conns = [hit.connection!];
@@ -312,10 +343,16 @@ export async function resolvePlan(rc: ResolveCtx, ws: string, c: ChangeRequest, 
     if (dObs && !dObs.trusted) return { kind: 'blocked', reason: `재배분 감액 캠페인(${ref.donorId})의 현재 일 예산을 확인할 수 없습니다 — ${dObs.reason}` };
     const donorBudget = dObs ? dObs.value : numOf(dPick.hit.doc.dailyBudget);
     if (!finite(donorBudget) || !finite(delta)) return { kind: 'blocked', reason: `재배분 감액 캠페인(${ref.donorId})의 현재 일 예산을 확인할 수 없습니다` };
-    const donorAfter = Math.max(0, donorBudget - delta);
+    const donorAfter = donorBudget - delta;
+    // 감액분이 감액 캠페인의 현재 일 예산 이상이면 0원 이하가 되어(매체마다 0원의 뜻이 다르다 — 무제한 · 거부) 총 예산을 지킬 수 없다
+    if (donorAfter <= 0) {
+      return { kind: 'blocked', reason: `실행 오류: 재배분 증액 ${Math.round(delta)}원이 감액 캠페인(${ref.donorId})의 현재 일 예산 ${donorBudget}원 이상입니다 — 감액 후 0원 이하가 되어 반영하지 않습니다 (총 예산 유지 불가)` };
+    }
+    if (!isWonInt(donorAfter)) return { kind: 'blocked', reason: `실행 오류: 감액 후 일 예산 ${donorAfter}는 원 단위 정수가 아닙니다` };
     ops.push({
       externalId: dPick.hit.externalId, entityType: 'campaign', kind: 'budget', target: `${String(dPick.hit.doc.name ?? ref.donorId)} 일 예산 (재배분 감액)`,
       before: donorBudget, after: donorAfter, role: 'donor', connectionId: dPick.hit.connection!.id, provider: dPick.hit.connection!.provider, idempotent: true,
+      entity: entityOf(dPick.hit),
     });
     bindings.set(dPick.hit.connection!.id, dPick.binding);
     conns.push(dPick.hit.connection!);
@@ -324,7 +361,7 @@ export async function resolvePlan(rc: ResolveCtx, ws: string, c: ChangeRequest, 
 
   const m = modeOf(conns);
   if ('blocked' in m) return { kind: 'blocked', reason: m.blocked };
-  if (m.mode === 'dry_run' && conns.some((x) => x.write_mode === 'live')) notes.push('커넥션 쓰기 모드가 섞여 있어 전체를 dry_run으로 실행합니다');
+  notes.push(...m.notes);
 
   /* 현재 값 기준 변경 폭 점검 — live는 보류, dry_run은 주의로 */
   if (mismatch && limits) {
@@ -396,7 +433,7 @@ export async function resolveRollbackPlan(rc: ResolveCtx, ws: string, c: ChangeR
   // dry_run 반영 건은 live 커넥션이어도 dry_run으로만 되돌린다 (매체에 보낸 적 없는 값을 live로 덮지 않는다)
   const mode = applyExec.mode === 'dry_run' ? 'dry_run' : m.mode;
   const ops: ExecOp[] = [...prev.ops].reverse().map((o) => ({ ...o, before: o.after, after: o.before, target: `${o.target} (롤백)` }));
-  return { kind: 'plan', plan: { mode, ops }, bindings, notes: [] };
+  return { kind: 'plan', plan: { mode, ops }, bindings, notes: m.notes };
 }
 
 /* ------------------------------------------------------------------ */
@@ -406,7 +443,13 @@ export async function resolveRollbackPlan(rc: ResolveCtx, ws: string, c: ChangeR
 const MAX_JSON = 20_000;
 /** 감사 redact가 놓치는 매체 인증 키 이름까지 (x-api-key · signature · x-customer · access/refresh token · developer-token 등) */
 const EXTRA_SECRET_KEY = /(api[-_]?key|signature|x-customer|access[-_]?token|refresh[-_]?token|developer[-_]?token|client[-_]?secret|bearer)/i;
+/** 문자열 값 안의 비밀값 (Bearer · access_token= · URL 쿼리의 서명 · 키) — 커넥터가 URL에 토큰을 실어 요약에 남겨도 저장 · 응답 전에 가린다 */
+const SECRET_QUERY = /([?&;](?:access_token|refresh_token|appsecret_proof|client_secret|api_?key|key|token|secret|signature|sig|password)=)[^&#\s"']+/gi;
+export function scrubString(s: string): string {
+  return scrubSecrets(s).replace(SECRET_QUERY, '$1••••');
+}
 function scrubKeys(v: unknown, depth = 0): unknown {
+  if (typeof v === 'string') return scrubString(v);
   if (depth > 8 || v === null || typeof v !== 'object') return v;
   if (Array.isArray(v)) return v.map((x) => scrubKeys(x, depth + 1));
   const out: Record<string, unknown> = {};
@@ -433,10 +476,14 @@ export interface RunOutcome {
   logs: string[];
 }
 
-function opChange(c: ChangeRequest, op: ExecOp): ChangeRequest {
+/** 커넥터에 넘기는 변경 — ChangeRequest + 대상 엔티티(change.entity, 선택 필드 · connectors/types.ts 계약에 더한 것) */
+export type ApplyChange = ChangeRequest & { entity?: OpEntity };
+
+export function opChange(c: ChangeRequest, op: ExecOp): ApplyChange {
   const b = toNum(op.before), a = toNum(op.after);
-  return {
-    ...c,
+  const { execution: _e, ...rest } = c;
+  const out: ApplyChange = {
+    ...rest,
     kind: op.kind,
     target: op.target,
     targetId: op.externalId,
@@ -444,10 +491,12 @@ function opChange(c: ChangeRequest, op: ExecOp): ChangeRequest {
     after: op.after,
     changePct: finite(b) && finite(a) && b !== 0 ? round1(((a - b) / Math.abs(b)) * 100) : c.changePct,
   };
+  if (op.entity) out.entity = { ...op.entity };
+  return out;
 }
 
 async function callOp(binding: ConnectorBinding, c: ChangeRequest, op: ExecOp, dryRun: boolean, log: (m: string, e?: unknown) => void): Promise<OpResult> {
-  const base = { externalId: op.externalId, connectionId: op.connectionId, provider: op.provider, value: op.after };
+  const base = { externalId: op.externalId, connectionId: op.connectionId, provider: op.provider, value: op.after, verifiedLive: binding.def.verifiedLive === true };
   try {
     const ctx = await binding.context({ dryRun, log, idempotent: op.idempotent });
     const r = await binding.def.apply!(ctx, opChange(c, op));
@@ -456,11 +505,11 @@ async function callOp(binding: ConnectorBinding, c: ChangeRequest, op: ExecOp, d
       ok: !!r?.ok,
       request: bounded(r?.request),
       response: bounded(r?.response),
-      error: r?.ok ? undefined : scrubSecrets(String(r?.error ?? '매체가 실패를 돌려줬습니다')).slice(0, 1000),
+      error: r?.ok ? undefined : scrubString(String(r?.error ?? '매체가 실패를 돌려줬습니다')).slice(0, 1000),
       appliedValue: r?.appliedValue,
     };
   } catch (e) {
-    return { ...base, ok: false, error: scrubSecrets(String((e as Error)?.message ?? e)).slice(0, 1000) };
+    return { ...base, ok: false, error: scrubString(String((e as Error)?.message ?? e)).slice(0, 1000) };
   }
 }
 
@@ -468,14 +517,14 @@ async function callOp(binding: ConnectorBinding, c: ChangeRequest, op: ExecOp, d
 export async function runPlan(plan: ExecPlan, bindings: Map<string, ConnectorBinding>, c: ChangeRequest): Promise<RunOutcome> {
   const logs: string[] = [];
   const log = (m: string, e?: unknown) => {
-    if (logs.length < 50) logs.push(`${m}${e === undefined ? '' : ` ${JSON.stringify(bounded(e)).slice(0, 300)}`}`.slice(0, 400));
+    if (logs.length < 20) logs.push(scrubString(`${m}${e === undefined ? '' : ` ${JSON.stringify(bounded(e)).slice(0, 300)}`}`).slice(0, 400));
   };
   const dryRun = plan.mode === 'dry_run';
   const results: OpResult[] = [];
   const compensation: OpResult[] = [];
   for (const op of plan.ops) {
     const b = bindings.get(op.connectionId);
-    const r = b ? await callOp(b, c, op, dryRun, log) : { externalId: op.externalId, connectionId: op.connectionId, provider: op.provider, value: op.after, ok: false, error: '커넥터를 찾을 수 없습니다' };
+    const r: OpResult = b ? await callOp(b, c, op, dryRun, log) : { externalId: op.externalId, connectionId: op.connectionId, provider: op.provider, value: op.after, ok: false, error: '커넥터를 찾을 수 없습니다' };
     results.push(r);
     if (!r.ok) {
       if (!dryRun) {

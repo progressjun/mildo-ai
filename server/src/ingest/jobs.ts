@@ -96,7 +96,7 @@ export function registerIngestJobs(reg: JobRegistry): void {
   reg.job('ingest.upload', async (ctx) => {
     const id = typeof ctx.payload.uploadId === 'string' ? ctx.payload.uploadId : null;
     if (!id) return { skipped: 'uploadId 없음' };
-    const r = await importUpload(ctx.db, id, { trigger: 'upload' });
+    const r = await importUpload(ctx.db, id, { trigger: 'upload', finalAttempt: ctx.job.attempts >= ctx.job.max_attempts });
     return brief(r);
   });
 

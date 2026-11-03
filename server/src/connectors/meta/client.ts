@@ -12,7 +12,7 @@
  *   - 통화 오프셋: https://developers.facebook.com/docs/marketing-api/currencies  → KRW 오프셋 1 (원 = 최소 단위)
  *   - 광고 계정: https://developers.facebook.com/docs/marketing-api/reference/ad-account/
  *       account_status 1 ACTIVE · 2 DISABLED · 3 UNSETTLED · 7 PENDING_RISK_REVIEW · 8 PENDING_SETTLEMENT · 9 IN_GRACE_PERIOD · 100/101 CLOSURE · CLOSED
- *       spend_cap · amount_spent (읽기 시 통화 기본 단위), is_prepay_account
+ *       spend_cap · amount_spent (숫자 문자열 — 통화 오프셋 단위로 보고 오프셋으로 나눈다. KRW는 오프셋 1이라 원 그대로), is_prepay_account
  *   - appsecret_proof: https://developers.facebook.com/docs/graph-api/securing-requests  (HMAC-SHA256(app_secret, access_token) hex)
  * 토큰은 GET은 access_token 쿼리, POST는 본문(form)으로 보낸다. 요청 요약 · 로그에는 남기지 않는다.
  */

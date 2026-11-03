@@ -150,6 +150,33 @@ describe('수정 · write_mode', () => {
     expect((await (await as('ae')).patch(`${base()}/${id}`, { label: 'x' })).status).toBe(403);
   });
 
+  it('live 커넥션의 자격증명 교체는 live_write만 (반영 대상 계정 바꿔치기 방지) — dry_run으로 내린 뒤에는 configure로 충분', async () => {
+    const pm = await as('pm');
+    const admin = await as('admin');
+    const id = (await create(pm, { label: 'live 자격증명' })).json.connection.id;
+    expect((await admin.patch(`${base()}/${id}`, { writeMode: 'live' })).status).toBe(200);
+    const denied = await pm.patch(`${base()}/${id}`, { credentials: { refreshToken: 'refresh-OTHER-ACCOUNT-1' } });
+    expect(denied.status).toBe(403);
+    expect(denied.json.error.message).toMatch(/dry_run/);
+    // 같은 요청에서 dry_run으로 내리면서 바꾸는 것은 허용 (live가 아니게 되므로)
+    const lowered = await pm.patch(`${base()}/${id}`, { writeMode: 'dry_run', credentials: { refreshToken: 'refresh-OTHER-ACCOUNT-1' } });
+    expect(lowered.status).toBe(200);
+    expect(lowered.json.connection).toMatchObject({ writeMode: 'dry_run', status: 'pending' });
+    expect((await admin.patch(`${base()}/${id}`, { writeMode: 'live' })).status).toBe(200);
+    expect((await admin.patch(`${base()}/${id}`, { credentials: { refreshToken: 'refresh-ADMIN-NEW-01' } })).status).toBe(200);
+    // 라벨 · 우선순위 같은 비자격증명 수정은 live여도 configure로 가능
+    expect((await pm.patch(`${base()}/${id}`, { label: 'live 자격증명 (이름만)' })).status).toBe(200);
+  });
+
+  it('설정에 비밀값처럼 보이는 키가 있어도 응답에는 가린다', async () => {
+    const pm = await as('pm');
+    const id = (await create(pm, { label: '설정 마스킹' })).json.connection.id;
+    await t.db.query(`UPDATE connections SET settings = $2 WHERE id = $1`, [id, JSON.stringify({ loginCustomerId: '9876543210', webhookSecret: 'SECRET-IN-SETTINGS', apiToken: '' })]);
+    const r = await pm.get(base());
+    expect(r.body).not.toContain('SECRET-IN-SETTINGS');
+    expect(r.json.connections.find((c: { id: string }) => c.id === id).settings).toEqual({ loginCustomerId: '9876543210', webhookSecret: '••••', apiToken: null });
+  });
+
   it('자격증명 수정: 빈 비밀값은 기존 유지, 새 값만 교체하고 다시 연결 확인(pending)으로', async () => {
     const pm = await as('pm');
     const id = (await create(pm, { label: '자격증명 수정' })).json.connection.id;
@@ -239,6 +266,10 @@ describe('삭제 · 테넌트 격리', () => {
     expect(r.json.purgedRows).toBe(1);
     expect((await t.db.query('SELECT 1 FROM wh_media_daily WHERE source = $1', [id])).rowCount).toBe(0);
     expect((await t.db.query(`SELECT 1 FROM jobs WHERE status = 'queued' AND payload->>'connectionId' = $1`, [id])).rowCount).toBe(0);
+    // 대기 잡은 실패가 아니라 취소(done + 사유)로 끝난다 — 운영 모니터링의 실패 잡 수에 섞이지 않게
+    const cancelled = (await t.db.query<{ status: string; result: { cancelled: string } }>(`SELECT status, result FROM jobs WHERE payload->>'connectionId' = $1`, [id])).rows;
+    expect(cancelled.length).toBeGreaterThan(0);
+    expect(cancelled.every((j) => j.status === 'done' && j.result.cancelled === '커넥션 삭제로 취소')).toBe(true);
     expect((await t.db.query(`SELECT 1 FROM audit_log WHERE action = 'connection.delete' AND target_id = $1`, [id])).rowCount).toBe(1);
     for (let i = 0; i < 20 && !got.includes('dataset'); i++) await new Promise((res) => setTimeout(res, 50));
     off();

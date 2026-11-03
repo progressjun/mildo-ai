@@ -195,3 +195,21 @@
   .flow-checklist { columns: 1; }
   .flow-next-card { position: static; }
 }
+
+/* ---------- 매체 반영 실행 상태 (서버 모드: change.executing · change.execution) ---------- */
+.flow-exec { display: inline-flex; }
+.flow-card .flow-exec { display: block; }
+.flow-exec-panel { border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; background: var(--surface-2); }
+.flow-exec-panel[data-exec='executing'] { box-shadow: inset 3px 0 0 var(--accent); }
+.flow-exec-panel[data-exec='dry_run'] { box-shadow: inset 3px 0 0 var(--warning); }
+.flow-exec-panel[data-exec='live'] { box-shadow: inset 3px 0 0 var(--good); }
+.flow-exec-panel[data-exec='live_failed'] { box-shadow: inset 3px 0 0 var(--critical); }
+.flow-exec-req summary { cursor: pointer; color: var(--ink-2); }
+.flow-exec-pre {
+  margin: 6px 0 0; padding: 8px; max-height: 240px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-size: var(--fs-xs); line-height: 1.45; white-space: pre-wrap; word-break: break-all;
+}
+.flow-exec-attempt { color: var(--ink-2); }
+.flow-exec-attempt.tone-good { color: var(--good-ink); }
+.flow-exec-attempt.tone-critical { color: var(--critical-ink); }
+.flow-exec-attempt.tone-warning { color: var(--warning-ink); }

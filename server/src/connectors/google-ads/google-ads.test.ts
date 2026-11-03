@@ -77,7 +77,10 @@ describe('수집 (fetch)', () => {
     expect(cmp['gads-cmp-333']).toMatchObject({ status: 'off', dailyBudget: 0 });
 
     const kw = Object.fromEntries(b.keywords!.map((k) => [k.id, k]));
-    expect(kw['gads-kw-5001-9001']).toMatchObject({ text: '수면밀도', adgroup: 'Google · 브랜드', isBrand: true, bid: 1500, maxBid: 3000, impressionShareLost: 0.37, status: 'on', landing: 'https://mildo.kr', avgRank: 0 });
+    expect(kw['gads-kw-5001-9001']).toMatchObject({ text: '수면밀도', adgroup: '브랜드', isBrand: true, bid: 1500, maxBid: 3000, impressionShareLost: 0.37, status: 'on', landing: 'https://mildo.kr', avgRank: 0 });
+    // 매체 구분은 core Keyword.media · 원본 id로 (광고그룹 이름 접두어 없음)
+    expect(kw['gads-kw-5001-9001']).toMatchObject({ media: 'google', campaignId: 'gads-cmp-111', adgroupId: '5001' });
+    expect(Object.values(kw).every((k) => !String((k as { adgroup: string }).adgroup).startsWith('Google ·'))).toBe(true);
     expect(kw['gads-kw-5002-9002']).toMatchObject({ bid: 800, status: 'off', intent: 'brand', impressionShareLost: 0 });
     expect(b.keywordDaily).toEqual([{ date: '2026-11-02', keywordId: 'gads-kw-5001-9001', impressions: 500, clicks: 40, cost: 61000, conversions: 2, revenue: 900000, avgRank: null }]);
     expect(b.searchTermDaily).toEqual([{ date: '2026-11-02', term: '수면밀도 매트리스', impressions: 80, clicks: 7, cost: 10000, conversions: 1, revenue: 500000 }]);
@@ -194,6 +197,22 @@ describe('반영 (apply)', () => {
     const x = await connector.apply!(fakeCtx(CREDS, {}, bad), change({ kind: 'status', targetId: 'gads-cmp-111', after: 'off' }));
     expect(x.ok).toBe(false);
     expect(x.error).toMatch(/요청 오류.*fieldError=IMMUTABLE_FIELD/);
+  });
+});
+
+describe('연결 확인 (test)', () => {
+  it('관리자(MCC) 계정이면 ok:false — customer.manager를 실제로 조회한다', async () => {
+    const routes = googleRoutes({ today: TODAY });
+    const http = fakeHttp([
+      { method: 'POST', match: (req) => req.url.endsWith('/googleAds:searchStream') && String((req.body as { query?: string }).query).includes('FROM customer LIMIT 1'),
+        reply: (req) => ({ data: [{ results: String((req.body as { query: string }).query).includes('customer.manager') ? [{ customer: { id: '1234567890', descriptiveName: 'MCC', currencyCode: 'KRW', timeZone: 'Asia/Seoul', manager: true } }] : [{ customer: { id: '1234567890' } }] }] }) },
+      ...routes,
+    ]);
+    const r = await connector.test(fakeCtx(CREDS, {}, http));
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/관리자 계정입니다/);
+    const ok = await connector.test(fakeCtx(CREDS, {}, fakeHttp(googleRoutes({ today: TODAY }))));
+    expect(ok).toMatchObject({ ok: true, account: expect.stringContaining('1234567890') });
   });
 });
 

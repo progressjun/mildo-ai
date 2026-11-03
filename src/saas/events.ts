@@ -1,6 +1,6 @@
 /**
  * 실시간 이벤트 (서버 모드) — GET /api/w/:ws/events (SSE, EventSource).
- * 이벤트 이름 = type(change · incident · comment · dataset · state · config · member · connection · report), data = { ws, type, id?, at }.
+ * 이벤트 이름 = type(change · incident · comment · dataset · state · config · member · connection · report · notify), data = { ws, type, id?, at }.
  * 연결이 끊기면 지수 백오프로 다시 붙고(1 · 2 · 4 … 30초), 다시 붙으면 놓친 변경을 메우려고 목록을 다시 불러온다.
  * 같은 대상의 이벤트가 몰리면 300ms 디바운스로 한 번만 다시 불러온다.
  *

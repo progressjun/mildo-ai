@@ -137,7 +137,7 @@ export default function View() {
     <div className="page conn-page">
       <PageHeader eyebrow="07 DATA SOURCES · 데이터 연결" title="데이터 연결"
         sub="매체 · 판매 채널 API를 연결하거나 CSV를 올리면 매일 07:00 전일 확정(어제 포함 3일 재수집) · 매시 10분 당일 시간대를 자동으로 받습니다. 수집마다 품질 검사를 돌리고, 매체 반영은 커넥션별 쓰기 모드(기본 dry_run)를 따릅니다."
-        sources={<>{src.mode === 'demo' ? <Src kind="DEMO" /> : <Src kind="LIVE" title={src.basis} />}<Pill tone="outline" title={src.basis}>Dataset 출처: {src.label}</Pill></>}
+        sources={<>{/* 출처 배지: 스토어 Dataset 메타에 따라 TEST DATA · LIVE + TEST · LIVE DATA · 데이터 없음 (플랫폼 공용 규칙) */}<Src kind="DEMO" /><Pill tone="outline" title={src.basis}>Dataset 출처: {src.label}</Pill></>}
         actions={server ? <Button size="sm" icon="refresh" onClick={() => void s.refresh()} disabled={s.loading}>{s.loading ? '불러오는 중…' : '새로 고침'}</Button> : undefined} />
 
       {!server ? (
@@ -152,7 +152,7 @@ export default function View() {
           <Stat label="커넥션" value={`${active} / ${s.connections.length}`} foot={<span className="xs">활성 / 전체{errors ? ` · 오류 ${errors}` : ''}</span>} />
           <Stat label="마지막 수집" value={lastSync ? ago(lastSync, s.nowMs) : '없음'} foot={<span className="xs">{lastSync ? fmtStamp(lastSync) : '연결 후 07:00 예약 또는 지금 수집'} · 기준 26시간</span>} />
           <Stat label="데이터 품질" value={<span>{s.qualitySummary.error}<span className="small muted"> 오류 · </span>{s.qualitySummary.warning}<span className="small muted"> 경고</span></span>} foot={<span className="xs">최근 실행 · 연결 상태 기준</span>} />
-          <Stat label="Dataset 출처" value={src.label} src={src.mode === 'demo' ? <Src kind="DEMO" /> : undefined}
+          <Stat label="Dataset 출처" value={src.label} src={src.mode !== 'live' ? <Src kind="DEMO" /> : undefined}
             foot={<span className="xs" title={src.basis}>{stale.length ? `지연 ${stale.map((x) => channelLabel(x.channel)).slice(0, 3).join(' · ')}${stale.length > 3 ? ' …' : ''} (어제 데이터 없음)` : src.basis.slice(0, 60)}</span>} />
         </div>
       </Card>

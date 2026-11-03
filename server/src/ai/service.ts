@@ -19,9 +19,11 @@
  *   adaptive thinking · effort  https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
  *   프롬프트 캐시(top-level cache_control)  https://platform.claude.com/docs/en/build-with-claude/prompt-caching
  *   거절 · 서버 측 대체 모델(fallbacks)  https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+ *     (지원 모델 목록 · "default" 형식 + server-side-fallback-2026-07-01 헤더 · §Continuing the conversation 되돌려 보내기 표)
+ *   preserved thinking(기록 편집 금지)  https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
  *   오류 코드  https://platform.claude.com/docs/en/api/errors
  *   SDK 타입 · 동작: @anthropic-ai/sdk 1.3.0 (node_modules, BetaMessageStream · BetaFallbackBlockParam 주석)
- * 실제 Anthropic 계정으로의 호출은 이 개발 환경에서 검증하지 않았다(키 없음). 요청 직렬화 · 스트림 해석은 SDK에 가짜 fetch를 넣어 검사한다.
+ * 실제 Anthropic 계정으로의 호출은 이 개발 환경에서 검증하지 않았다(키 없음 · verifiedLive false). 요청 직렬화 · 스트림 해석은 SDK에 가짜 fetch를 넣어 검사한다.
  */
 import Anthropic from '@anthropic-ai/sdk';
 import type {
@@ -53,6 +55,14 @@ export const DEFAULT_MAX_TOKENS = 16_000;
 export const MAX_MAX_TOKENS = 64_000;
 /** 서버 측 대체 모델(거절 시 같은 호출 안에서 재시도) — "default" 형식 전용 베타 헤더 */
 export const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
+
+/**
+ * fallbacks 파라미터를 문서가 지원한다고 적은 모델 (refusals-and-fallback 페이지 featureMetadata.supportedModels).
+ * 이 밖의 모델(ANTHROPIC_MODEL을 4.x 등으로 바꾼 경우)에는 fallbacks · 베타 헤더를 보내지 않는다 —
+ * 문서에 정의되지 않은 조합을 보내 모든 호출이 400으로 실패하는 것을 막는다. 새 모델이 지원 목록에 오르면 여기에 더한다.
+ */
+const FALLBACK_MODELS = new Set(['claude-fable-5-1', 'claude-mythos-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']);
+export const supportsServerFallback = (model: string) => FALLBACK_MODELS.has(model.trim());
 
 /* ---------------- Anthropic 클라이언트 (주입 가능) ---------------- */
 
@@ -166,6 +176,8 @@ export function parseAiRequest(raw: unknown): AiRequest {
   }
   const req = r.data;
   if (req.messages[0].role !== 'user') throw badRequest('대화의 첫 메시지는 user 역할이어야 합니다');
+  // assistant 미리 채우기(prefill)는 4.6 이후 모델이 모두 400으로 거절한다 — 토큰 · 왕복을 쓰기 전에 막는다
+  if (req.messages[req.messages.length - 1].role !== 'user') throw badRequest('대화의 마지막 메시지는 user 역할이어야 합니다 (assistant 미리 채우기는 지원하지 않습니다)');
   req.messages.forEach((m, i) => {
     if (typeof m.content === 'string') return;
     for (const b of m.content) {
@@ -196,8 +208,7 @@ export function buildStreamParams(req: AiRequest, model: string): BetaMessageStr
     max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
     thinking: { type: 'adaptive' },
     output_config: { effort },
-    betas: [FALLBACK_BETA],
-    fallbacks: 'default',
+    ...(supportsServerFallback(model) ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
     cache_control: { type: 'ephemeral' },
     messages,
     ...(tools.length ? { tools } : {}),
@@ -232,9 +243,12 @@ export type EchoBlock =
 
 /**
  * 최종 메시지의 content를 다음 요청에 그대로 되돌려 보낼 형태로 바꾼다.
- * thinking · fallback 블록은 순서 그대로 둔다(서버가 경계 · 서명을 검증한다).
- * 마지막 fallback 블록보다 앞의 tool_use는 거절된 시도의 것이므로 빼고 실행하지 않는다.
- * 빈 텍스트 블록은 요청에서 거부되므로 뺀다. 그 밖의 블록 종류(서버 도구 등)는 이 경로에서 쓰지 않아 뺀다.
+ * 공식 문서(refusals-and-fallback §Continuing the conversation) 표를 따른다:
+ *   fallback 블록 → 나온 자리 그대로 둔다(경계 위치로 주변 thinking을 검증한다)
+ *   text → 둔다 · 마지막 fallback 블록 뒤의 모든 블록 → 둔다
+ *   마지막 fallback 블록 앞의 thinking · redacted_thinking · 클라이언트 tool_use → 뺀다(거절된 시도의 것 — tool_use는 실행하지 않는다)
+ * 공백뿐인 텍스트 블록은 요청에서 거부되므로 뺀다(preserved thinking 기록 비교도 공백 블록을 무시한다).
+ * 그 밖의 블록 종류(서버 도구 · connector_text 등)는 이 경로(사용자 정의 도구만 허용)에서 생기지 않으므로 뺀다.
  */
 export function toEchoContent(content: BetaContentBlock[]): { content: EchoBlock[]; toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> } {
   let lastFallback = -1;
@@ -244,18 +258,19 @@ export function toEchoContent(content: BetaContentBlock[]): { content: EchoBlock
   const out: EchoBlock[] = [];
   const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
   content.forEach((b, i) => {
+    const beforeBoundary = i < lastFallback;
     switch (b.type) {
       case 'text':
         if (b.text.trim()) out.push({ type: 'text', text: b.text });
         break;
       case 'thinking':
-        out.push({ type: 'thinking', thinking: b.thinking, signature: b.signature });
+        if (!beforeBoundary) out.push({ type: 'thinking', thinking: b.thinking, signature: b.signature });
         break;
       case 'redacted_thinking':
-        out.push({ type: 'redacted_thinking', data: b.data });
+        if (!beforeBoundary) out.push({ type: 'redacted_thinking', data: b.data });
         break;
       case 'tool_use': {
-        if (i < lastFallback) break;
+        if (beforeBoundary) break;
         const input = (b.input && typeof b.input === 'object' && !Array.isArray(b.input) ? b.input : {}) as Record<string, unknown>;
         out.push({ type: 'tool_use', id: b.id, name: b.name, input });
         toolUses.push({ id: b.id, name: b.name, input });
@@ -517,8 +532,11 @@ export async function assertBudget(q: Queryable, c: WorkspaceCtx): Promise<{ lim
   const t = await monthTotals(q, c.workspace.id, month);
   const used = t.inputTokens + t.outputTokens;
   if (used >= limit) {
-    const { from } = monthBounds(month);
-    const seen = await one(q, `SELECT 1 FROM audit_log WHERE workspace_id = $1 AND action = 'ai.budget_exceeded' AND at >= $2::timestamptz LIMIT 1`, [c.workspace.id, from]);
+    const seen = await one(
+      q,
+      `SELECT 1 FROM audit_log WHERE workspace_id = $1 AND action = 'ai.budget_exceeded' AND target_id = $2 LIMIT 1`,
+      [c.workspace.id, month],
+    );
     if (!seen) {
       await audit(q, {
         workspaceId: c.workspace.id, userId: c.user.id, actor: c.actor, action: 'ai.budget_exceeded',
@@ -542,12 +560,14 @@ export async function recordUsage(
   const r = row.result;
   await q.query(
     `INSERT INTO ai_usage (workspace_id, user_id, model, purpose, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                           status, stop_reason, error_code, duration_ms, request_id, served_model)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+                           status, stop_reason, error_code, duration_ms, request_id, served_model, at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::timestamptz)`,
     [
       row.workspaceId, row.userId, row.model, row.purpose,
       r.usage.inputTokens, r.usage.outputTokens, r.usage.cacheReadTokens, r.usage.cacheCreationTokens,
       r.status, r.stopReason, r.errorCode, Math.max(0, Math.round(r.durationMs)), r.requestId, r.servedModel,
+      // 한도 판정(kstMonth)과 같은 시계 — lib/time nowMs (운영에서는 Date.now())
+      new Date(nowMs()).toISOString(),
     ],
   );
 }
@@ -565,7 +585,7 @@ export interface UsageSummary {
   errors: number;
   limit: number;
   remaining: number;
-  /** 사용 비율 0~1+ (입력 + 출력 / 한도) */
+  /** 사용 비율 0~1 (입력 + 출력 / 한도, 1에서 자른다 — 넘은 양은 totalTokens · limit · budgetExceeded로 본다) */
   usedRatio: number;
   budgetExceeded: boolean;
   byPurpose: Array<{ purpose: string; calls: number; inputTokens: number; outputTokens: number }>;
@@ -626,7 +646,7 @@ export async function usageSummary(
     errors: t.errors,
     limit,
     remaining: Math.max(0, limit - total),
-    usedRatio: limit > 0 ? total / limit : total > 0 ? 1 : 0,
+    usedRatio: limit > 0 ? Math.min(1, total / limit) : total > 0 ? 1 : 0,
     budgetExceeded: total >= limit,
     byPurpose: purposes.rows.map((r) => ({ purpose: r.purpose, calls: r.calls, inputTokens: r.i, outputTokens: r.o })),
     daily: days.rows.map((r) => ({ date: r.date, calls: r.calls, inputTokens: r.i, outputTokens: r.o })),

@@ -17,7 +17,12 @@
  *       실시간 성과: GET /adAccounts/{no}/performance/realtime/creatives?targetDate(today|yesterday)&timeUnit(daily|hourly)&since
  *       전환 성과: /performance/conversion/past/{aggregationType} · /performance/conversion/realtime/creatives (일별만, convType별)
  *       캠페인 목록 GET /adAccounts/{no}/campaigns(page · size ≤100), ON/OFF POST /adAccounts/{no}/campaigns/activate?campaignNos&activated
- *       광고 그룹 목록 GET /adAccounts/{no}/adSets, ON/OFF POST /adAccounts/{no}/adSets/activate?adSetNos&activated, 조회 GET /adSets/{adSetNo}
+ *       캠페인 조회 GET /campaigns/{campaignNo} (OpenCampaignView: objective · subType · cboActivated · budget('CBO 예산') · performanceMax.budget('일 예산'))
+ *       캠페인 지출 한도 다중 변경 POST /campaigns/editSpendLimit?campaignNos&campaignSpendLimit — ADVoost 쇼핑(objective PMAX)은 이 값이
+ *         performanceMax.budget(일 예산)으로 반영, 캠페인당 2시간에 1회 (명세 설명 · 2026-08-26 업데이트 공지)
+ *       광고 그룹 목록 GET /adAccounts/{no}/adSets(campaignNo · page · size), ON/OFF POST /adAccounts/{no}/adSets/activate?adSetNos&activated, 조회 GET /adSets/{adSetNo}
+ *       광고 그룹 예산/입찰가/비용관리 다중 변경 POST /adSets/edit — 본문 oneOf(AdSetEditBudgetParam 등), discriminator propertyName=editType
+ *   - 업데이트 공지: https://naver-ad-api.github.io/developers/blog/2026-08-26-update (ADVoost 쇼핑 예산 = performanceMax.budget, 변경은 지출 한도 API)
  *   - 네이버 로그인 토큰 갱신: https://developers.naver.com/docs/login/devguide/devguide.md
  *       GET/POST https://nid.naver.com/oauth2.0/token?grant_type=refresh_token&client_id&client_secret&refresh_token, 접근 토큰 기본 3600초
  */
@@ -81,14 +86,22 @@ export interface GfaPerfRow {
   campaignNo?: number; adSetNo?: number; creativeNo?: number; assetGroupNo?: number; targetDate?: string; hour?: string;
   impCount?: number; clickCount?: number; vplayCount?: number; sales?: number; convCount?: number; convSales?: number; convType?: string; updatedAt?: string;
 }
+/** OpenCampaignView (광고 API 명세) 중 이 커넥터가 쓰는 필드 */
 export interface GfaCampaign {
   no: number; name?: string; activated?: boolean; deleted?: boolean; status?: string; budgetExhausted?: boolean; spendLimit?: number;
-  cboActivated?: boolean; budget?: number; objective?: string; subType?: string;
+  /** CBO 활성화 여부 · CBO 예산(명세: '예산 최적화 캠페인의 총 예산') · CBO 입찰 전략 · 비용 관리 */
+  cboActivated?: boolean; budget?: number; bidGoal?: string; bidStrategy?: string; bidStrategyValue?: number;
+  objective?: string; subType?: string;
+  /** ADVoost 쇼핑(objective PMAX) 설정 — budget = 일 예산 */
+  performanceMax?: { budget?: number } | null;
 }
+/** OpenAdSetListView · OpenAdSetView 중 이 커넥터가 쓰는 필드 */
 export interface GfaAdSet {
   no: number; name?: string; campaignNo?: number; campaignName?: string; activated?: boolean; deleted?: boolean; status?: string;
   budgetType?: 'DAILY' | 'TOTAL'; budgetAmount?: number; bidPrice?: number; bidType?: string;
 }
+/** SuccessResponse (광고 API 명세) */
+export interface GfaSuccess { success?: boolean; message?: string; description?: string }
 export interface GfaAccount { no?: number; name?: string; disabled?: boolean; role?: string }
 
 export class GfaClient {
@@ -97,15 +110,16 @@ export class GfaClient {
   get accountNo(): string { return String(this.creds.adAccountNo); }
   url(path: string): string { return `${GFA_BASE}/${this.o.version ?? '1.0'}/adAccounts/${this.accountNo}${path}`; }
 
-  request(method: HttpRequest['method'], path: string, query?: HttpRequest['query'], token = '(발급 토큰)'): HttpRequest {
+  /** 요청 (token 기본값은 dry_run 요약용 자리 표시 — 요약에는 헤더 이름만 남는다). body가 있으면 JSON */
+  request(method: HttpRequest['method'], path: string, query?: HttpRequest['query'], token = '(발급 토큰)', body?: unknown): HttpRequest {
     const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
     if (this.creds.managerAccountNo) headers.AccessManagerAccountNo = String(this.creds.managerAccountNo);
-    return { method, url: this.url(path), query, headers };
+    return { method, url: this.url(path), query, headers, ...(body !== undefined ? { body, bodyType: 'json' as const } : {}) };
   }
 
-  async call<T>(method: HttpRequest['method'], path: string, what: string, query?: HttpRequest['query']): Promise<T> {
+  async call<T>(method: HttpRequest['method'], path: string, what: string, query?: HttpRequest['query'], body?: unknown): Promise<T> {
     const token = await gfaAccessToken(this.ctx, this.creds, this.o.now ?? Date.now);
-    return (await callApi<T>(this.ctx, this.request(method, path, query, token), { provider: PROVIDER, label: GFA_LABEL, what, describe: describeGfaError })).data;
+    return (await callApi<T>(this.ctx, this.request(method, path, query, token, body), { provider: PROVIDER, label: GFA_LABEL, what, describe: describeGfaError })).data;
   }
 
   /** next 토큰 페이지 (과거 성과 · 과거 전환 성과) */

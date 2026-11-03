@@ -13,6 +13,8 @@ import { detectIncidents } from '@/modules/alert/engine';
 import { generateBidProposals } from '@/modules/adpilot/engine';
 import type { Dataset } from '@/core/types';
 
+const proposalsRun = (d: Dataset) => { generateBidProposals(d); detectIncidents(d); return true; };
+
 let t: TestApp;
 let ds: Dataset;
 const DEMO = generateDemoData(DEMO_TODAY, 15);
@@ -30,34 +32,32 @@ afterAll(async () => {
 });
 
 describe('데모 커넥터 → Dataset', () => {
-  it('어제까지 120일 + 오늘, 매체 일별 · 시간대 · 판매 · 키워드 · 검색어 · 엔티티가 모두 채워진다', () => {
+  it('오늘 포함 120일(데모 생성기와 같은 길이), 매체 일별 · 시간대 · 판매 · 키워드 · 검색어 · 엔티티가 모두 채워진다', () => {
     expect(ds.today).toBe(DEMO_TODAY);
     expect(ds.currentHour).toBe(15);
     expect(ds.generatedAt).toBe('2026-10-31T15:30:00+09:00');
-    expect(ds.dates).toHaveLength(121);
-    expect(ds.dates[0]).toBe('2026-07-03');
+    expect(ds.dates).toHaveLength(120);
+    expect(ds.dates).toEqual(DEMO.dates);
+    expect(ds.dates[0]).toBe('2026-07-04');
     expect(ds.dates[ds.dates.length - 1]).toBe(DEMO_TODAY);
-    expect(ds.mediaDaily).toHaveLength(121 * 6);
+    expect(ds.mediaDaily).toHaveLength(120 * 6);
     expect(new Set(ds.mediaHourly.map((r) => r.date)).size).toBe(35);
     expect(ds.mediaHourly.filter((r) => r.date === DEMO_TODAY && r.media === 'meta')).toHaveLength(16);
-    expect(ds.salesDaily).toHaveLength(121 * 4);
+    expect(ds.salesDaily).toHaveLength(120 * 4);
     expect(ds.keywords).toHaveLength(28);
     expect(ds.campaigns).toHaveLength(16);
     expect(ds.accounts).toHaveLength(7);
     expect(ds.products).toHaveLength(2);
     expect(ds.promotions).toHaveLength(3);
     expect(ds.searchTerms).toHaveLength(15);
-    expect(ds.brandSearchDaily).toHaveLength(121);
+    expect(ds.brandSearchDaily).toHaveLength(120);
   });
 
   it('생성기 값과 같다 (과거 일별 · 시간대 · 오늘 진행 중 · 키워드 14일 · 캠페인 소진)', () => {
-    const key = (r: { date: string; media: string }) => `${r.date}|${r.media}`;
-    const demoDaily = new Map(DEMO.mediaDaily.map((r) => [key(r), r]));
-    for (const r of ds.mediaDaily) {
-      const d = demoDaily.get(key(r));
-      if (!d) continue; // 120일 이전 하루(07-03)는 앞 블록에서 생성
-      expect(r).toEqual(d);
-    }
+    expect(ds.mediaDaily).toEqual(DEMO.mediaDaily);
+    // 판매 채널 과거 값은 생성기 기준 시각(23시 고정 — 수집 시각에 따라 흔들리지 않게)에 따라 난수 순서가 달라 날짜 · 채널 구성만 같다
+    expect(ds.salesDaily.map((r) => `${r.date}|${r.channel}`)).toEqual(DEMO.salesDaily.map((r) => `${r.date}|${r.channel}`));
+    expect(ds.brandSearchDaily.map((r) => r.date)).toEqual(DEMO.dates);
     const demoHourly = DEMO.mediaHourly.filter((r) => r.date >= '2026-09-27');
     expect(ds.mediaHourly).toEqual(demoHourly);
     for (const k of DEMO.keywords) {
@@ -105,11 +105,12 @@ describe('데모 커넥터 → Dataset', () => {
 
   it('days · today · hour 옵션 (과거 기준 시각, 시간대는 그 시각까지만)', async () => {
     const d = await buildDataset(t.db, t.ws, { today: '2026-10-30', hour: 9, days: 30 });
-    expect(d.dates).toHaveLength(31);
+    expect(d.dates).toHaveLength(30);
+    expect(d.dates[0]).toBe('2026-10-01');
     expect(d.today).toBe('2026-10-30');
     expect(d.generatedAt).toBe('2026-10-30T09:30:00+09:00');
     expect(Math.max(...d.mediaHourly.filter((r) => r.date === '2026-10-30').map((r) => r.hour))).toBe(9);
-    expect(d.mediaDaily.every((r) => r.date >= '2026-09-30' && r.date <= '2026-10-30')).toBe(true);
+    expect(d.mediaDaily.every((r) => r.date >= '2026-10-01' && r.date <= '2026-10-30')).toBe(true);
   });
 });
 
@@ -127,7 +128,7 @@ describe('출처 우선순위', () => {
     const d = await buildDataset(t.db, t.ws);
     const g = d.mediaDaily.filter((r) => r.media === 'google');
     expect(g.map((r) => [r.date, r.cost])).toEqual([['2026-10-28', 555], ['2026-10-29', 777], ['2026-10-30', 888]]);
-    expect(d.mediaDaily.filter((r) => r.media === 'naver_sa')).toHaveLength(121); // 다른 매체는 데모 그대로
+    expect(d.mediaDaily.filter((r) => r.media === 'naver_sa')).toHaveLength(120); // 다른 매체는 데모 그대로
     expect(d.meta!.mode).toBe('mixed');
     expect(d.meta!.sources.filter((s) => s.channel === 'google').map((s) => s.kind).sort()).toEqual(['api', 'csv']);
     // 우선순위를 뒤집으면 csv가 이긴다
@@ -138,7 +139,7 @@ describe('출처 우선순위', () => {
     await t.db.query('DELETE FROM connections WHERE id = $1', [api]);
     await t.db.query('DELETE FROM uploads WHERE id = $1', [up]);
     const d3 = await buildDataset(t.db, t.ws);
-    expect(d3.mediaDaily.filter((r) => r.media === 'google')).toHaveLength(121);
+    expect(d3.mediaDaily.filter((r) => r.media === 'google')).toHaveLength(120);
     expect(d3.meta!.mode).toBe('demo');
   });
 
@@ -150,6 +151,66 @@ describe('출처 우선순위', () => {
     expect(d.meta).toMatchObject({ mode: 'live', sources: [] });
     expect(detectIncidents(d)).toBeInstanceOf(Array);
     expect(generateBidProposals(d)).toEqual([]);
+  });
+});
+
+describe('키워드 매체 (Google Ads 키워드 · 서버 모드 필드)', () => {
+  it('키워드 문서의 media · campaignId · adgroupId를 그대로 넘기고, 매체별로 데모 제외를 판단한다', async () => {
+    const g = (await t.db.query<{ id: string }>(
+      `INSERT INTO connections (workspace_id, provider, kind, channel, label, status) VALUES ($1, 'google_ads', 'media', 'google', 'Google Ads 키워드', 'active') RETURNING id`, [t.ws],
+    )).rows[0].id;
+    const kw = { id: 'gkw-1', text: '매트리스 추천', intent: 'compare' as const, adgroup: '비교', isBrand: false, bid: 900, maxBid: 1440, avgRank: 0, monthlySearch: 0, impressionShareLost: 0, status: 'on' as const, landing: '', media: 'google' as const, campaignId: '111', adgroupId: '222' };
+    const days = ['2026-10-25', '2026-10-30'];
+    await writeBatch(t.db, t.ws, g, {
+      keywords: [kw],
+      keywordDaily: days.map((date) => ({ date, keywordId: 'gkw-1', impressions: 100, clicks: 10, cost: 9000, conversions: 1, revenue: 500_000, avgRank: null })),
+      searchTermDaily: [{ date: '2026-10-30', term: '구글 매트리스 추천 검색어', impressions: 50, clicks: 5, cost: 4500, conversions: 0, revenue: 0 }],
+      campaigns: [{ id: 'gcmp-1', media: 'google', name: 'G 검색 · 비교', dailyBudget: 300_000, spentToday: 12_000, status: 'on', hourOfData: 15, adGroups: [{ id: '222', name: '비교', status: 'on', dailyBudget: 0 }] }],
+    }, { keywordChannel: 'google' });
+    // 변경 실행기(changes)가 읽는 엔티티 문서: 키워드 maxBid · 캠페인 dailyBudget · name이 그대로 남는다
+    const docs = (await t.db.query<{ entity_type: string; doc: Record<string, unknown> }>(`SELECT entity_type, doc FROM wh_entities WHERE source = $1 ORDER BY entity_type`, [g])).rows;
+    expect(docs.find((x) => x.entity_type === 'keyword')!.doc).toMatchObject({ maxBid: 1440, campaignId: '111', adgroupId: '222' });
+    expect(docs.find((x) => x.entity_type === 'campaign')!.doc).toMatchObject({ dailyBudget: 300_000, name: 'G 검색 · 비교' });
+    const demoKw = (await t.db.query<{ doc: { maxBid: number } }>(`SELECT doc FROM wh_entities WHERE source = 'demo' AND entity_type = 'keyword' LIMIT 1`)).rows[0];
+    expect(demoKw.doc.maxBid).toBeGreaterThan(0);
+    const ent = (await t.db.query<{ channel: string }>(`SELECT channel FROM wh_entities WHERE source = $1 AND external_id = 'gkw-1'`, [g])).rows[0];
+    expect(ent.channel).toBe('google');
+    const d = await buildDataset(t.db, t.ws);
+    const got = d.keywords.find((k) => k.id === 'gkw-1')!;
+    expect(got).toMatchObject({ media: 'google', campaignId: '111', adgroupId: '222', bid: 900, maxBid: 1440 });
+    expect(got.last14).toEqual({ impressions: 200, clicks: 20, cost: 18_000, conversions: 2, revenue: 1_000_000 });
+    expect(d.campaigns.find((c) => c.id === 'gcmp-1')).toMatchObject({ media: 'google', dailyBudget: 300_000, adGroups: [{ id: '222', name: '비교', status: 'on', dailyBudget: 0 }] });
+    // Google만 실연동 → 네이버 SA 데모 키워드 28개는 남는다 (데모 키워드에는 media 필드가 없다 = 네이버 SA)
+    expect(d.keywords.filter((k) => !k.media)).toHaveLength(28);
+    expect(d.searchTerms.find((x) => x.term === '구글 매트리스 추천 검색어')).toMatchObject({ clicks: 5, cost: 4500 });
+    expect(d.searchTerms.length).toBeGreaterThan(1); // 네이버 SA 데모 검색어 유지
+    expect(d.meta!.sources).toEqual(expect.arrayContaining([expect.objectContaining({ channel: 'google', source: g, kind: 'api' })]));
+    expect(d.meta!.sources.some((s) => s.channel === 'naver_sa' && s.source === g)).toBe(false);
+    expect(proposalsRun(d)).toBe(true);
+
+    // 네이버 SA 키워드가 실연동되면 그 매체의 데모 키워드 · 검색어가 빠진다
+    const n = (await t.db.query<{ id: string }>(
+      `INSERT INTO connections (workspace_id, provider, kind, channel, label, status) VALUES ($1, 'naver_sa', 'media', 'naver_sa', '네이버 SA 키워드', 'active') RETURNING id`, [t.ws],
+    )).rows[0].id;
+    await writeBatch(t.db, t.ws, n, {
+      keywords: [{ ...kw, id: 'nkw-1', text: '퀸 매트리스 실연동', media: 'naver_sa', campaignId: 'cmp-1', adgroupId: 'grp-1' }],
+      keywordDaily: [{ date: '2026-10-30', keywordId: 'nkw-1', impressions: 10, clicks: 1, cost: 1000, conversions: 0, revenue: 0, avgRank: 2 }],
+    }, { keywordChannel: 'naver_sa' });
+    const d2 = await buildDataset(t.db, t.ws);
+    expect(d2.keywords.map((k) => [k.id, k.media]).sort()).toEqual([['gkw-1', 'google'], ['nkw-1', 'naver_sa']]);
+    expect(d2.searchTerms.map((x) => x.term)).toEqual(['구글 매트리스 추천 검색어']);
+    await t.db.query('DELETE FROM connections WHERE id = ANY($1::uuid[])', [[g, n]]);
+    const d3 = await buildDataset(t.db, t.ws);
+    expect(d3.keywords).toHaveLength(28);
+  });
+
+  it('금액은 원 단위 정수, 전환은 소수 둘째 자리, 숫자가 아니면 0으로 쓴다', async () => {
+    const other = (await t.db.query<{ id: string }>(`INSERT INTO workspaces (org_id, slug, name, brand_name) VALUES ($1, 'units-ws', '단위', '단위') RETURNING id`, [t.orgId])).rows[0].id;
+    const c = (await t.db.query<{ id: string }>(`INSERT INTO connections (workspace_id, provider, kind, channel, label, status) VALUES ($1, 'meta', 'media', 'meta', 'Meta', 'active') RETURNING id`, [other])).rows[0].id;
+    await writeBatch(t.db, other, c, { mediaDaily: [{ date: '2026-10-30', media: 'meta', impressions: 1000.4, clicks: 10, cost: 12_345.6, conversions: 1.236, revenue: Number.NaN, newCustomers: Number.POSITIVE_INFINITY }] });
+    const d = await buildDataset(t.db, other);
+    expect(d.mediaDaily.find((r) => r.date === '2026-10-30')).toEqual({ date: '2026-10-30', media: 'meta', impressions: 1000, clicks: 10, cost: 12_346, conversions: 1.24, revenue: 0, newCustomers: 0 });
+    expect(d.dates).toHaveLength(120);
   });
 });
 

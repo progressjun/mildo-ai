@@ -43,6 +43,22 @@ describe('데이터 연결 화면', () => {
     expect(html).not.toMatch(/NaN|undefined|Infinity/);
   });
 
+  it('서버 모드: 데모 안내 · 예시 커넥션 없이 서버 상태로 그린다 (불러오기 전 빈 목록 · 새로 고침), 워크스페이스 없으면 안내', async () => {
+    const { default: View } = await import('./View');
+    const { SaasTestProvider } = await import('@/saas/context');
+    const ws = { id: 'ws-1', slug: 'sumyeon', name: '수면밀도', brand_name: '수면밀도', status: 'active', role: 'ae' as const, permissions: ['read', 'operate'] as never, demoRole: '담당 AE' as const };
+    const html = await wrap(h(SaasTestProvider, { value: { mode: 'server', workspace: ws, role: 'ae', can: (p: string) => p === 'read' || p === 'operate' }, children: h(View) }));
+    expect(html).not.toContain('서버 연결 시 실제로 동작합니다');
+    expect(html).not.toContain('네이버 검색광고 (본계정)'); // 예시 커넥션이 섞이지 않는다
+    expect(html).toContain('새로 고침');
+    expect(html).toContain('아직 연결된 데이터가 없습니다');
+    expect(html).not.toMatch(/NaN|undefined|Infinity/);
+    const none = await wrap(h(SaasTestProvider, { value: { mode: 'server', workspace: null }, children: h(View) }));
+    expect(none).toContain('워크스페이스를 고르세요');
+    const { SERVER_EVENTS } = await import('./useConnections');
+    expect([...SERVER_EVENTS]).toEqual(['connection', 'dataset']);
+  });
+
   it('커넥션 카드 권한: ae는 수집만, pm은 설정 · 확인, live는 live_write 없으면 안내', async () => {
     const { ConnectionCard } = await import('./parts');
     const c = { ...ex.connections[1], status: 'active' as const, lastSyncAt: `${DEMO.today}T07:00:00+09:00`, lastTestAt: `${DEMO.today}T06:00:00+09:00` };

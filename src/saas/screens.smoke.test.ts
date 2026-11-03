@@ -43,10 +43,26 @@ describe('로그인 전 화면', () => {
     const inv = await render({ mode: 'server' }, h(InviteScreen, { token: 'tok_invite_123', onDone: () => undefined }));
     expect(inv).toContain('초대 수락');
     expect(inv).toContain('초대 정보를 확인하는 중');
-    const rst = await render({ mode: 'server' }, h(ResetScreen, { token: 'tok_reset_123', onDone: () => undefined }));
+    // 재설정: 열자마자 링크를 먼저 확인 (POST /auth/password-reset/check) — 확인 전에는 폼 대신 안내
+    const checking = await render({ mode: 'server' }, h(ResetScreen, { token: 'tok_reset_123', onDone: () => undefined }));
+    expect(checking).toContain('재설정 링크를 확인하는 중');
+    expect(checking).not.toContain('id="reset-password"');
+    // 쓸 수 있는 링크: 가린 이메일 · 유효 시각 · 새 비밀번호 · 확인
+    const rst = await render({ mode: 'server' }, h(ResetScreen, { token: 'tok_reset_123', onDone: () => undefined, initialCheck: { valid: true, reason: null, email: 'p***@mildo.local', expiresAt: '2026-11-03T01:30:00Z' } }));
     expect(rst).toContain('id="reset-password"');
     expect(rst).toContain('id="reset-password2"');
     expect(rst).toContain('10자 이상');
+    expect(rst).toContain('p***@mildo.local');
+    expect(rst).toContain('11/3 10:30까지');
+    // 확인 API를 쓸 수 없을 때(null)는 폼을 보여 주고 confirm이 판정
+    expect(await render({ mode: 'server' }, h(ResetScreen, { token: 'tok_reset_123', onDone: () => undefined, initialCheck: null }))).toContain('id="reset-password"');
+    // 사용된 · 만료된 링크: 폼 없이 사유 + 다시 받기
+    const used = await render({ mode: 'server' }, h(ResetScreen, { token: 'tok_reset_123', onDone: () => undefined, initialCheck: { valid: false, reason: 'used', email: null, expiresAt: null } }));
+    expect(used).toContain('이미 사용했거나 새 링크로 바뀐 재설정 링크입니다');
+    expect(used).toContain('재설정 메일 다시 받기');
+    expect(used).not.toContain('id="reset-password"');
+    const expired = await render({ mode: 'server' }, h(ResetScreen, { token: 'tok_reset_123', onDone: () => undefined, initialCheck: { valid: false, reason: 'expired', email: null, expiresAt: null } }));
+    expect(expired).toContain('재설정 링크가 만료되었습니다');
     const routed = await render({ mode: 'server' }, h(AuthScreens, { tokens: { invite: null, reset: 'tok_reset_123' }, onTokensUsed: () => undefined }));
     expect(routed).toContain('새 비밀번호 정하기');
   });
@@ -66,6 +82,48 @@ describe('로그인 전 화면', () => {
     expect(authErrorMessage(new ApiError(404, 'not_found', 'x'), 'invite')).toMatch(/초대 링크가 만료/);
     expect(authErrorMessage(new ApiError(410, 'gone', 'x'), 'reset')).toMatch(/재설정 링크가 만료/);
     expect(authErrorMessage(new ApiError(0, 'network', 'x'), 'forgot')).toMatch(/연결할 수 없습니다/);
+  });
+  it('초대 수락 · 재설정 오류: 서버의 한국어 사유를 그대로 (잠금 · 비활성 · 워크스페이스 잠김 · 보안 토큰 · 링크 사용됨/만료)', async () => {
+    const { authErrorMessage } = await import('./AuthScreens');
+    const { ApiError } = await import('./api');
+    const E = (status: number, code: string, msg: string) => new ApiError(status, code, msg);
+    expect(authErrorMessage(E(409, 'invite_used', 'x'), 'invite')).toBe('이미 수락한 초대입니다. 로그인해 주세요.');
+    expect(authErrorMessage(E(401, 'password_required', '이미 가입된 이메일입니다. 이 계정의 비밀번호를 입력해 주세요'), 'invite')).toBe('이미 가입된 이메일입니다. 이 계정의 비밀번호를 입력해 주세요');
+    expect(authErrorMessage(E(401, 'invalid_credentials', '비밀번호가 맞지 않습니다. 비밀번호를 잊었다면 로그인 화면에서 재설정해 주세요'), 'invite')).toMatch(/비밀번호가 맞지 않습니다/);
+    expect(authErrorMessage(E(403, 'account_disabled', '비활성화된 계정입니다. 워크스페이스 관리자에게 문의해 주세요'), 'invite')).toMatch(/비활성화된 계정/);
+    expect(authErrorMessage(E(423, 'workspace_locked', '이 워크스페이스는 현재 새 구성원을 받을 수 없습니다'), 'invite')).toMatch(/새 구성원을 받을 수 없습니다/);
+    expect(authErrorMessage(E(429, 'login_locked', '로그인 실패가 15분 안에 10회를 넘어 이 계정의 로그인을 잠시 막았습니다. 약 15분 뒤 다시 시도하거나 비밀번호 재설정을 이용해 주세요'), 'invite')).toMatch(/약 15분 뒤/);
+    expect(authErrorMessage(E(429, 'login_locked', '로그인 실패가 15분 안에 10회를 넘어 이 계정의 로그인을 잠시 막았습니다. 약 3분 뒤 다시 시도하거나 비밀번호 재설정을 이용해 주세요'), 'login')).toMatch(/약 3분 뒤/);
+    expect(authErrorMessage(E(403, 'csrf', '보안 토큰이 맞지 않습니다. 새로고침 후 다시 시도해 주세요'), 'invite')).toMatch(/보안 토큰/);
+    expect(authErrorMessage(E(410, 'invite_expired', '초대 링크가 만료되었습니다 (7일). 관리자에게 초대를 다시 보내 달라고 요청해 주세요'), 'invite')).toMatch(/7일/);
+    expect(authErrorMessage(E(400, 'reset_used', '이미 사용했거나 새 링크로 바뀐 재설정 링크입니다. 가장 최근 메일의 링크를 쓰거나 다시 요청해 주세요'), 'reset')).toMatch(/가장 최근 메일/);
+    expect(authErrorMessage(E(400, 'reset_expired', 'x'), 'reset')).toMatch(/재설정 링크가 만료되었습니다/);
+    expect(authErrorMessage(E(400, 'reset_invalid', 'x'), 'reset')).toMatch(/재설정 링크가 올바르지 않습니다/);
+    expect(authErrorMessage(E(400, 'weak_password', '비밀번호는 10자 이상이어야 합니다'), 'reset')).toBe('비밀번호는 10자 이상이어야 합니다');
+  });
+  it('초대: 이미 수락 · 만료 상태는 폼보다 먼저, 로그인 중인 초대 대상은 수락 버튼만, 기존 계정은 비밀번호만', async () => {
+    const { InviteScreen } = await import('./AuthScreens');
+    const InviteView = ({ info }: { info: import('./sync').InviteInfo }) => h(InviteScreen, { token: 'tok_invite_123', onDone: () => undefined, initialInfo: info });
+    const base = { email: 'n@x.io', role: 'pm' as const, workspaceName: '수면밀도 퍼포먼스', brandName: '수면밀도', expiresAt: null, invitedBy: '운영 책임자' };
+    const accepted = await render({ mode: 'server' }, h(InviteView, { info: { ...base, accepted: true } }));
+    expect(accepted).toContain('이미 수락한 초대입니다');
+    expect(accepted).not.toContain('id="invite-password"');
+    const expired = await render({ mode: 'server' }, h(InviteView, { info: { ...base, expired: true } }));
+    expect(expired).toContain('초대 링크가 만료되었습니다');
+    expect(expired).not.toContain('id="invite-name"');
+    const me = await render({ mode: 'server' }, h(InviteView, { info: { ...base, existingUser: true, signedInAsInvitee: true } }));
+    expect(me).toContain('초대받은 계정으로 로그인되어 있습니다');
+    expect(me).not.toContain('id="invite-password"');
+    expect(me).toContain('초대 수락하고 시작하기');
+    const existing = await render({ mode: 'server' }, h(InviteView, { info: { ...base, existingUser: true } }));
+    expect(existing).toContain('id="invite-password"');
+    expect(existing).not.toContain('id="invite-name"');
+    expect(existing).not.toContain('id="invite-password2"');
+    const fresh = await render({ mode: 'server' }, h(InviteView, { info: base }));
+    expect(fresh).toContain('id="invite-name"');
+    expect(fresh).toContain('id="invite-password2"');
+    expect(fresh).toContain('PM');
+    expect(fresh).toContain('운영 책임자');
   });
 });
 

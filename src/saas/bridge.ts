@@ -66,6 +66,12 @@ export function createServerBridge(d: BridgeDeps): ServerBridge {
   /** 서버가 요청과 다른 상태 · 실행 결과를 돌려줬을 때 알림 */
   function explainChange(expected: ChangeRequest['status'] | undefined, got: ChangeRequest) {
     const ex = got.execution;
+    const executing = (got as ChangeRequest & { executing?: { phase?: string; background?: boolean } }).executing;
+    if (executing) {
+      // 반영 · 롤백이 응답 시간 안에 끝나지 않아 서버가 이어서 처리 (상태는 아직 승인 · 반영) — 끝나면 change 이벤트로 갱신된다
+      d.toast({ tone: 'info', title: executing.phase === 'rollback' ? '롤백 반영 중' : '매체 반영 중', body: `${got.target} — 서버가 이어서 처리합니다. 끝나면 결과가 자동으로 갱신됩니다`, route: 'flow' });
+      return;
+    }
     if (expected && got.status !== expected) {
       const why = ex?.error ?? got.history?.[got.history.length - 1]?.note;
       d.toast({ tone: got.status === 'held' ? 'warning' : 'info', title: `서버 판정: ${STATUS_KO[got.status] ?? got.status}`, body: `${got.target} — 요청한 상태(${STATUS_KO[expected] ?? expected})와 다르게 처리했습니다${why ? ` · ${why}` : ''}`, route: 'flow' });

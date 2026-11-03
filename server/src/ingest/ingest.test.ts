@@ -186,6 +186,39 @@ describe('ingest.backfill · daily · intraday', () => {
     expect(j.last_error).not.toContain('SECRET');
   });
 
+  it('수집 중(매체 호출 동안) 커넥션이 삭제되면 결과를 쓰지 않고(고아 행 없음) 잡은 재시도 없이 끝난다', async () => {
+    const id = await conn('google_ads', 'active', 'google');
+    googleBatch = async (range) => {
+      // 매체 API 응답을 기다리는 사이 다른 사용자가 커넥션을 삭제한 상황
+      await t.db.query('DELETE FROM connections WHERE id = $1', [id]);
+      return { mediaDaily: dateRange(range.from, range.to).map((d) => day(d, 'google', 500_000)) };
+    };
+    await job('ingest.backfill', { connectionId: id, days: 70 });
+    await drainIngest(t.db, t.config);
+    expect(fetched).toHaveLength(1); // 첫 묶음에서 멈춘다
+    expect((await t.db.query('SELECT 1 FROM wh_media_daily WHERE source = $1', [id])).rowCount).toBe(0);
+    const j = (await t.db.query<{ status: string; attempts: number; result: { runs: { status: string }[] } }>(`SELECT status, attempts, result FROM jobs WHERE type = 'ingest.backfill' AND payload->>'connectionId' = $1`, [id])).rows[0];
+    expect(j).toMatchObject({ status: 'done', attempts: 1 });
+    expect(j.result.runs).toHaveLength(1);
+  });
+
+  it('같은 커넥션의 수집 두 개가 동시에 돌아도 쓰기가 하나씩 처리돼 둘 다 성공한다 (행 잠금)', async () => {
+    const id = await conn('google_ads', 'active', 'google');
+    const row = (await t.db.query<import('../connectors/service').ConnectionRow>('SELECT * FROM connections WHERE id = $1', [id])).rows[0];
+    const { ingestConnection } = await import('./pipeline');
+    googleBatch = (range) => ({
+      mediaDaily: dateRange(range.from, range.to).map((d) => day(d, 'google', 500_000)),
+      campaigns: [{ id: 'g-c1', media: 'google', name: 'G 검색', dailyBudget: 1_000_000, spentToday: 0, status: 'on', hourOfData: 15 }],
+    });
+    const runs = await Promise.all([
+      ingestConnection(t.db, t.config, row, { job: 'daily', range: { from: '2026-10-30', to: '2026-11-01' } }),
+      ingestConnection(t.db, t.config, row, { job: 'backfill', range: { from: '2026-10-20', to: '2026-11-01' } }),
+    ]);
+    expect(runs.map((r) => r.status)).toEqual(['succeeded', 'succeeded']);
+    expect((await t.db.query('SELECT 1 FROM wh_media_daily WHERE source = $1', [id])).rowCount).toBe(13);
+    expect((await t.db.query(`SELECT 1 FROM wh_entities WHERE source = $1 AND entity_type = 'campaign'`, [id])).rowCount).toBe(1);
+  });
+
   it('삭제된 커넥션의 잡은 오류 없이 끝난다', async () => {
     await job('ingest.backfill', { connectionId: '00000000-0000-4000-8000-000000000000', days: 10 });
     await job('ingest.daily', { connectionId: '00000000-0000-4000-8000-000000000000' });

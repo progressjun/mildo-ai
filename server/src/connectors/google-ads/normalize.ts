@@ -83,7 +83,8 @@ export function normKeyword(
       id: keywordEntityId(r.adGroup?.id ?? '', k.criterionId ?? ''),
       text,
       intent,
-      adgroup: `Google · ${r.adGroup?.name ?? r.adGroup?.id ?? ''}`,
+      // 매체 구분은 media='google'로 한다 (core Keyword.media) — 광고그룹 이름은 원본 그대로
+      adgroup: String(r.adGroup?.name ?? r.adGroup?.id ?? ''),
       isBrand: isBrandKeyword(text, intent, s.brandTerms ?? []),
       bid,
       maxBid: mb.value,

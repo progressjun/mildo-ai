@@ -66,7 +66,7 @@ export interface ScanRun {
 export interface Policy {
   sla: typeof SLA;
   weekendAckMin: number;
-  regime: { off: boolean; label: string; duty: DutyRow | null };
+  regime: { off: boolean; label: string; duty: DutyRow | null; forced?: boolean };
   roster: DutyRow[];
   tiers: readonly { tier: string; who: string; what: string; when: string }[];
   today: string;
@@ -81,7 +81,7 @@ export const EVENT_OPTIONS: { id: ChannelEvent; label: string; hint: string }[] 
   { id: 'sla', label: 'SLA 기한 초과', hint: '인지 · 1차 조치 · 결과 보고 기한이 지나면 백업 · PM 에스컬레이션' },
   { id: 'resolved', label: '해결 공유', hint: '조치 내용 · 재발 방지 기록 포함' },
   { id: 'report', label: '리포트', hint: '일간 · 주간 · 월간 리포트 발송' },
-  { id: 'test', label: '테스트 데이터 이슈', hint: '라이브 데모 · 테스트 주입 이슈 (TEST DATA)' },
+  { id: 'test', label: '테스트 데이터 이슈', hint: '데모 데이터 · 테스트 주입으로 만든 이슈 (TEST DATA 표기 · 시연 채널용)' },
 ];
 export const EVENT_LABEL: Record<string, string> = {
   ...Object.fromEntries(EVENT_OPTIONS.map((e) => [e.id, e.label])),
@@ -122,18 +122,26 @@ export function draftFromChannel(c: Channel): ChannelDraft {
 
 const SLACK_RE = /^https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PRIVATE_HOST = /^(localhost|.*\.localhost|.*\.local|.*\.internal|0\.|10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|\[|::)/i;
+/** 서버(server/src/alerts/net.ts)와 같은 내부망 이름 규칙 — 끝까지 일치해야 막는다 (hooks.local-partner.com 같은 공인 이름은 통과) */
+const BLOCKED_NAMES = [/^localhost$/i, /\.localhost$/i, /\.local$/i, /\.internal$/i, /\.lan$/i, /\.home\.arpa$/i, /^metadata$/i];
+const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+const PRIVATE_V4 = /^(?:0|10|127)\.|^169\.254\.|^192\.168\.|^172\.(?:1[6-9]|2\d|3[01])\.|^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|^192\.0\.[02]\.|^198\.1[89]\.|^198\.51\.100\.|^203\.0\.113\.|^(?:22[4-9]|2[3-5]\d)\./;
+/** IPv6: 미지정 · 루프백 · IPv4 매핑/호환 · 고유 로컬 · 링크 로컬 · 멀티캐스트 · 문서용 · NAT64 */
+const PRIVATE_V6 = /^(?:::|fc|fd|fe[89ab]|fec|fed|fee|fef|ff|2001:db8|64:ff9b|2002:)/i;
 
 export const parseRecipients = (s: string) => [...new Set(s.split(/[\s,;]+/).map((x) => x.trim().toLowerCase()).filter(Boolean))];
 
-/** 외부 주소 빠른 검사 — https만, 사설 · 루프백 · 링크 로컬 · 내부망 이름 차단 (발송 시점 주소 검사는 서버) */
+/** 외부 주소 빠른 검사 — https만, 사설 · 루프백 · 링크 로컬 · 내부망 이름 차단 (최종 판정과 발송 시점 주소 검사는 서버) */
 export function urlProblem(raw: string): string | null {
   let u: URL;
   try { u = new URL(raw); } catch { return 'URL 형식이 아닙니다'; }
   if (u.protocol !== 'https:') return 'https:// 주소만 쓸 수 있습니다';
   if (u.username || u.password) return 'URL에 사용자 이름 · 비밀번호를 넣을 수 없습니다';
-  if (PRIVATE_HOST.test(u.hostname)) return '사설 · 루프백 · 내부망 주소로는 보낼 수 없습니다';
-  if (!u.hostname.includes('.')) return '도메인 이름 전체를 입력하세요';
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (host.includes(':')) return PRIVATE_V6.test(host) ? '사설 · 루프백 · 내부망 주소로는 보낼 수 없습니다' : null;
+  if (IPV4_RE.test(host)) return PRIVATE_V4.test(host) || host === '255.255.255.255' ? '사설 · 루프백 · 내부망 주소로는 보낼 수 없습니다' : null;
+  if (BLOCKED_NAMES.some((re) => re.test(host))) return '내부망 이름(localhost · .local · .internal 등)으로는 보낼 수 없습니다';
+  if (!host.includes('.')) return '도메인 이름 전체를 입력하세요';
   return null;
 }
 
@@ -206,6 +214,8 @@ export interface NotifySummary {
   byType: Record<ChannelType, number>;
   p1Covered: boolean;
   slaCovered: boolean;
+  /** 테스트 데이터 이슈(TEST DATA)를 받는 켜진 채널이 있는지 */
+  testCovered: boolean;
   failing: Channel[];
   log: { sent: number; failed: number; skipped: number; retrying: number };
 }
@@ -219,6 +229,7 @@ export function summarize(channels: readonly Channel[], log: readonly LogEntry[]
     byType,
     p1Covered: on.some((c) => c.events.includes('incident')),
     slaCovered: on.some((c) => c.events.includes('sla')),
+    testCovered: on.some((c) => c.events.includes('test')),
     failing: on.filter((c) => c.lastStatus === 'failed'),
     log: {
       sent: log.filter((l) => l.status === 'sent').length,

@@ -2,22 +2,27 @@
  * 보안 · 운영 HTTP 계층 (devops 도메인 소유). buildApp()이 쿠키 · rate-limit 플러그인 다음, 인증 플러그인 앞에 등록한다.
  *
  *  - 보안 헤더: CSP(앱 화면 · API 따로) · nosniff · X-Frame-Options · Referrer-Policy · Permissions-Policy ·
- *    Cross-Origin-Opener-Policy · Cross-Origin-Resource-Policy · HSTS(config.secureCookies일 때) · API 응답 no-store
+ *    Cross-Origin-Opener-Policy · Cross-Origin-Resource-Policy · HSTS(config.secureCookies일 때) · API 응답 no-store.
+ *    reply.hijack()으로 직접 쓰는 스트림(SSE /api/w/:ws/events · AI /api/w/:ws/ai/messages)은 onSend를 거치지 않으므로
+ *    API 요청은 onRequest에서 원시 응답(res.setHeader)에도 같은 헤더를 미리 넣는다 (writeHead가 합친다)
  *  - 정적 파일 캐시: index.html은 no-cache(배포 직후 옛 화면 방지), 해시가 붙은 /assets/*는 1년 immutable
- *  - 요청 id: 프록시가 준 x-request-id를 이어 쓰거나 새로 만든다 → 응답 헤더 · 요청 로그(requestId)에 남긴다
+ *  - 요청 id: 프록시가 준 x-request-id를 이어 쓰거나 Fastify 요청 id(app.ts genReqId — 같은 규칙)를 쓴다
+ *    → 응답 헤더 · 요청 로그(requestId · reqId)가 같은 값
  *  - 전역 속도 제한: /api 아래 클라이언트 IP당 분당 600회(SSE 제외), 로그인 · 비밀번호 재설정 · 초대 수락은 IP당 분당 20회
  *  - 로그인 실패 잠금: 같은 이메일로 15분 안에 10회 실패하면 잠시 막는다(감사 로그 기반이라 서버 여러 대여도 같은 기준).
  *    성공 로그인 · 비밀번호 재설정 뒤에는 새로 센다. 최근 30일 안에 이 계정으로 로그인에 성공한 IP는
  *    그 IP에서 난 실패만 센다(다른 곳에서 일부러 실패를 쌓아 본인을 잠그는 공격 완화)
  *  - 경로 판정은 라우터가 고른 경로(routeOptions.url)로 한다 — /%61pi/… · /api/auth/login#… 같은 인코딩 우회 차단
- *  - GET /api/ready: DB 연결 · 마이그레이션 적용 · 워커 하트비트(520_ops_heartbeat.sql) → ready / degraded / not_ready.
- *    세부 항목(워커 이름 · 워크스페이스 수 · 오류 문구)은 내부망 IP 또는 READY_TOKEN 헤더에만 보여 준다
- *  - 우아한 종료: 서버를 닫을 때(preClose) 열린 SSE 연결을 정리해 app.close()가 멈추지 않게 한다
+ *  - GET /api/ready: DB 연결 · 마이그레이션 적용 · 워커(워커가 60초마다 쓰는 하트비트 + 잡 처리 기록) · 스케줄러(예약 감지 잡 생성)
+ *    → ready / degraded / not_ready. 세부 항목(워커 이름 · 워크스페이스 수 · 오류 문구)은 내부망 IP 또는 READY_TOKEN 헤더에만 보여 준다
+ *  - 우아한 종료: 서버를 닫을 때(preClose) 열린 SSE 연결은 바로 정리하고, 진행 중인 AI 응답 스트림은
+ *    SHUTDOWN_STREAM_GRACE_MS 동안 끝나기를 기다린 뒤 남은 것에 error 이벤트를 보내고 끊는다 → app.close()가 멈추지 않는다
  *
  * 선택 환경변수 (config.ts를 바꾸지 않고 이 파일에서만 읽는다. 값은 앱을 만들 때 한 번 읽는다):
  *   API_RATE_LIMIT_MAX(600) · API_RATE_LIMIT_WINDOW_SEC(60) · AUTH_RATE_LIMIT_MAX(20)
- *   LOGIN_FAIL_MAX(10) · LOGIN_FAIL_WINDOW_MIN(15) · TRUST_PROXY_HOPS(1)
- *   CSP_CONNECT_SRC_EXTRA(빈 값, 공백 구분 출처) · READY_WORKER_STALE_MIN(15) · SLOW_REQUEST_MS(3000)
+ *   LOGIN_FAIL_MAX(10) · LOGIN_FAIL_WINDOW_MIN(15) · TRUST_PROXY_HOPS(1 — app.ts의 Fastify trustProxy도 같은 값을 쓴다)
+ *   CSP_CONNECT_SRC_EXTRA(빈 값, 공백 구분 출처) · READY_WORKER_STALE_MIN(15) · READY_SCHEDULER_STALE_MIN(25) · SLOW_REQUEST_MS(3000)
+ *   SHUTDOWN_STREAM_GRACE_MS(20000)
  *   READY_TOKEN(빈 값 — 주면 x-ready-token 헤더가 같을 때 외부에서도 /api/ready 세부 항목을 보여 준다)
  *   0을 주면 해당 제한을 끈다. NODE_ENV=test에서는 속도 제한 · 로그인 잠금이 기본으로 꺼져 있고 값을 주면 켜진다.
  * 속도 제한 카운터는 프로세스 메모리에 있다(서버 여러 대면 대마다 따로 센다 — docs/OPERATIONS.md).
@@ -56,7 +61,11 @@ export interface SecurityOptions {
   cspConnectExtra: string[];
   /** 워커 활동이 이 시간(분)보다 오래되면 degraded */
   workerStaleMin: number;
+  /** 활성 워크스페이스가 있는데 예약 감지 잡(alerts.scan, 10분 간격)이 이 시간(분) 동안 생기지 않으면 스케줄러 멈춤 */
+  schedulerStaleMin: number;
   slowRequestMs: number;
+  /** 종료 시 진행 중인 AI 응답 스트림이 끝나기를 기다리는 최대 시간(ms) */
+  shutdownStreamGraceMs: number;
   /** 외부에서 /api/ready 세부 항목을 볼 때 쓰는 토큰 (null = 내부망만) */
   readyToken: string | null;
 }
@@ -92,7 +101,9 @@ export function securityOptionsFromEnv(env: NodeJS.ProcessEnv, appEnv: 'developm
     proxyHops: intEnv(env, 'TRUST_PROXY_HOPS', 1),
     cspConnectExtra: parseCspSources(env.CSP_CONNECT_SRC_EXTRA),
     workerStaleMin: Math.max(1, intEnv(env, 'READY_WORKER_STALE_MIN', 15)),
+    schedulerStaleMin: Math.max(11, intEnv(env, 'READY_SCHEDULER_STALE_MIN', 25)),
     slowRequestMs: intEnv(env, 'SLOW_REQUEST_MS', 3000),
+    shutdownStreamGraceMs: intEnv(env, 'SHUTDOWN_STREAM_GRACE_MS', 20_000),
     readyToken: readyTokenFromEnv(env.READY_TOKEN),
   };
 }
@@ -160,6 +171,8 @@ export function routePath(req: Pick<FastifyRequest, 'url'> & { routeOptions?: { 
 }
 
 const SSE_ROUTE = '/api/w/:ws/events';
+/** AI 응답 스트림(POST, reply.hijack 후 SSE) — 종료 시 끝나기를 잠시 기다린다 */
+const AI_STREAM_ROUTE = '/api/w/:ws/ai/messages';
 const LOGIN_ROUTE = '/api/auth/login';
 /** 로그인 전 쓰기 엔드포인트 (라우트 패턴) */
 const AUTH_WRITE_ROUTES = new Set([
@@ -228,20 +241,38 @@ export function clientIp(req: Pick<FastifyRequest, 'headers' | 'raw' | 'ip'>, ho
   return chain[Math.max(0, chain.length - 1 - hops)];
 }
 
-/** 고정 창 카운터 (프로세스 메모리). 만료된 키는 창마다 한 번 정리한다(타이머 없음). */
+/**
+ * 고정 창 카운터 (프로세스 메모리). 만료된 키는 창마다 한 번 정리한다(타이머 없음).
+ * 키 수 상한(maxKeys): 한 창 안에 주소를 바꿔 가며(예: IPv6 /48 안의 /64 6만여 개) 키를 쌓아 메모리를 키우는 것을 막는다.
+ * 상한에 닿으면 만료 키를 먼저 지우고, 그래도 넘으면 가장 먼저 들어온 키부터 버린다(버려진 키는 새 창으로 다시 센다).
+ */
 export class WindowLimiter {
   private hits = new Map<string, { n: number; reset: number }>();
   private nextSweep = 0;
-  constructor(public readonly max: number, public readonly windowMs: number, private readonly now: () => number = Date.now) {}
+  constructor(
+    public readonly max: number,
+    public readonly windowMs: number,
+    private readonly now: () => number = Date.now,
+    public readonly maxKeys = 200_000,
+  ) {}
+
+  private sweep(t: number): void {
+    for (const [k, v] of this.hits) if (v.reset <= t) this.hits.delete(k);
+    this.nextSweep = t + this.windowMs;
+  }
 
   hit(key: string): { ok: boolean; remaining: number; retryAfterSec: number } {
     const t = this.now();
-    if (t >= this.nextSweep) {
-      for (const [k, v] of this.hits) if (v.reset <= t) this.hits.delete(k);
-      this.nextSweep = t + this.windowMs;
-    }
+    if (t >= this.nextSweep) this.sweep(t);
     let e = this.hits.get(key);
     if (!e || e.reset <= t) {
+      if (!e && this.hits.size >= this.maxKeys) {
+        this.sweep(t);
+        for (const k of this.hits.keys()) {
+          if (this.hits.size < this.maxKeys) break;
+          this.hits.delete(k);
+        }
+      }
       e = { n: 0, reset: t + this.windowMs };
       this.hits.set(key, e);
     }
@@ -254,29 +285,49 @@ export class WindowLimiter {
   }
 }
 
-const REQUEST_ID = /^[A-Za-z0-9._:-]{8,128}$/;
+/** app.ts genReqId와 같은 규칙 — 그래야 Fastify 로그의 reqId와 응답 헤더 x-request-id가 같은 값이 된다 */
+const REQUEST_ID = /^[A-Za-z0-9._:-]{8,64}$/;
+
+/** 이어 쓸 요청 id: 형식이 맞는 x-request-id → Fastify 요청 id(genReqId가 만든 값) → 새 UUID */
+export function requestIdFor(req: { headers: Record<string, string | string[] | undefined>; id?: unknown }): string {
+  const h = req.headers['x-request-id'];
+  const incoming = Array.isArray(h) ? h[0] : h;
+  if (typeof incoming === 'string' && REQUEST_ID.test(incoming)) return incoming;
+  if (typeof req.id === 'string' && REQUEST_ID.test(req.id)) return req.id;
+  return randomUUID();
+}
 
 /* ---------------- 레디니스 ---------------- */
 
 export type ReadyStatus = 'ready' | 'degraded' | 'not_ready';
-export type WorkerStatus = 'ok' | 'busy' | 'idle' | 'stale' | 'stalled' | 'no_activity' | 'unknown';
+export type WorkerStatus = 'ok' | 'busy' | 'idle' | 'stale' | 'stalled' | 'no_activity' | 'no_scheduler' | 'unknown';
 
 export interface WorkerCheck {
   ok: boolean;
   status: WorkerStatus;
   staleAfterMin: number;
+  /** 예약 감지 잡이 이 시간(분) 동안 생기지 않으면 no_scheduler */
+  schedulerStaleAfterMin: number;
+  /** 워커 생존 신호 중 가장 최근 — 워커 하트비트 · 워커가 집거나 끝낸 잡 (DB CLI 'drain' 처리는 빼고 센다) */
   lastActivityAt: string | null;
+  /** 끝난 잡 중 가장 최근 (누가 처리했든) */
   lastFinishedAt: string | null;
+  /** 워커 프로세스 하트비트 중 가장 최근 (worker.ts가 60초마다 · 잡 상태 변화 트리거도 갱신) */
   lastHeartbeatAt: string | null;
   activityAgeSec: number | null;
+  /** 예약 감지 잡(alerts.scan, trigger=schedule)이 마지막으로 생긴 시각 — 스케줄러 생존 신호 */
+  lastScheduledAt: string | null;
   runningJobs: number;
   /** 실행 시각이 된 대기 잡 */
   queuedDue: number;
   /** 실행 시각이 5분 넘게 지난 대기 잡 */
   overdueJobs: number;
+  /** 15분 넘게 잠긴 실행 중 잡 (워커 비정상 종료 · 멈춘 잡 — 살아 있는 워커가 1분 안에 회수한다) */
+  stuckJobs: number;
   failedJobs24h: number;
   activeWorkspaces: number;
-  workers: { id: string; lastSeenAt: string; jobsSeen: number; lastJobType: string | null }[];
+  /** cli = DB CLI(run-jobs · seed --run-jobs)가 남긴 기록 — 워커 생존 판정에 쓰지 않는다 */
+  workers: { id: string; lastSeenAt: string; jobsSeen: number; lastJobType: string | null; cli: boolean }[];
   /** 판정 기준 (한국어) */
   basis: string;
   error?: string;
@@ -312,62 +363,111 @@ const iso = (d: unknown): string | null => (d instanceof Date ? d.toISOString() 
 const errMsg = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 300);
 
 const BUSY_GRACE_SEC = 300;
+/** DB CLI(drain)의 잠금 이름 — jobs/queue.ts drain() 기본값 */
+const CLI_WORKER_ID = 'drain';
+/** 예약 감지 잡 — alerts 도메인이 10분마다 활성 워크스페이스마다 만든다 (§6 잡 계약 alerts.scan) */
+const SCHEDULE_PROBE_TYPE = 'alerts.scan';
 
-async function checkWorker(db: Queryable, staleMin: number): Promise<WorkerCheck> {
-  const basis = `활성 워크스페이스가 있으면 스케줄 잡이 10분 간격으로 생긴다. 최근 ${staleMin}분 안에 잡을 집거나 끝낸 기록(jobs · worker_heartbeats)이 없으면 워커가 멈춘 것으로 본다`;
-  const base: WorkerCheck = {
-    ok: false, status: 'unknown', staleAfterMin: staleMin, lastActivityAt: null, lastFinishedAt: null, lastHeartbeatAt: null, activityAgeSec: null,
-    runningJobs: 0, queuedDue: 0, overdueJobs: 0, failedJobs24h: 0, activeWorkspaces: 0, workers: [], basis,
+function emptyWorker(staleMin: number, schedulerStaleMin: number, basis: string, error?: string): WorkerCheck {
+  return {
+    ok: false, status: 'unknown', staleAfterMin: staleMin, schedulerStaleAfterMin: schedulerStaleMin,
+    lastActivityAt: null, lastFinishedAt: null, lastHeartbeatAt: null, activityAgeSec: null, lastScheduledAt: null,
+    runningJobs: 0, queuedDue: 0, overdueJobs: 0, stuckJobs: 0, failedJobs24h: 0, activeWorkspaces: 0, workers: [], basis,
+    ...(error ? { error } : {}),
   };
+}
+
+const ms = (d: unknown): number | null => (d instanceof Date ? d.getTime() : typeof d === 'string' && d ? Date.parse(d) : null);
+const maxMs = (...xs: (number | null)[]): number | null => {
+  const v = xs.filter((x): x is number => x !== null && Number.isFinite(x));
+  return v.length ? Math.max(...v) : null;
+};
+
+async function checkWorker(db: Queryable, staleMin: number, schedulerStaleMin: number): Promise<WorkerCheck> {
+  const basis =
+    `워커 생존: 워커 프로세스가 60초마다 쓰는 하트비트(worker_heartbeats)나 워커가 잡을 집거나 끝낸 기록이 최근 ${staleMin}분 안에 있으면 정상. ` +
+    `DB CLI(run-jobs)로 처리한 기록은 워커로 세지 않는다. 실행 시각이 5분 넘게 지난 대기 잡이 있는데 큐가 5분 넘게 움직이지 않으면 stalled ` +
+    `(실행 중인 잡이 있고 하트비트가 살아 있으면 긴 잡 처리 중으로 보고 busy). ` +
+    `스케줄러: 활성 워크스페이스가 있으면 예약 감지 잡(${SCHEDULE_PROBE_TYPE})이 10분마다 생기므로 ${schedulerStaleMin}분 동안 없으면 no_scheduler`;
+  const base = emptyWorker(staleMin, schedulerStaleMin, basis);
   try {
     const s = await one<{
-      last_finished: Date | null; last_locked: Date | null; running: number; queued_due: number; overdue: number; failed24h: number; active_ws: number; db_now: Date;
+      last_finished: Date | null; last_worker_finished: Date | null; last_locked: Date | null; last_worker_locked: Date | null;
+      running: number; stuck: number; queued_due: number; overdue: number; failed24h: number;
+      last_scheduled: Date | null; active_ws: number; oldest_ws: Date | null; db_now: Date;
     }>(
       db,
       `SELECT
          (SELECT max(finished_at) FROM jobs WHERE finished_at IS NOT NULL) AS last_finished,
+         (SELECT max(finished_at) FROM jobs WHERE finished_at IS NOT NULL AND locked_by IS NOT NULL AND split_part(locked_by, '#', 1) <> $1) AS last_worker_finished,
          (SELECT max(locked_at) FROM jobs WHERE status = 'running') AS last_locked,
+         (SELECT max(locked_at) FROM jobs WHERE status = 'running' AND split_part(locked_by, '#', 1) <> $1) AS last_worker_locked,
          (SELECT count(*) FROM jobs WHERE status = 'running')::int AS running,
+         (SELECT count(*) FROM jobs WHERE status = 'running' AND locked_at < now() - interval '15 minutes')::int AS stuck,
          (SELECT count(*) FROM jobs WHERE status = 'queued' AND run_at <= now())::int AS queued_due,
          (SELECT count(*) FROM jobs WHERE status = 'queued' AND run_at < now() - interval '5 minutes')::int AS overdue,
          -- 최종 실패만 센다: 워커가 실행하다 실패한 잡은 locked_by가 남는다. 대기 중 취소(커넥션 · 업로드 삭제)는 locked_by가 없다
          (SELECT count(*) FROM jobs WHERE status = 'failed' AND locked_by IS NOT NULL AND finished_at > now() - interval '24 hours')::int AS failed24h,
+         (SELECT max(created_at) FROM jobs WHERE type = $2 AND payload->>'trigger' = 'schedule') AS last_scheduled,
          (SELECT count(*) FROM workspaces WHERE status = 'active')::int AS active_ws,
+         (SELECT min(created_at) FROM workspaces WHERE status = 'active') AS oldest_ws,
          now() AS db_now`,
+      [CLI_WORKER_ID, SCHEDULE_PROBE_TYPE],
     );
-    let workers: WorkerCheck['workers'] = [];
+    let rows: { worker_id: string; first_seen_at: Date; last_seen_at: Date; jobs_seen: number; last_job_type: string | null }[] = [];
     try {
-      workers = (await db.query<{ worker_id: string; last_seen_at: Date; jobs_seen: number; last_job_type: string | null }>(
-        'SELECT worker_id, last_seen_at, jobs_seen, last_job_type FROM worker_heartbeats ORDER BY last_seen_at DESC LIMIT 10',
-      )).rows.map((w) => ({ id: w.worker_id, lastSeenAt: iso(w.last_seen_at)!, jobsSeen: Number(w.jobs_seen), lastJobType: w.last_job_type }));
+      rows = (await db.query<{ worker_id: string; first_seen_at: Date; last_seen_at: Date; jobs_seen: number; last_job_type: string | null }>(
+        'SELECT worker_id, first_seen_at, last_seen_at, jobs_seen, last_job_type FROM worker_heartbeats ORDER BY last_seen_at DESC LIMIT 20',
+      )).rows;
     } catch {
       /* 520 마이그레이션 전: 하트비트 없이 jobs만으로 판정 */
     }
-    const nowMs = (s?.db_now instanceof Date ? s.db_now : new Date()).getTime();
-    const lastHeartbeat = workers[0] ? Date.parse(workers[0].lastSeenAt) : null;
-    const candidates = [s?.last_finished, s?.last_locked].filter((d): d is Date => d instanceof Date).map((d) => d.getTime());
-    if (lastHeartbeat !== null) candidates.push(lastHeartbeat);
-    const last = candidates.length ? Math.max(...candidates) : null;
-    const age = last === null ? null : Math.max(0, Math.round((nowMs - last) / 1000));
+    const workers: WorkerCheck['workers'] = rows.map((w) => ({
+      id: w.worker_id, lastSeenAt: iso(w.last_seen_at)!, jobsSeen: Number(w.jobs_seen), lastJobType: w.last_job_type, cli: w.worker_id === CLI_WORKER_ID,
+    }));
+    const nowMs = ms(s?.db_now) ?? Date.now();
+    const age = (t: number | null) => (t === null ? null : Math.max(0, Math.round((nowMs - t) / 1000)));
+    const staleSec = staleMin * 60;
+    const real = rows.filter((w) => w.worker_id !== CLI_WORKER_ID);
+    const lastBeat = maxMs(...real.map((w) => ms(w.last_seen_at)));
+    const workerAct = maxMs(lastBeat, ms(s?.last_worker_finished), ms(s?.last_worker_locked));
+    const progress = maxMs(ms(s?.last_finished), ms(s?.last_locked));
+    const workerAge = age(workerAct);
+    const beatAge = age(lastBeat);
+    const progressAge = age(progress);
+    const lastScheduled = ms(s?.last_scheduled);
     const out: WorkerCheck = {
       ...base,
-      lastActivityAt: last === null ? null : new Date(last).toISOString(),
+      lastActivityAt: workerAct === null ? null : new Date(workerAct).toISOString(),
       lastFinishedAt: iso(s?.last_finished),
-      lastHeartbeatAt: lastHeartbeat === null ? null : new Date(lastHeartbeat).toISOString(),
-      activityAgeSec: age,
+      lastHeartbeatAt: lastBeat === null ? null : new Date(lastBeat).toISOString(),
+      activityAgeSec: workerAge,
+      lastScheduledAt: lastScheduled === null ? null : new Date(lastScheduled).toISOString(),
       runningJobs: s?.running ?? 0,
       queuedDue: s?.queued_due ?? 0,
       overdueJobs: s?.overdue ?? 0,
+      stuckJobs: s?.stuck ?? 0,
       failedJobs24h: s?.failed24h ?? 0,
       activeWorkspaces: s?.active_ws ?? 0,
       workers,
     };
-    const fresh = age !== null && age <= staleMin * 60;
-    if (out.overdueJobs > 0 && !(age !== null && age <= BUSY_GRACE_SEC)) out.status = 'stalled';
-    else if (out.overdueJobs > 0) out.status = 'busy';
-    else if (fresh) out.status = 'ok';
-    else if (out.activeWorkspaces === 0) out.status = 'idle';
-    else if (last === null) out.status = 'no_activity';
+    const workerFresh = workerAge !== null && workerAge <= staleSec;
+    const beatFresh = beatAge !== null && beatAge <= staleSec;
+    if (out.overdueJobs > 0) {
+      const moving = progressAge !== null && progressAge <= BUSY_GRACE_SEC;
+      const longJobs = out.runningJobs > 0 && out.runningJobs > out.stuckJobs && beatFresh;
+      out.status = moving || longJobs ? 'busy' : 'stalled';
+    } else if (workerFresh) {
+      // 스케줄러: 가장 오래 산 워커(하트비트 첫 기록)와 가장 오래된 활성 워크스페이스가 판정 기간보다 오래됐을 때만 본다
+      // (첫 배포 · 새 워크스페이스 직후 첫 예약 시각 전의 오탐 방지)
+      const schedSec = schedulerStaleMin * 60;
+      const upSince = Math.min(...real.filter((w) => (age(ms(w.last_seen_at)) ?? Infinity) <= staleSec).map((w) => ms(w.first_seen_at) ?? nowMs), nowMs);
+      const wsSince = ms(s?.oldest_ws);
+      const graceOver = (age(upSince) ?? 0) > schedSec && wsSince !== null && (age(wsSince) ?? 0) > schedSec;
+      const scheduledAge = age(lastScheduled);
+      out.status = out.activeWorkspaces > 0 && graceOver && (scheduledAge === null || scheduledAge > schedSec) ? 'no_scheduler' : 'ok';
+    } else if (out.activeWorkspaces === 0) out.status = 'idle';
+    else if (workerAct === null) out.status = 'no_activity';
     else out.status = 'stale';
     out.ok = out.status === 'ok' || out.status === 'busy' || out.status === 'idle';
     return out;
@@ -378,19 +478,28 @@ async function checkWorker(db: Queryable, staleMin: number): Promise<WorkerCheck
 
 function workerNote(w: WorkerCheck): string | null {
   const min = w.activityAgeSec === null ? null : Math.round(w.activityAgeSec / 60);
+  const cliOnly = w.workers.length > 0 && w.workers.every((x) => x.cli);
   switch (w.status) {
     case 'ok': return null;
-    case 'busy': return `워커: 실행 시각이 5분 넘게 지난 대기 잡 ${w.overdueJobs}건 — 처리는 진행 중(최근 활동 ${min}분 전)이라 밀린 상태로만 표시`;
+    case 'busy': return `워커: 실행 시각이 5분 넘게 지난 대기 잡 ${w.overdueJobs}건 — 처리는 진행 중(실행 중 ${w.runningJobs}건)이라 밀린 상태로만 표시`;
     case 'idle': return '워커: 활성 워크스페이스가 없어 처리할 스케줄 잡이 없습니다 (생존 여부 판정 보류)';
-    case 'stalled': return `워커: 실행 시각이 5분 넘게 지난 대기 잡 ${w.overdueJobs}건이 있고 최근 5분 처리 기록이 없습니다 — 워커 프로세스를 확인하세요`;
-    case 'no_activity': return '워커: 잡을 처리한 기록이 한 번도 없습니다 — 워커가 실행 중인지 확인하세요';
-    case 'stale': return `워커: 최근 ${w.staleAfterMin}분 동안 잡 처리 기록이 없습니다 (마지막 활동 ${min}분 전)`;
+    case 'stalled': return `워커: 실행 시각이 5분 넘게 지난 대기 잡 ${w.overdueJobs}건이 있고 최근 5분 동안 큐가 움직이지 않았습니다 — 워커 프로세스를 확인하세요`;
+    case 'no_activity':
+      return cliOnly
+        ? '워커: 워커 프로세스 기록이 없습니다 (DB CLI run-jobs 처리 기록만 있음) — 워커(node server/dist/worker.mjs)를 실행하세요'
+        : '워커: 워커 하트비트 · 잡 처리 기록이 한 번도 없습니다 — 워커가 실행 중인지 확인하세요';
+    case 'stale': return `워커: 최근 ${w.staleAfterMin}분 동안 워커 하트비트 · 잡 처리 기록이 없습니다 (마지막 ${min}분 전)`;
+    case 'no_scheduler':
+      return `스케줄러: 워커는 살아 있지만 최근 ${w.schedulerStaleAfterMin}분 동안 예약 감지 잡(${SCHEDULE_PROBE_TYPE})이 생기지 않았습니다 — SCHEDULER=on인 워커가 하나는 있어야 예약 수집 · 감지 · SLA · 리포트가 돈다`;
     default: return `워커: 상태를 확인하지 못했습니다${w.error ? ` (${w.error})` : ''}`;
   }
 }
 
 /** 레디니스 판정 — DB · 마이그레이션 실패는 not_ready(503), 워커 이상은 degraded(200: API는 계속 서비스) */
-export async function readiness(db: Queryable, opts: { workerStaleMin?: number; version?: string; migrationsDir?: string; timeoutMs?: number } = {}): Promise<ReadyReport> {
+export async function readiness(
+  db: Queryable,
+  opts: { workerStaleMin?: number; schedulerStaleMin?: number; version?: string; migrationsDir?: string; timeoutMs?: number } = {},
+): Promise<ReadyReport> {
   const timeoutMs = opts.timeoutMs ?? 3000;
   const notes: string[] = [];
   const started = Date.now();
@@ -428,17 +537,13 @@ export async function readiness(db: Queryable, opts: { workerStaleMin?: number; 
   }
 
   const staleMin = opts.workerStaleMin ?? 15;
+  const schedulerStaleMin = opts.schedulerStaleMin ?? 25;
   const worker: WorkerCheck = dbCheck.ok
-    ? await withTimeout(checkWorker(db, staleMin), timeoutMs, '워커 확인').catch((e) => ({
-        ok: false, status: 'unknown' as const, staleAfterMin: staleMin, lastActivityAt: null, lastFinishedAt: null, lastHeartbeatAt: null, activityAgeSec: null,
-        runningJobs: 0, queuedDue: 0, overdueJobs: 0, failedJobs24h: 0, activeWorkspaces: 0, workers: [], basis: '', error: errMsg(e),
-      }))
-    : {
-        ok: false, status: 'unknown', staleAfterMin: staleMin, lastActivityAt: null, lastFinishedAt: null, lastHeartbeatAt: null, activityAgeSec: null,
-        runningJobs: 0, queuedDue: 0, overdueJobs: 0, failedJobs24h: 0, activeWorkspaces: 0, workers: [], basis: '', error: 'DB 연결 실패로 확인하지 못함',
-      };
+    ? await withTimeout(checkWorker(db, staleMin, schedulerStaleMin), timeoutMs, '워커 확인').catch((e) => emptyWorker(staleMin, schedulerStaleMin, '', errMsg(e)))
+    : emptyWorker(staleMin, schedulerStaleMin, '', 'DB 연결 실패로 확인하지 못함');
   const wn = dbCheck.ok ? workerNote(worker) : null;
   if (wn) notes.push(wn);
+  if (worker.stuckJobs > 0) notes.push(`잡: 15분 넘게 잠긴 실행 중 잡 ${worker.stuckJobs}건 — 살아 있는 워커가 회수해 다시 실행합니다 (계속 남으면 워커 확인)`);
   if (worker.failedJobs24h > 0) notes.push(`잡: 최근 24시간 최종 실패 ${worker.failedJobs24h}건 (docs/OPERATIONS.md '잡 실패 조회')`);
 
   const status: ReadyStatus = !dbCheck.ok || !mig.ok ? 'not_ready' : worker.ok ? 'ready' : 'degraded';
@@ -465,10 +570,7 @@ export function summarizeReadiness(r: ReadyReport): ReadyReport {
       db: { ok: r.checks.db.ok, latencyMs: null },
       // 파일 수 · 적용 수는 민감하지 않아 남긴다(0/0으로 오해하지 않게). 파일 이름 · 오류 문구는 뺀다
       migrations: { ok: r.checks.migrations.ok, expected: r.checks.migrations.expected, applied: r.checks.migrations.applied, pending: [], unknownApplied: [] },
-      worker: {
-        ok: w.ok, status: w.status, staleAfterMin: w.staleAfterMin, lastActivityAt: null, lastFinishedAt: null, lastHeartbeatAt: null, activityAgeSec: null,
-        runningJobs: 0, queuedDue: 0, overdueJobs: 0, failedJobs24h: 0, activeWorkspaces: 0, workers: [], basis: '',
-      },
+      worker: { ...emptyWorker(w.staleAfterMin, w.schedulerStaleAfterMin, ''), ok: w.ok, status: w.status },
     },
     notes: r.status === 'ready' ? [] : ['세부 판정 근거는 내부망에서 조회하거나 x-ready-token 헤더(READY_TOKEN)를 붙여 조회하세요 (docs/OPERATIONS.md 모니터링)'],
   };
@@ -544,6 +646,24 @@ export async function loginLockState(db: Queryable, email: string, ip: string | 
 
 /* ---------------- 플러그인 ---------------- */
 
+/** 경로와 무관하게 모든 응답에 붙는 헤더 */
+export function commonHeaders(hsts: boolean): [string, string][] {
+  const h: [string, string][] = [
+    ['x-content-type-options', 'nosniff'],
+    ['x-frame-options', 'DENY'],
+    ['referrer-policy', 'strict-origin-when-cross-origin'],
+    ['permissions-policy', PERMISSIONS_POLICY],
+    ['cross-origin-opener-policy', 'same-origin'],
+    ['cross-origin-resource-policy', 'same-origin'],
+    ['x-permitted-cross-domain-policies', 'none'],
+  ];
+  if (hsts) h.push(['strict-transport-security', HSTS]);
+  return h;
+}
+
+/** 종료 중 끊는 AI 스트림에 보내는 마지막 이벤트 (src/ai/claude.ts가 error 이벤트의 message를 화면에 보여 준다) */
+export const SHUTDOWN_AI_EVENT = `event: error\ndata: ${JSON.stringify({ code: 'server_restarting', message: '서버를 다시 시작하는 중이라 응답이 중단되었습니다. 잠시 후 다시 시도해 주세요' })}\n\n`;
+
 export const securityPlugin = fp(async (app: FastifyInstance) => {
   const { config, db } = app.ctx;
   const opts = securityOptionsFromEnv(process.env, config.env);
@@ -551,13 +671,20 @@ export const securityPlugin = fp(async (app: FastifyInstance) => {
   const hsts = config.secureCookies;
   const apiLimiter = opts.apiRateMax > 0 ? new WindowLimiter(opts.apiRateMax, opts.apiRateWindowMs) : null;
   const authLimiter = opts.authRateMax > 0 ? new WindowLimiter(opts.authRateMax, 60_000) : null;
+  const common = commonHeaders(hsts);
+  /** 열린 SSE(/api/w/:ws/events) — 종료 시 바로 닫는다 */
   const streams = new Set<ServerResponse>();
+  /** 진행 중인 AI 응답 스트림 — 종료 시 끝나기를 기다린 뒤 남은 것만 끊는다 */
+  const aiStreams = new Set<ServerResponse>();
+  const track = (set: Set<ServerResponse>, res: ServerResponse) => {
+    set.add(res);
+    res.once('close', () => set.delete(res));
+  };
 
   app.decorateRequest('requestId', '');
 
   app.addHook('onRequest', async (req, reply) => {
-    const incoming = req.headers['x-request-id'];
-    const rid = typeof incoming === 'string' && REQUEST_ID.test(incoming) ? incoming : randomUUID();
+    const rid = requestIdFor(req);
     req.requestId = rid;
     reply.header('x-request-id', rid);
     if (typeof req.log?.child === 'function') {
@@ -569,18 +696,27 @@ export const securityPlugin = fp(async (app: FastifyInstance) => {
 
     const path = routePath(req);
     if (!isApiPath(path)) return;
+    // reply.hijack() 후 res.writeHead로 직접 쓰는 스트림 응답에도 보안 헤더 · 요청 id가 실리도록 원시 응답에 미리 넣는다.
+    // 일반 응답은 Fastify가 writeHead할 때 같은 이름의 값으로 덮어쓰므로 중복되지 않는다.
+    const raw = reply.raw;
+    if (typeof raw?.setHeader === 'function' && !raw.headersSent) {
+      raw.setHeader('x-request-id', rid);
+      for (const [k, v] of common) raw.setHeader(k, v);
+      raw.setHeader('content-security-policy', API_CSP);
+    }
     if (req.method === 'GET' && path === SSE_ROUTE) {
       // SSE는 연결이 길어 속도 제한에서 뺀다 · 종료 시 정리할 수 있게 추적
-      const res = reply.raw;
-      streams.add(res);
-      res.once('close', () => streams.delete(res));
+      track(streams, raw);
       return;
     }
+    if (req.method === 'POST' && path === AI_STREAM_ROUTE) track(aiStreams, raw);
     const key = rateKeyOf(clientIp(req, opts.proxyHops));
     if (apiLimiter) {
       const r = apiLimiter.hit(key);
       reply.header('x-ratelimit-limit', String(apiLimiter.max));
       reply.header('x-ratelimit-remaining', String(r.remaining));
+      raw?.setHeader?.('x-ratelimit-limit', String(apiLimiter.max));
+      raw?.setHeader?.('x-ratelimit-remaining', String(r.remaining));
       if (!r.ok) {
         reply.header('retry-after', String(r.retryAfterSec));
         throw new HttpError(429, 'rate_limited', `요청이 너무 많습니다. ${r.retryAfterSec}초 후 다시 시도해 주세요`);
@@ -601,7 +737,7 @@ export const securityPlugin = fp(async (app: FastifyInstance) => {
       const email = (req.body as { email?: unknown } | undefined)?.email;
       if (typeof email !== 'string' || !email.trim() || email.length > 200) return; // 형식 오류는 라우트가 400으로 판정
       // 이번 요청의 IP는 TRUST_PROXY_HOPS 기준(꾸민 X-Forwarded-For 앞부분을 믿지 않음)으로 고른다.
-      // 감사 로그의 ip(req.ip, trustProxy=true라 XFF 맨 앞 값)와 다르면 '익숙한 IP'로 인정되지 않을 뿐(계정 기준으로 셈) 우회는 안 된다.
+      // app.ts의 Fastify trustProxy도 같은 홉 수를 쓰므로 감사 로그에 남는 req.ip와 같은 값이다(익숙한 IP 판정이 이어진다).
       const lock = await loginLockState(db, email.trim(), clientIp(req, opts.proxyHops) || null, { windowMin: opts.loginFailWindowMin, max: opts.loginFailMax });
       if (!lock.locked) return;
       const { failures, retryAfterSec } = lock;
@@ -614,21 +750,14 @@ export const securityPlugin = fp(async (app: FastifyInstance) => {
       throw new HttpError(
         429,
         'login_locked',
-        `로그인 실패가 ${opts.loginFailWindowMin}분 안에 ${opts.loginFailMax}회를 넘어 이 계정의 로그인을 잠시 막았습니다. 약 ${mins}분 뒤 다시 시도하거나 비밀번호 재설정을 이용해 주세요`,
+        `로그인 실패가 ${opts.loginFailWindowMin}분 안에 ${opts.loginFailMax}회에 이르러 이 계정의 로그인을 잠시 막았습니다. 약 ${mins}분 뒤 다시 시도하거나 비밀번호 재설정을 이용해 주세요`,
         { retryAfterSec },
       );
     });
   }
 
   app.addHook('onSend', async (req, reply, payload) => {
-    reply.header('x-content-type-options', 'nosniff');
-    reply.header('x-frame-options', 'DENY');
-    reply.header('referrer-policy', 'strict-origin-when-cross-origin');
-    reply.header('permissions-policy', PERMISSIONS_POLICY);
-    reply.header('cross-origin-opener-policy', 'same-origin');
-    reply.header('cross-origin-resource-policy', 'same-origin');
-    reply.header('x-permitted-cross-domain-policies', 'none');
-    if (hsts) reply.header('strict-transport-security', HSTS);
+    for (const [k, v] of common) reply.header(k, v);
     const path = routePath(req);
     if (isApiPath(path)) {
       reply.header('content-security-policy', API_CSP);
@@ -654,7 +783,11 @@ export const securityPlugin = fp(async (app: FastifyInstance) => {
     });
   }
 
-  // 우아한 종료: 열린 SSE를 닫아야 server.close()가 끝난다. 브라우저 EventSource는 retry 뒤 다시 붙는다.
+  // 우아한 종료: 열린 스트림을 닫아야 server.close()가 끝난다 (Fastify는 종료 중 새 요청에 503을 준다).
+  //  - SSE: 바로 닫는다. 브라우저 EventSource는 retry 뒤 다른(새) 인스턴스에 다시 붙는다.
+  //  - AI 응답: 생성 중인 답을 버리지 않게 SHUTDOWN_STREAM_GRACE_MS까지 끝나기를 기다린다(끝나면 라우트가 사용량을 기록한다).
+  //    그래도 남은 스트림은 error 이벤트(server_restarting)를 보내고 끊는다 → 라우트가 Anthropic 스트림을 중단하고 부분 사용량을 기록한다.
+  //    compose의 app stop_grace_period(30s)가 이 값(기본 20s)보다 길어야 한다.
   app.addHook('preClose', async () => {
     for (const res of streams) {
       try {
@@ -667,12 +800,38 @@ export const securityPlugin = fp(async (app: FastifyInstance) => {
       }
     }
     streams.clear();
+    const open = () => [...aiStreams].filter((r) => !r.writableEnded && !r.destroyed);
+    if (open().length === 0) return aiStreams.clear();
+    const deadline = Date.now() + opts.shutdownStreamGraceMs;
+    while (open().length > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    const cut = open();
+    for (const res of cut) {
+      try {
+        // 안내 이벤트가 소켓에 실린 뒤 끊는다(destroy는 버퍼에 남은 데이터를 버린다). end() 대신 destroy()라야
+        // 라우트의 close 처리(writableFinished=false)가 Anthropic 스트림을 중단한다.
+        if (res.headersSent) {
+          await new Promise<void>((ok) => {
+            const t = setTimeout(ok, 1000);
+            res.write(SHUTDOWN_AI_EVENT, () => {
+              clearTimeout(t);
+              ok();
+            });
+          });
+        }
+      } catch {
+        /* 이미 끊긴 연결 */
+      }
+      res.destroy();
+    }
+    aiStreams.clear();
+    // 끊긴 라우트가 부분 사용량을 기록할 짧은 여유 (그 뒤 index.ts가 DB 풀을 닫는다)
+    if (cut.length) await new Promise((r) => setTimeout(r, 500));
   });
 
   // 세부 항목(워커 이름 · 활성 워크스페이스 수 · 마이그레이션 파일명 · DB 오류 문구)은 내부망 · 토큰에만.
   // 외부 감시는 status만 보면 된다(HTTP 503 = not_ready).
   app.get('/api/ready', async (req, reply) => {
-    const r = await readiness(db, { workerStaleMin: opts.workerStaleMin });
+    const r = await readiness(db, { workerStaleMin: opts.workerStaleMin, schedulerStaleMin: opts.schedulerStaleMin });
     reply.status(r.status === 'not_ready' ? 503 : 200);
     const full = isInternalIp(clientIp(req, opts.proxyHops)) || tokenMatches(req.headers['x-ready-token'], opts.readyToken);
     return full ? { ...r, detail: 'full' } : summarizeReadiness(r);

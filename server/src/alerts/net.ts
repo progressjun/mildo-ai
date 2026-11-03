@@ -18,7 +18,8 @@ for (const [net, prefix] of [
 ] as const) BLOCKED.addSubnet(net, prefix, 'ipv4');
 // IPv6 — 미지정 · 루프백 · 고유 로컬 · 링크 로컬 · 사이트 로컬(폐기) · 멀티캐스트 · 문서용 · 6to4/Teredo(내부 주소를 감쌀 수 있음)
 for (const [net, prefix] of [
-  ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8], ['2001:db8::', 32], ['2002::', 16], ['2001::', 32], ['100::', 64],
+  // ::/96 = 미지정 · 루프백 · IPv4 호환(폐기, ::a.b.c.d) 전부, 64:ff9b:1::/48 = 로컬 NAT64 (RFC 8215)
+  ['::', 96], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8], ['2001:db8::', 32], ['2002::', 16], ['2001::', 32], ['100::', 64], ['64:ff9b:1::', 48],
 ] as const) BLOCKED.addSubnet(net, prefix, 'ipv6');
 
 const BLOCKED_NAMES = [/^localhost$/i, /\.localhost$/i, /\.local$/i, /\.internal$/i, /\.lan$/i, /\.home\.arpa$/i, /^metadata$/i, /^metadata\.google\.internal$/i];
@@ -105,41 +106,63 @@ export function guardedLookup(hostname: string, options: object, cb: LookupCb): 
 
 const MAX_RESPONSE = 64 * 1024;
 
-/** 기본 포스터: node:https + 주소 검사 + 타임아웃(기본 10초) + 응답 64KB 제한 + 리다이렉트 따라가지 않음 */
-export const httpsPoster: HttpPoster = ({ url, body, headers, timeoutMs = 10_000 }) =>
-  new Promise((resolve, reject) => {
-    const chk = checkOutboundUrl(url);
-    if (!chk.ok || !chk.url) return reject(new OutboundBlockedError(chk.reason ?? '발송할 수 없는 주소입니다'));
-    // 테스트 중 실네트워크 금지 (docs/SAAS_SPEC.md §5) — 테스트는 deps.poster에 가짜를 주입한다
-    if (process.env.NODE_ENV === 'test' && process.env.ALLOW_TEST_NETWORK !== 'true') return reject(new Error('테스트 환경에서는 실제 발송을 하지 않습니다 (setAlertDepsForTest로 가짜 poster 주입)'));
-    const u = chk.url;
-    const req = httpsRequest(
-      {
-        protocol: 'https:',
-        hostname: u.hostname.replace(/^\[|\]$/g, ''),
-        port: u.port || 443,
-        path: `${u.pathname}${u.search}`,
-        method: 'POST',
-        headers: { 'content-type': 'application/json; charset=utf-8', 'user-agent': 'MILDO-OS-Notify/1.0', ...headers, 'content-length': Buffer.byteLength(body) },
-        lookup: guardedLookup as never,
-        timeout: timeoutMs,
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        res.on('data', (c: Buffer) => {
-          size += c.length;
-          if (size <= MAX_RESPONSE) chunks.push(c);
-        });
-        res.on('end', () => {
-          const h: Record<string, string> = {};
-          for (const [k, v] of Object.entries(res.headers)) if (typeof v === 'string') h[k] = v;
-          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8'), headers: h });
-        });
-        res.on('error', reject);
-      },
-    );
-    req.on('timeout', () => req.destroy(new Error(`응답 시간 초과 (${Math.round(timeoutMs / 1000)}초)`)));
-    req.on('error', reject);
-    req.end(body);
-  });
+type RequestImpl = typeof httpsRequest;
+
+/**
+ * 포스터 만들기 (테스트는 requestImpl에 가짜를 넣어 시간 초과 · 큰 응답 처리를 확인한다).
+ * 제한: 소켓 유휴 timeoutMs + 전체 마감 timeoutMs × 1.5(느리게 조금씩 보내는 응답이 워커를 붙잡지 못하게) · 응답 64KB(넘으면 끊고 앞부분만) · 리다이렉트 따라가지 않음.
+ */
+export function createHttpsPoster(requestImpl: RequestImpl = httpsRequest): HttpPoster {
+  return ({ url, body, headers, timeoutMs = 10_000 }) =>
+    new Promise((resolve, reject) => {
+      const chk = checkOutboundUrl(url);
+      if (!chk.ok || !chk.url) return reject(new OutboundBlockedError(chk.reason ?? '발송할 수 없는 주소입니다'));
+      // 테스트 중 실네트워크 금지 (docs/SAAS_SPEC.md §5) — 테스트는 deps.poster에 가짜를 주입한다
+      if (requestImpl === httpsRequest && process.env.NODE_ENV === 'test' && process.env.ALLOW_TEST_NETWORK !== 'true') {
+        return reject(new Error('테스트 환경에서는 실제 발송을 하지 않습니다 (setAlertDepsForTest로 가짜 poster 주입)'));
+      }
+      const u = chk.url;
+      let settled = false;
+      const done = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(deadline); fn(); } };
+      const req = requestImpl(
+        {
+          protocol: 'https:',
+          hostname: u.hostname.replace(/^\[|\]$/g, ''),
+          port: u.port || 443,
+          path: `${u.pathname}${u.search}`,
+          method: 'POST',
+          headers: { 'content-type': 'application/json; charset=utf-8', 'user-agent': 'MILDO-OS-Notify/1.0', ...headers, 'content-length': Buffer.byteLength(body) },
+          lookup: guardedLookup as never,
+          timeout: timeoutMs,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          let size = 0;
+          const finish = () => {
+            const h: Record<string, string> = {};
+            for (const [k, v] of Object.entries(res.headers ?? {})) if (typeof v === 'string') h[k] = v;
+            done(() => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8'), headers: h }));
+          };
+          res.on('data', (c: Buffer) => {
+            if (settled) return;
+            size += c.length;
+            if (size <= MAX_RESPONSE) chunks.push(c);
+            else { finish(); res.destroy?.(); }
+          });
+          res.on('end', finish);
+          res.on('error', (e: Error) => done(() => reject(e)));
+        },
+      );
+      const deadline = setTimeout(() => {
+        const e = new Error(`응답 시간 초과 (전체 ${Math.round((timeoutMs * 1.5) / 1000)}초)`);
+        done(() => reject(e));
+        req.destroy(e);
+      }, Math.round(timeoutMs * 1.5));
+      req.on('timeout', () => req.destroy(new Error(`응답 시간 초과 (${Math.round(timeoutMs / 1000)}초)`)));
+      req.on('error', (e: Error) => done(() => reject(e)));
+      req.end(body);
+    });
+}
+
+/** 기본 포스터: node:https + 연결 시점 주소 검사 */
+export const httpsPoster: HttpPoster = createHttpsPoster();

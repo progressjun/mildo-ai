@@ -7,7 +7,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createHmac } from 'node:crypto';
 import type { Dataset } from '@/core/types';
 import { DEMO } from '@/data/demo';
-import { onDutyFor } from '@/modules/alert/engine';
+import type { ChangeRequest } from '@/core/types';
+import { detectBulkChange, onDutyFor, regimeOf } from '@/modules/alert/engine';
 import { createTestApp, type TestApp, type TestClient } from '../../test/app';
 import { registerJob, drain, _resetJobsForTest } from '../jobs/queue';
 import { registerSchedule, runScheduleNow, scheduleContext, _resetSchedulesForTest } from '../jobs/scheduler';
@@ -24,9 +25,12 @@ const HOOK = 'https://hooks.partner.example.com/mildo/secret-path-7788';
 const HOOK_SECRET = 'whsec_0123456789abcdef';
 const enc = encodeURIComponent;
 
+/** 실연동 데이터로 표시한 데모 Dataset (기본 픽스처) — meta가 없거나 demo면 서버는 감지 이슈를 TEST DATA(isTest)로 둔다 */
+const LIVE: Dataset = { ...DEMO, meta: { mode: 'live', builtAt: DEMO.generatedAt, sources: [] } };
+
 let t: TestApp;
 let restore: () => void;
-let dataset: Dataset | (() => Dataset) = DEMO;
+let dataset: Dataset | (() => Dataset) = LIVE;
 const posts: { url: string; body: string; headers: Record<string, string> }[] = [];
 let respond: (url: string) => PostResult = () => ({ status: 200, body: 'ok', headers: {} });
 const poster: HttpPoster = async (o) => {
@@ -67,8 +71,9 @@ async function reset() {
   posts.length = 0;
   clearTestOutbox();
   respond = () => ({ status: 200, body: 'ok', headers: {} });
-  dataset = DEMO;
+  dataset = LIVE;
   setNowForTest(null);
+  await t.db.query(`UPDATE workspaces SET config = '{}'::jsonb WHERE id = $1`, [t.ws]);
 }
 const W = (p: string) => `/api/w/${t.ws}${p}`;
 /** 준비용 감지 (HTTP 수동 감지는 사용자당 분당 12회 제한이 있어 준비 단계는 직접 호출) */
@@ -99,7 +104,12 @@ describe('alerts.scan — 서버 24시간 감지', () => {
     const row = (await t.db.query<{ status: string; severity: string; rule_id: string; doc: Record<string, unknown> }>(
       `SELECT status, severity, rule_id, doc FROM incidents WHERE id = 'tracking_break:카카오:2026-10-31'`)).rows[0];
     expect(row).toMatchObject({ status: 'open', severity: 'P1', rule_id: 'tracking_break' });
-    expect(row.doc).toMatchObject({ source: 'scan', dataDate: '2026-10-31', stillDetected: true, status: 'open' });
+    expect(row.doc).toMatchObject({ source: 'scan', dataDate: '2026-10-31', stillDetected: true, status: 'open', isTest: false, dataMode: 'live' });
+    expect(typeof row.doc.notifiedAt).toBe('string');
+    // 영향 추정 금액은 원 단위 정수로 저장
+    const impacts = (await t.db.query<{ doc: { impact: Record<string, number> } }>(`SELECT doc FROM incidents WHERE workspace_id = $1`, [t.ws])).rows.flatMap((r) => Object.values(r.doc.impact ?? {}));
+    expect(impacts.length).toBeGreaterThan(5);
+    expect(impacts.every((v) => Number.isInteger(v))).toBe(true);
     expect(await count(`SELECT count(*)::int AS n FROM audit_log WHERE action = 'incident.scan'`)).toBe(1);
     for (let i = 0; i < 20 && !got.length; i++) await new Promise((r) => setTimeout(r, 50));
     off();
@@ -126,7 +136,7 @@ describe('alerts.scan — 서버 24시간 감지', () => {
     await pm.post(W('/alerts/scan'));
     // 탐지 결과에서 카카오 전환 추적 단절만 빠지도록: 시간별 데이터에서 카카오 오늘 행 제거 → 다른 규칙으로도 안 잡히게 tracking id만 확인
     const id = 'tracking_break:카카오:2026-10-31';
-    const withoutKakaoToday: Dataset = { ...DEMO, mediaHourly: DEMO.mediaHourly.map((h) => (h.media === 'kakao' && h.date === DEMO.today ? { ...h, conversions: h.conversions + 1, revenue: h.revenue + 1000 } : h)) };
+    const withoutKakaoToday: Dataset = { ...LIVE, mediaHourly: DEMO.mediaHourly.map((h) => (h.media === 'kakao' && h.date === DEMO.today ? { ...h, conversions: h.conversions + 1, revenue: h.revenue + 1000 } : h)) };
     dataset = withoutKakaoToday;
     const r1 = await pm.post(W('/alerts/scan'));
     expect(r1.json.cleared).toBeGreaterThanOrEqual(1);
@@ -138,7 +148,7 @@ describe('alerts.scan — 서버 24시간 감지', () => {
     await pm.post(W('/alerts/scan'));
     const inc2 = (await pm.get(W('/incidents'))).json.incidents.find((i: { id: string }) => i.id === id);
     expect(notes(inc2)).toBe(1);
-    dataset = DEMO;
+    dataset = LIVE;
     const r3 = await pm.post(W('/alerts/scan'));
     expect(r3.json.redetected).toBeGreaterThanOrEqual(1);
     const inc3 = (await pm.get(W('/incidents'))).json.incidents.find((i: { id: string }) => i.id === id);
@@ -161,6 +171,21 @@ describe('alerts.scan — 서버 24시간 감지', () => {
     expect(r.json.warning).toContain('비어 있어');
     const runs = (await viewer.get(W('/alerts/runs'))).json.runs;
     expect(runs.map((x: { status: string }) => x.status)).toEqual(['warning', 'warning']);
+  });
+
+  it('탐지 중 예외: 감지 기록에 failed로 남기고 잡은 재시도, 이슈 · 알림 잡은 반쯤 남지 않는다', async () => {
+    await pm.post(W('/notify/channels'), { type: 'slack', name: '#ops', config: { webhookUrl: SLACK }, minSeverity: 'P3', events: ['incident'] });
+    dataset = { ...LIVE, mediaHourly: null as unknown as Dataset['mediaHourly'] };
+    await t.db.query(`INSERT INTO jobs (type, workspace_id, payload) VALUES ('alerts.scan', $1, '{"trigger":"schedule"}')`, [t.ws]);
+    await run();
+    const j = (await t.db.query<{ status: string; last_error: string | null }>(`SELECT status, last_error FROM jobs WHERE type = 'alerts.scan'`)).rows[0];
+    expect(j.status).toBe('queued'); // 재시도 대기
+    expect(j.last_error).toBeTruthy();
+    const runs = (await viewer.get(W('/alerts/runs'))).json.runs;
+    expect(runs[0]).toMatchObject({ status: 'failed', trigger: 'schedule' });
+    expect(runs[0].warning).toContain('감지 실패');
+    expect(await count('SELECT count(*)::int AS n FROM incidents WHERE workspace_id = $1', [t.ws])).toBe(0);
+    expect(await count(`SELECT count(*)::int AS n FROM jobs WHERE type = 'notify.send'`)).toBe(0);
   });
 
   it('실데이터(meta.mode live)에서는 데모 소재 목록을 쓰지 않는다', async () => {
@@ -630,5 +655,196 @@ describe('스케줄 · 정책', () => {
     expect(r.json.roster.length).toBeGreaterThan(5);
     expect(r.json.roster[0]).toHaveProperty('role');
     expect((await pm.get(`/api/w/${otherWs}/alerts/policy`)).status).toBe(404);
+  });
+});
+
+/* ============================== 리뷰 보강: 정직성 · 교차 요청 · 견고성 ============================== */
+
+describe('테스트 데이터 감지 이슈 (TEST DATA 표기 · test 채널만)', () => {
+  beforeEach(reset);
+
+  it('meta 없음 · demo 데이터로 감지한 이슈는 isTest — test 이벤트 채널만 발송, 본문에 TEST DATA', async () => {
+    const realCh = (await pm.post(W('/notify/channels'), { type: 'slack', name: '#ops', config: { webhookUrl: SLACK }, minSeverity: 'P3', events: ['incident', 'sla'] })).json.channel;
+    const demoCh = (await pm.post(W('/notify/channels'), { type: 'webhook', name: '시연', config: { url: 'https://demo.example.com/hook' }, minSeverity: 'P3', events: ['test'] })).json.channel;
+    dataset = DEMO; // data 도메인 데모 커넥터 = meta 없음 또는 mode demo
+    const r = await scan();
+    expect(r.created).toBe(10);
+    const docs = (await t.db.query<{ doc: { isTest: boolean; dataMode: string } }>(`SELECT doc FROM incidents WHERE workspace_id = $1`, [t.ws])).rows;
+    expect(docs.every((d) => d.doc.isTest === true && d.doc.dataMode === 'demo')).toBe(true);
+    const targets = (await t.db.query<{ payload: { channelId: string } }>(`SELECT payload FROM jobs WHERE type = 'notify.send'`)).rows.map((x) => x.payload.channelId);
+    expect(targets).toHaveLength(10);
+    expect(new Set(targets)).toEqual(new Set([demoCh.id]));
+    expect(targets).not.toContain(realCh.id);
+    await run();
+    expect(posts.every((p) => p.url === 'https://demo.example.com/hook')).toBe(true);
+    const body = JSON.parse(posts[0].body);
+    expect(body.incident.isTest).toBe(true);
+  });
+
+  it('mixed: 그 매체 출처가 전부 demo면 isTest, 실연동 출처가 있으면 실이슈', async () => {
+    dataset = {
+      ...DEMO,
+      meta: {
+        mode: 'mixed', builtAt: DEMO.generatedAt,
+        sources: [
+          { channel: 'kakao', source: 'conn-kakao', kind: 'api', latestDate: DEMO.today },
+          { channel: 'meta', source: 'demo', kind: 'demo', latestDate: DEMO.today },
+        ],
+      },
+    };
+    await scan();
+    const rows = (await t.db.query<{ id: string; doc: { isTest: boolean; media: string } }>(`SELECT id, doc FROM incidents WHERE workspace_id = $1`, [t.ws])).rows;
+    const by = (m: string) => rows.filter((x) => x.doc.media === m);
+    expect(by('kakao').length).toBeGreaterThan(0);
+    expect(by('kakao').every((x) => x.doc.isTest === false)).toBe(true);
+    expect(by('meta').length).toBeGreaterThan(0);
+    expect(by('meta').every((x) => x.doc.isTest === true)).toBe(true);
+  });
+});
+
+describe("이벤트 'notify' (알림 채널 · 발송 결과)", () => {
+  beforeEach(reset);
+
+  it('채널 생성 · 수정 · 테스트 발송 · 발송 결과 · 삭제마다 notify 이벤트(id = 채널 id)', async () => {
+    const got: string[] = [];
+    const off = t.events.subscribe(t.ws, (e) => got.push(`${e.type}:${e.id ?? ''}`));
+    const id = (await pm.post(W('/notify/channels'), { type: 'slack', name: '#ops', config: { webhookUrl: SLACK }, minSeverity: 'P3', events: ['incident'] })).json.channel.id;
+    await pm.patch(W(`/notify/channels/${id}`), { name: '#ops-2' });
+    await pm.post(W(`/notify/channels/${id}/test`));
+    await ae.post(W('/incidents'), { incident: { id: 'manual:notify-event:1', ruleId: 'campaign_off', severity: 'P2', title: '캠페인 OFF' } });
+    await run();
+    await pm.del(W(`/notify/channels/${id}`));
+    const mine = () => got.filter((g) => g === `notify:${id}`).length;
+    for (let i = 0; i < 40 && mine() < 5; i++) await new Promise((r) => setTimeout(r, 50));
+    off();
+    expect(mine()).toBe(5);
+    // 다른 워크스페이스로는 가지 않는다
+    expect(got.every((g) => !g.includes(otherWs))).toBe(true);
+  });
+});
+
+describe('다른 도메인이 직접 넣은 이슈 (changes 대량 변경 bulk_change)', () => {
+  beforeEach(reset);
+
+  /** changes/service.ts storeBulkIncidents와 같은 방식으로 적재 */
+  async function insertBulk(nowMsVal: number) {
+    const chg = {
+      id: 'chg-bulk-1', createdAt: '2026-11-03T09:58:00+09:00', module: 'adpilot', kind: 'bid', target: '매트리스 추천', targetId: 'kw-1', before: 1000, after: 1500, changePct: 50,
+      reason: '테스트', requestedBy: '담당 AE', approver: 'AE', status: 'applied', history: [],
+    } as unknown as ChangeRequest;
+    const [b] = detectBulkChange([chg], { today: '2026-11-03' });
+    expect(b.id).toMatch(/^bulk_change:/);
+    await t.db.query(
+      `INSERT INTO incidents (id, workspace_id, rule_id, severity, status, doc, detected_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'open', $5::jsonb, $6, $6) ON CONFLICT DO NOTHING`,
+      [b.id, t.ws, b.ruleId, b.severity, JSON.stringify({ ...b, status: 'open' }), new Date(nowMsVal)],
+    );
+    return b.id;
+  }
+
+  it('SLA 잡이 한 번 알림 접수(on-call) → 다시 보내지 않음 · PATCH로 해결 · 해결 공유', async () => {
+    const tue = Date.parse('2026-11-03T10:00:00+09:00');
+    setNowForTest(tue);
+    const slack = (await pm.post(W('/notify/channels'), { type: 'slack', name: '#oncall', config: { webhookUrl: SLACK }, minSeverity: 'P1', events: ['incident', 'sla', 'resolved'] })).json.channel;
+    const id = await insertBulk(tue);
+    const sla = async () => { await t.db.query(`INSERT INTO jobs (type, workspace_id) VALUES ('alerts.sla', $1)`, [t.ws]); await run(); };
+    await sla();
+    const sent = () => posts.filter((p) => p.url === SLACK).map((p) => JSON.parse(p.body).blocks[0].text.text as string);
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatch(/^\[P1\] /);
+    let inc = (await pm.get(W('/incidents'))).json.incidents.find((i: { id: string }) => i.id === id);
+    expect(typeof inc.notifiedAt).toBe('string');
+    expect(inc.timeline.at(-1).action).toContain('알림 접수');
+    expect(await count(`SELECT count(*)::int AS n FROM audit_log WHERE action = 'incident.intake' AND target_id = $1`, [id])).toBe(1);
+    expect(await count(`SELECT count(*)::int AS n FROM notifications WHERE ref_id = $1 AND event = 'incident' AND status = 'sent' AND channel_id = $2`, [id, slack.id])).toBe(1);
+    await sla();
+    expect(sent()).toHaveLength(1);
+    // 운영자가 해결 (대량 변경 이슈는 해결 전까지 반영을 막는다 — changes 도메인)
+    const r = await pm.patch(W(`/incidents/${enc(id)}`), { patch: { status: 'resolved', actionNote: '롤백 완료' }, action: '해결 · 롤백 완료' });
+    expect(r.status).toBe(200);
+    expect(r.json.incident.status).toBe('resolved');
+    const row = (await t.db.query<{ status: string; resolved_at: Date | null }>(`SELECT status, resolved_at FROM incidents WHERE id = $1`, [id])).rows[0];
+    expect(row.status).toBe('resolved');
+    expect(row.resolved_at).not.toBeNull();
+    await run();
+    expect(sent().at(-1)).toMatch(/^\[해결 · P1\]/);
+    inc = (await pm.get(W('/incidents'))).json.incidents.find((i: { id: string }) => i.id === id);
+    expect(inc.sla.resolvedAt).toBeTruthy();
+  });
+
+  it('감지 · 화면 생성 이슈는 접수 대상이 아니다 (중복 알림 없음)', async () => {
+    await pm.post(W('/notify/channels'), { type: 'slack', name: '#ops', config: { webhookUrl: SLACK }, minSeverity: 'P3', events: ['incident'] });
+    await scan();
+    await run();
+    const before = posts.length;
+    expect(before).toBe(10);
+    await t.db.query(`INSERT INTO jobs (type, workspace_id) VALUES ('alerts.sla', $1)`, [t.ws]);
+    await run();
+    expect(posts.length).toBe(before);
+  });
+});
+
+describe('SLA 견고성 · 클라이언트 SLA 기록 · 당번 체계 강제', () => {
+  beforeEach(reset);
+  const tue = Date.parse('2026-11-03T10:00:00+09:00');
+
+  it('화면이 만든 이슈의 sla 기록은 받지 않는다 — 미리 인지로 채워 에스컬레이션을 피할 수 없다', async () => {
+    setNowForTest(tue);
+    await pm.post(W('/notify/channels'), { type: 'slack', name: '#pm', config: { webhookUrl: SLACK }, minSeverity: 'P2', events: ['sla'] });
+    const id = 'manual:sla-bypass:1';
+    const r = await ae.post(W('/incidents'), {
+      incident: { id, ruleId: 'tracking_break', severity: 'P1', title: '전환 추적 단절', media: 'naver_sa', detectedAt: '2026-11-03T10:00:00+09:00', sla: { ackAt: '2026-11-03T10:00:00+09:00', actionAt: '2026-11-03T10:00:00+09:00', reportAt: '2026-11-03T10:00:00+09:00' } },
+    });
+    expect(r.status).toBe(201);
+    expect(r.json.incident.sla).toEqual({});
+    setNowForTest(tue + 16 * 60_000);
+    await t.db.query(`INSERT INTO jobs (type, workspace_id) VALUES ('alerts.sla', $1)`, [t.ws]);
+    await run();
+    const inc = (await pm.get(W('/incidents'))).json.incidents.find((i: { id: string }) => i.id === id);
+    expect(inc.escalations?.ack).toBeTruthy();
+    // 처음부터 '인지' 상태로 만들면 인지 시각은 서버 수신 시각
+    setNowForTest(tue + 20 * 60_000);
+    const a = await ae.post(W('/incidents'), { incident: { id: 'manual:sla-bypass:2', ruleId: 'campaign_off', severity: 'P2', title: 'x', status: 'ack', sla: { ackAt: '2020-01-01T00:00:00+09:00' } } });
+    expect(a.json.incident.sla.ackAt).toBe('2026-11-03T10:20:00+09:00');
+  });
+
+  it('깨진 이슈 문서 하나가 있어도 다른 이슈의 에스컬레이션은 계속된다 (잡 성공 · 오류 기록)', async () => {
+    setNowForTest(tue);
+    await t.db.query(
+      `INSERT INTO incidents (id, workspace_id, rule_id, severity, status, doc, detected_at) VALUES ('broken:1', $1, 'x', 'P1', 'open', $2::jsonb, $3)`,
+      [t.ws, JSON.stringify({ id: 'broken:1', detectedAt: '2026-11-03T09:00:00+09:00', timeline: 5, source: 'client' }), new Date(tue - 3600_000)],
+    );
+    const id = 'manual:good:1';
+    await ae.post(W('/incidents'), { incident: { id, ruleId: 'tracking_break', severity: 'P1', title: '정상 이슈', detectedAt: '2026-11-03T10:00:00+09:00' } });
+    setNowForTest(tue + 16 * 60_000);
+    await t.db.query(`DELETE FROM jobs`);
+    await t.db.query(`INSERT INTO jobs (type, workspace_id) VALUES ('alerts.sla', $1)`, [t.ws]);
+    await run();
+    const j = (await t.db.query<{ status: string; result: { escalated: { id: string }[]; errors: { id: string }[] } }>(`SELECT status, result FROM jobs WHERE type = 'alerts.sla'`)).rows[0];
+    expect(j.status).toBe('done');
+    expect(j.result.escalated.map((e) => e.id)).toContain(id);
+    expect(j.result.errors.map((e) => e.id)).toContain('broken:1');
+  });
+
+  it('설정 offHoursMode=true면 평일에도 당번표로 배정 · 정책 응답에 강제 표시', async () => {
+    setNowForTest(tue);
+    await t.db.query(`UPDATE workspaces SET config = '{"offHoursMode": true}'::jsonb WHERE id = $1`, [t.ws]);
+    const duty = regimeOf('2026-11-03', true).duty!;
+    const r = await ae.post(W('/incidents'), { incident: { id: 'manual:forced:1', ruleId: 'campaign_off', severity: 'P2', title: '캠페인 OFF', media: 'meta' } });
+    expect(r.json.incident.assignee).toBe(duty.role);
+    expect(r.json.incident.onDuty).toBe(true);
+    const p = await viewer.get(W('/alerts/policy'));
+    expect(p.json.regime).toMatchObject({ off: true, forced: true });
+    // 설정이 없으면 평일 매체 담당
+    await t.db.query(`UPDATE workspaces SET config = '{}'::jsonb WHERE id = $1`, [t.ws]);
+    const r2 = await ae.post(W('/incidents'), { incident: { id: 'manual:forced:2', ruleId: 'campaign_off', severity: 'P2', title: '캠페인 OFF', media: 'meta' } });
+    expect(r2.json.incident.onDuty).toBe(false);
+  });
+
+  it('형식이 틀린 채널 id는 500이 아니라 404 · 400', async () => {
+    const bogus = '-'.repeat(36);
+    expect((await pm.patch(W(`/notify/channels/${bogus}`), { enabled: false })).status).toBe(404);
+    expect((await pm.post(W(`/notify/channels/${bogus}/test`))).status).toBe(404);
+    expect((await viewer.get(W(`/notify/log?channelId=${bogus}`))).status).toBe(400);
   });
 });

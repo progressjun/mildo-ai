@@ -17,7 +17,7 @@ import type { ApprovalLevel, ChangeRequest, Dataset, Incident } from '@/core/typ
 import { withWorkspaceConfig } from '@/data/config';
 import { canRollback, fmtValue } from '@/modules/flow/engine';
 import { officialConfig } from '@/modules/adpilot/engine';
-import { activeConfig, detectBulkChange, type AlertIncident } from '@/modules/alert/engine';
+import type { AlertIncident } from '@/modules/alert/engine';
 import { GFA_DELEGATION } from '@/data/constants';
 import type { AppConfig } from '../config';
 import type { Db, Queryable } from '../db/pool';
@@ -33,13 +33,14 @@ import { buildDataset } from '../warehouse/dataset';
 import { loadWorkspaceConfig } from '../settings/service';
 import { scrubSecrets } from '../connectors/http';
 import { defaultConnectorResolver, type ConnectorBinding, type ConnectorResolver } from './connector-adapter';
+import { bulkIncidentsFor, decideBulk, type StoredBulk } from './bulk';
 import {
-  engineChanges, getChange, insertChange, logExecution, toChange, toEngineChange, updateChange,
+  appliedBidsSince, engineChanges, getChange, insertChange, logExecution, toChange, toEngineChange, updateChange,
   type ChangeDto, type ChangeRow, type ChangeStatus, type ChangeUpdate, type ExecPending, type ExecPhase, type ExecPlan, type HistoryEntry,
   type ServerExecution,
 } from './model';
 import {
-  ACTION_LABEL, LEVEL_RANK, STATUS_LABEL, canLowerApprover, checkActionPermission, checkEditPermission, checkNotePermission, historyLabel, maxLevel,
+  ACTION_LABEL, LEVEL_RANK, STATUS_LABEL, canLowerApprover, checkActionPermission, checkEditPermission, checkNotePermission, effectivePct, historyLabel, maxLevel,
   noteEntryOf, resolveTransition, routeApprover, targetStatusOf, type ServerAction,
 } from './policy';
 import {
@@ -177,16 +178,29 @@ async function storeBulkIncidents(q: Queryable, ws: string, list: AlertIncident[
   return created;
 }
 
-/** 현재 건이 포함된 대량 변경 실수 감지 (MILDO Alert detectBulkChange) → 이슈 적재 */
+/** 적재된 대량 변경 이슈 (id · 상태 · related · 종료 시각) — bulk.ts decideBulk 입력 */
+async function loadStoredBulk(q: Queryable, ws: string): Promise<StoredBulk[]> {
+  const r = await q.query<{ id: string; status: string; related: unknown; resolved_ms: number | null }>(
+    `SELECT id, status, doc->'related' AS related,
+            CASE WHEN status = 'resolved' THEN extract(epoch FROM coalesce(resolved_at, updated_at)) * 1000 END::float8 AS resolved_ms
+       FROM incidents WHERE workspace_id = $1 AND id LIKE 'bulk_change:%' ORDER BY detected_at DESC LIMIT 2000`,
+    [ws],
+  );
+  return r.rows.map((x) => ({
+    id: x.id, status: x.status,
+    related: Array.isArray(x.related) ? x.related.filter((v): v is string => typeof v === 'string') : [],
+    resolvedAt: x.resolved_ms === null || x.resolved_ms === undefined ? null : Number(x.resolved_ms),
+  }));
+}
+
+/** 현재 건이 걸린 대량 변경 실수 감지 (MILDO Alert detectBulkChange · bulk.ts) → 새 이슈만 적재 */
 async function detectBulkFor(q: Queryable, ws: string, changeId: string, cfg: Record<string, unknown>): Promise<string[]> {
   const changes = await engineChanges(q, ws, 1000);
-  let found: AlertIncident[] = [];
-  try {
-    found = withWorkspaceConfig(cfg, () => detectBulkChange(changes, { today: kstToday(), config: activeConfig(changes) }));
-  } catch {
-    found = [];
-  }
-  return storeBulkIncidents(q, ws, found.filter((b) => (b.related ?? []).includes(changeId)));
+  const c = changes.find((x) => x.id === changeId);
+  if (!c) return [];
+  const stored = await loadStoredBulk(q, ws);
+  const toStore = withWorkspaceConfig(cfg, () => decideBulk(bulkIncidentsFor(changes, c), c, stored, changes).toStore);
+  return storeBulkIncidents(q, ws, toStore);
 }
 
 /* ------------------------------------------------------------------ */
@@ -366,6 +380,11 @@ async function simpleTransition(env: Env, wc: WorkspaceCtx, id: string, to: Chan
       if ('after' in edits) next.after = edits.after as string | number;
       if ('changePct' in edits) next.changePct = (edits.changePct as number | null) ?? undefined;
       if ('reason' in edits) next.reason = String(edits.reason);
+      // 값만 바꾸고 변경 폭을 안 보내면 예전 변경 폭이 남지 않게 값 기준으로 다시 계산 (계산할 수 없으면 비운다)
+      if (('before' in edits || 'after' in edits) && !('changePct' in edits)) {
+        const e = effectivePct({ before: next.before, after: next.after, changePct: undefined });
+        next.changePct = Number.isFinite(e.computed) ? Math.round(e.computed * 10) / 10 : undefined;
+      }
       // 승인 주체: PM 이상이면서 현재 승인 주체를 직접 승인할 수 있는 역할만 낮출 수 있다(CLIENT 건을 PM이 낮춰 스스로 승인하지 못하게).
       // 그 밖에는 현재보다 낮추지 않는다. 예산 · 신규 · 기준 변경은 서버 규칙으로 다시 판정
       const asked = (edits.approver as ApprovalLevel | undefined) ?? row.approver;
@@ -397,6 +416,28 @@ async function simpleTransition(env: Env, wc: WorkspaceCtx, id: string, to: Chan
       // 잠금 전 조회와 상태가 달라져 다른 액션이 된 경우(반영 · 롤백 전이 포함): 요청한 뜻과 다르므로 바꾸지 않는다
       if (EXEC_ACTIONS.has(tr.action!) || (expected && tr.action !== expected)) { conflict = { message: STALE_MESSAGE, code: 'stale' }; return null; }
       action = tr.action!;
+      // 승인 시점 재판정: 요청 뒤 워크스페이스 위임 범위 · 승인 주체 하한이 바뀌었으면 지금 기준으로 올린다 (낮추지는 않는다)
+      if (action === 'approve') {
+        const reroute = withWorkspaceConfig(cfg, () => routeApprover(current));
+        if (LEVEL_RANK[reroute.approver] > LEVEL_RANK[current.approver]) {
+          history.push({
+            at: atIso, by: SYSTEM_BY, action: '승인 주체 재판정',
+            note: `승인 시점 기준(워크스페이스 위임 범위) — ${reroute.notes.join(' · ') || `승인 주체 ${STATUS_APPROVER(current.approver)} → ${STATUS_APPROVER(reroute.approver)}`}`,
+          });
+          auditDetail.reroute = { from: current.approver, to: reroute.approver };
+          current = { ...current, approver: reroute.approver };
+          upd.approver = reroute.approver;
+          if (!checkActionPermission(wc.role, current.approver, 'approve').ok) {
+            // 올린 승인 주체는 저장하고(다음 승인자가 보게) 이 승인은 409로 돌려준다
+            upd.history = history;
+            await updateChange(q, ws, id, upd, at);
+            await audit(q, { workspaceId: ws, userId: actor.userId, actor: actor.name, ip: actor.ip, targetType: 'change', targetId: id, action: 'change.reroute', detail: auditDetail });
+            await publish(q, ws, { type: 'change', id });
+            conflict = { message: `승인 주체가 ${STATUS_APPROVER(current.approver)}(으)로 바뀌어 현재 역할로는 승인할 수 없습니다 — ${STATUS_APPROVER(current.approver)} 승인을 받아 주세요`, code: 'approver_changed' };
+            return null;
+          }
+        }
+      }
       const perm = checkActionPermission(wc.role, current.approver, action);
       if (!perm.ok) throw forbidden(perm.reason);
       history.push({ at: atIso, by: actor.name, action: historyLabel(action, body.action), note: body.note?.trim() || perm.reason });
@@ -573,16 +614,11 @@ async function runGuards(env: Env, ws: string, c: ChangeRequest): Promise<GuardR
   const changes = await engineChanges(env.db, ws, 1000);
   const incidents = await loadIncidents(env.db, ws);
   const todayStart = new Date(kstIso(kstToday(), 0));
-  const todayBids = c.kind === 'bid' && c.targetId
-    ? (await env.db.query<ChangeRow>(
-        `SELECT * FROM change_requests WHERE workspace_id = $1 AND kind = 'bid' AND target_id = $2 AND id <> $3 AND status = 'applied' AND applied_at >= $4 ORDER BY applied_at ASC`,
-        [ws, c.targetId, c.id, todayStart],
-      )).rows.map(toEngineChange)
-    : [];
-  const bulkStatus = new Map(incidents.filter((i) => i.id.startsWith('bulk_change:')).map((i) => [i.id, i.status]));
+  const todayBids = c.kind === 'bid' && c.targetId ? await appliedBidsSince(env.db, ws, c.targetId, c.id, todayStart) : [];
+  const bulkStored = await loadStoredBulk(env.db, ws);
   return withWorkspaceConfig(cfg, () => ({
     ...evaluateGuards({
-      data: ds.data, dataError: ds.error, changes, incidents, change: c, today: kstToday(), todayAppliedBids: todayBids, bulkIncidentStatus: bulkStatus,
+      data: ds.data, dataError: ds.error, changes, incidents, change: c, today: kstToday(), todayAppliedBids: todayBids, bulkStored,
     }),
     limits: {
       bidCapPct: officialConfig(changes).dailyChangeCapPct,
@@ -692,7 +728,8 @@ async function computeExecution(env: Env, ws: string, row: ChangeRow, pending: E
 function modeNote(plan: ExecPlan, out?: RunOutcome): string {
   if (plan.mode === 'dry_run') return `dry_run — 매체에 보내지 않고 요청 내용만 기록 (${plan.ops.length}건)`;
   const v = out?.results[0]?.appliedValue;
-  return `live 반영 완료 (${plan.ops.length}건${v !== undefined ? ` · 매체 적용값 ${v}` : ''})`;
+  const unverified = out?.results.some((r) => r.verifiedLive === false) ? ' · 실계정 연결 전 확인 필요 커넥터 — 매체 화면에서 반영 값을 확인해 주세요' : '';
+  return `live 반영 완료 (${plan.ops.length}건${v !== undefined ? ` · 매체 적용값 ${v}` : ''})${unverified}`;
 }
 
 function compNote(out: RunOutcome): string {
@@ -718,6 +755,8 @@ function executionOf(phase: ExecPhase, plan: ExecPlan, out: RunOutcome, at: stri
     plan,
     results: out.results,
     compensation: out.compensation.length ? out.compensation : undefined,
+    verifiedLive: out.results.length ? out.results.every((r) => r.verifiedLive === true) : undefined,
+    logs: out.logs.length ? out.logs : undefined,
   };
 }
 
@@ -737,8 +776,11 @@ async function bindPlan(env: Env, ws: string, plan: ExecPlan): Promise<Resolutio
     if (!conn) return { kind: 'blocked', reason: `커넥션(${op.connectionId})이 삭제되어 실행할 수 없습니다` };
     if (conn.status === 'disabled' || conn.write_mode === 'off') return { kind: 'blocked', reason: `커넥션 '${conn.label}'의 쓰기가 꺼져 실행하지 않았습니다` };
     if (plan.mode === 'live' && conn.write_mode !== 'live') return { kind: 'blocked', reason: `커넥션 '${conn.label}'이(가) 더 이상 live가 아니어서 실행하지 않았습니다` };
+    if (plan.mode === 'live' && conn.status === 'pending') return { kind: 'blocked', reason: `커넥션 '${conn.label}'이(가) 연결 확인 전(pending)이라 live로 실행하지 않았습니다` };
     const b = await deps.resolveConnector(env.db, env.config, conn);
     if (!b?.def.apply) return { kind: 'blocked', reason: `커넥션 '${conn.label}'의 커넥터가 반영을 지원하지 않습니다` };
+    const unsupported = plan.ops.find((o) => o.connectionId === conn.id && !(b.def.capabilities?.writes ?? []).includes(o.kind));
+    if (unsupported) return { kind: 'blocked', reason: `커넥션 '${conn.label}'의 커넥터가 더 이상 '${unsupported.kind}' 반영을 지원하지 않습니다` };
     bindings.set(conn.id, b);
   }
   return { kind: 'plan', plan, bindings, notes: ['백그라운드 재실행'] };

@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { DEMO } from '@/data/demo';
 import { detectIncidents, msToKstIso, onDutyFor } from '@/modules/alert/engine';
-import { checkOutboundUrl, guardedLookup, httpsPoster, isBlockedAddress, OutboundBlockedError } from './net';
+import { EventEmitter } from 'node:events';
+import { checkOutboundUrl, createHttpsPoster, guardedLookup, httpsPoster, isBlockedAddress, OutboundBlockedError } from './net';
+import { isTestData } from './scan';
 import { maskConfig, maskUrl, severityAllowed, validateConfig } from './channels';
-import { applyIncidentPatch, normalizeClientIncident, rosterAssignment, transitionOf, IncidentInput, type StoredIncident } from './incidents';
+import { applyIncidentPatch, normalizeClientIncident, normImpact, rosterAssignment, transitionOf, IncidentInput, type StoredIncident } from './incidents';
 import { dueEscalations } from './sla';
 import { buildMessage, slaDeadlines } from './messages';
 import { signWebhook } from './deliver';
@@ -242,5 +244,95 @@ describe('알림 메시지', () => {
   it('웹훅 서명: HMAC-SHA256(secret, timestamp.body)', () => {
     const sig = signWebhook('top-secret-value-123', '1700000000', '{"a":1}');
     expect(sig).toBe(`sha256=${createHmac('sha256', 'top-secret-value-123').update('1700000000.{"a":1}').digest('hex')}`);
+  });
+});
+
+/* ------------------------------ 리뷰 보강 ------------------------------ */
+
+describe('주소 판정 보강', () => {
+  it('IPv4 호환(::a.b.c.d) · 로컬 NAT64(64:ff9b:1::/48) · SIIT 매핑도 막는다', () => {
+    for (const a of ['::7f00:1', '::a9fe:a9fe', '::', '64:ff9b:1::a00:1', '::ffff:0:7f00:1']) expect(isBlockedAddress(a), a).toBe(true);
+    expect(checkOutboundUrl('https://[::7f00:1]/x').ok).toBe(false);
+    expect(isBlockedAddress('2606:4700:4700::1111')).toBe(false);
+  });
+});
+
+/** 가짜 https.request — 응답을 원하는 대로 흘려보낸다 (실제 소켓 없음) */
+function fakeRequest(onRes: (res: EventEmitter & { statusCode: number; headers: Record<string, string>; destroyed?: boolean; destroy: () => void }) => void) {
+  const calls: { destroyed: Error | null; res?: { destroyed?: boolean } } = { destroyed: null };
+  const impl = ((_opts: unknown, cb: (res: unknown) => void) => {
+    const req = new EventEmitter() as EventEmitter & { end: (b: string) => void; destroy: (e?: Error) => void };
+    req.destroy = (e?: Error) => { calls.destroyed = e ?? new Error('destroyed'); req.emit('error', calls.destroyed); };
+    req.end = () => {
+      const res = Object.assign(new EventEmitter(), { statusCode: 200, headers: { 'content-type': 'text/plain' }, destroyed: false, destroy() { res.destroyed = true; } });
+      calls.res = res;
+      setImmediate(() => { cb(res); onRes(res); });
+    };
+    return req;
+  }) as never;
+  return { impl, calls };
+}
+
+describe('기본 포스터 제한 (가짜 request)', () => {
+  it('응답이 64KB를 넘으면 끊고 앞부분만 돌려준다', async () => {
+    const { impl, calls } = fakeRequest((res) => {
+      for (let i = 0; i < 3; i++) res.emit('data', Buffer.alloc(40 * 1024, 97));
+      res.emit('end');
+    });
+    const r = await createHttpsPoster(impl)({ url: 'https://hooks.example.com/x', body: '{}', headers: {} });
+    expect(r.status).toBe(200);
+    expect(r.body.length).toBe(40 * 1024);
+    expect(calls.res?.destroyed).toBe(true);
+  });
+  it('조금씩 계속 보내는 응답도 전체 마감 시간에 끊는다 (워커를 붙잡지 않음)', async () => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const { impl, calls } = fakeRequest((res) => { timer = setInterval(() => res.emit('data', Buffer.from('x')), 5); });
+    const t0 = Date.now();
+    await expect(createHttpsPoster(impl)({ url: 'https://hooks.example.com/x', body: '{}', headers: {}, timeoutMs: 40 })).rejects.toThrow(/전체/);
+    if (timer) clearInterval(timer);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(calls.destroyed).toBeTruthy();
+  });
+  it('주입한 request도 SSRF 정적 검사는 그대로 거친다', async () => {
+    const { impl } = fakeRequest(() => undefined);
+    await expect(createHttpsPoster(impl)({ url: 'https://10.0.0.1/x', body: '{}', headers: {} })).rejects.toBeInstanceOf(OutboundBlockedError);
+  });
+});
+
+describe('테스트 데이터 판정 (감지 이슈 isTest)', () => {
+  const src = (channel: string, kind: 'api' | 'csv' | 'demo') => ({ channel, source: kind === 'demo' ? 'demo' : `conn-${channel}`, kind, latestDate: '2026-11-03' });
+  it('meta 없음 · demo → true, live → false, mixed → 매체 출처 기준', () => {
+    expect(isTestData(undefined, 'meta')).toBe(true);
+    expect(isTestData({ mode: 'demo', builtAt: '', sources: [] }, 'meta')).toBe(true);
+    expect(isTestData({ mode: 'live', builtAt: '', sources: [] }, 'meta')).toBe(false);
+    const mixed = { mode: 'mixed' as const, builtAt: '', sources: [src('meta', 'demo'), src('kakao', 'api'), src('google', 'demo'), src('google', 'csv')] };
+    expect(isTestData(mixed, 'meta')).toBe(true);
+    expect(isTestData(mixed, 'kakao')).toBe(false);
+    expect(isTestData(mixed, 'google')).toBe(false); // 실 CSV 출처가 섞여 있음
+    expect(isTestData(mixed, undefined)).toBe(false); // 매체를 모르면 실제 알림을 막지 않는다
+  });
+});
+
+describe('수치 단위 (외부 발송 · 저장)', () => {
+  it('웹훅 JSON: 금액(원) · 노출은 정수, NaN · Infinity는 null, 추정 표기', () => {
+    const base = detectIncidents(DEMO).find((i) => i.id.startsWith('account_payment:'))!;
+    expect(Number.isInteger(base.impact.spendAtRisk)).toBe(false); // 엔진 값은 소수 — 그대로 내보내면 안 된다
+    const inc = { ...base, observed: Number.NaN, baseline: Number.POSITIVE_INFINITY, deltaPct: -9.266409266 };
+    const m = buildMessage({ event: 'incident', workspace: ws, appUrl: 'https://os.example.com', incident: inc as never, sentAtMs: 0 });
+    const w = (m.webhook as { incident: { impact: Record<string, unknown>; observed: unknown; baseline: unknown; deltaPct: unknown } }).incident;
+    expect(Number.isInteger(w.impact.spendAtRiskKrw)).toBe(true);
+    expect(Number.isInteger(w.impact.revenueLossEstKrw)).toBe(true);
+    expect(Number.isInteger(w.impact.impressionsLost)).toBe(true);
+    expect(w.impact.estimate).toBe(true);
+    expect(w.observed).toBeNull();
+    expect(w.baseline).toBeNull();
+    expect(w.deltaPct).toBe(-9.27);
+    expect(JSON.stringify(m.webhook)).not.toMatch(/NaN|Infinity/);
+  });
+  it('저장 전 정규화: 정수 · 음수 · 비정상 값 제거', () => {
+    expect(normImpact({ spendAtRisk: 2029079.6, revenueLossEst: -5, impressionsLost: Number.NaN })).toEqual({ spendAtRisk: 2029080 });
+    expect(normImpact(null)).toEqual({});
+    const doc = normalizeClientIncident({ id: 'x:1', ruleId: 'r', severity: 'P2', title: 't', impact: { spendAtRisk: 1200.4 } } as never, 'pm');
+    expect(doc.impact).toEqual({ spendAtRisk: 1200 });
   });
 });

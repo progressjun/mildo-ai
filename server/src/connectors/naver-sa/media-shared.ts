@@ -279,10 +279,13 @@ export function parseKrwAmount(v: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
 }
 
+/** 요약에서 뺄 비밀값 쿼리 이름 (access_token · appsecret_proof · client_secret · api_key · signature 등) — 'nccKeywordId'처럼 key가 들어간 일반 이름은 남긴다 */
+export const SECRET_QUERY_KEY = /token|secret|proof|signature|password|passwd|(^|[_-])key$|^api_?key$|^apikey$/i;
+
 /** 보낸(보낼) 요청 요약 — 비밀 헤더는 이름만 남긴다 */
 export function requestSummary(req: HttpRequest, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const out: Record<string, unknown> = { method: req.method, url: req.url };
-  if (req.query && Object.keys(req.query).length) out.query = Object.fromEntries(Object.entries(req.query).filter(([k]) => !/token|secret|proof|key/i.test(k)));
+  if (req.query && Object.keys(req.query).length) out.query = Object.fromEntries(Object.entries(req.query).filter(([k]) => !SECRET_QUERY_KEY.test(k)));
   if (req.body !== undefined) out.body = req.body;
   if (req.headers) out.headers = Object.keys(req.headers);
   return { ...out, ...extra };

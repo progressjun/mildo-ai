@@ -98,8 +98,13 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
     const up = await one<UploadRow>(db, 'SELECT id, template, filename, connection_id FROM uploads WHERE workspace_id = $1 AND id = $2', [ws, id]);
     if (!up) throw notFound('업로드를 찾을 수 없습니다');
     const purged = await db.tx(async (q) => {
+      // 가져오기 쓰기(같은 행을 잠근다)와 겹치면 끝난 뒤 지운다 — 지운 뒤 고아 행이 남지 않는다
+      if (!(await one(q, 'SELECT id FROM uploads WHERE workspace_id = $1 AND id = $2 FOR UPDATE', [ws, id]))) throw notFound('업로드를 찾을 수 없습니다');
       const n = await purgeSource(q, ws, `csv:${id}`);
-      await q.query(`UPDATE jobs SET status = 'failed', finished_at = now(), last_error = '업로드 삭제로 취소' WHERE workspace_id = $1 AND status = 'queued' AND payload->>'uploadId' = $2`, [ws, id]);
+      await q.query(
+        `UPDATE jobs SET status = 'done', finished_at = now(), result = $3, last_error = NULL WHERE workspace_id = $1 AND status = 'queued' AND payload->>'uploadId' = $2`,
+        [ws, id, JSON.stringify({ cancelled: '업로드 삭제로 취소' })],
+      );
       await q.query('DELETE FROM uploads WHERE workspace_id = $1 AND id = $2', [ws, id]);
       await audit(q, { workspaceId: ws, userId: c.user.id, actor: c.actor, action: 'upload.delete', targetType: 'upload', targetId: id, ip: c.ip, detail: { template: up.template, filename: up.filename, purgedRows: n } });
       await publish(q, ws, { type: 'dataset' });

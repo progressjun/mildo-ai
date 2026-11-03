@@ -11,6 +11,8 @@ import {
 } from './engine';
 import { ApproverBadge, ChangeValue, ConfirmButton, LeadBadge, ModuleTag, SeedTag, StatusPill, settled } from './parts';
 import type { FlowCtx } from './useFlow';
+import { ExecBadge } from './ExecutionPanel';
+import { executionState, isExecuting } from './execution';
 
 export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: string) => void; onNew: () => void }) {
   const { changes, state, clock, summary, act, bulk, data, incidents, missingSeeds, loadSeeds, bulkAlerts, apCfg } = ctx;
@@ -29,6 +31,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
     return m;
   }, [bulkAlerts]);
 
+  const hasExec = useMemo(() => changes.some((c) => executionState(c) !== null), [changes]);
   const columns: Column<ChangeRequest>[] = [
     { key: 'createdAt', label: '요청 시각', render: (c) => <span className="num nowrap">{fmtStamp(clock.toMs(c.createdAt))}</span>, sort: (c) => clock.toMs(c.createdAt) || 0 },
     { key: 'status', label: '상태', render: (c) => <StatusPill status={c.status} />, sort: (c) => STATUS_ORDER.indexOf(c.status) },
@@ -37,6 +40,8 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
     { key: 'change', label: '변경', render: (c) => <ChangeValue c={c} /> },
     { key: 'pct', label: '폭', align: 'right', render: (c) => (c.changePct !== undefined && Number.isFinite(c.changePct) ? `${c.changePct > 0 ? '+' : ''}${c.changePct.toFixed(1)}%` : '—'), sort: (c) => Math.abs(c.changePct ?? 0) },
     { key: 'approver', label: '승인 주체', render: (c) => <ApproverBadge c={c} />, sort: (c) => c.approver },
+    // 서버 모드: 매체 반영 실행 상태 (dry_run 기록 · live 반영 · 반영 중) — 실행 정보가 있는 건이 하나라도 있을 때만 (데모 모드 표는 그대로)
+    ...(hasExec ? [{ key: 'exec', label: '매체 반영', render: (c: ChangeRequest) => (executionState(c) ? <ExecBadge c={c} /> : <span className="muted">—</span>), sort: (c: ChangeRequest) => executionState(c)?.kind ?? '' } satisfies Column<ChangeRequest>] : []),
     { key: 'lead', label: '소요 · 기준 (p.53)', render: (c) => <LeadBadge l={leadState(c, clock.nowMs, clock.toMs)} compact />, sort: (c) => leadState(c, clock.nowMs, clock.toMs).elapsedMin },
     { key: 'by', label: '요청자', render: (c) => <span className="small">{c.requestedBy}</span>, sort: (c) => c.requestedBy },
   ];
@@ -44,6 +49,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
     id: c.id, 요청시각: fmtStamp(clock.toMs(c.createdAt)), 상태: STATUS_META[c.status].label, 모듈: moduleLabel(c.module), 유형: kindLabel(c.kind), 대상: c.target,
     변경전: fmtValue(c, c.before), 변경후: fmtValue(c, c.after), 변경폭: c.changePct ?? '', 승인주체: APPROVER_LABEL[c.approver], 요청자: c.requestedBy, 사유: c.reason,
     이력: c.history.map((h) => `${fmtStamp(clock.toMs(h.at))} ${h.by} ${h.action}${h.note ? `(${h.note})` : ''}`).join(' / '), 시연이력: c.id.startsWith('seed_') ? 'Y' : '',
+    ...(hasExec ? { 매체반영: executionState(c)?.label ?? '' } : {}),
   })));
 
   return (
@@ -67,13 +73,13 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
                 return (
                   <div key={c.id} className={`flow-queue-row${l.overdue ? ' overdue' : ''}`}>
                     <button type="button" className="flow-queue-main" onClick={() => onOpen(c.id)}>
-                      <span className="row" style={{ gap: 6 }}><StatusPill status={c.status} /><ModuleTag module={c.module} /><SeedTag c={c} /><strong className="small">{c.target}</strong></span>
+                      <span className="row" style={{ gap: 6 }}><StatusPill status={c.status} /><ExecBadge c={c} /><ModuleTag module={c.module} /><SeedTag c={c} /><strong className="small">{c.target}</strong></span>
                       <span className="row" style={{ gap: 8 }}><ChangeValue c={c} /><ApproverBadge c={c} /><LeadBadge l={l} compact /></span>
                       {ex && !ex.ok ? <span className="xs" style={{ color: 'var(--critical-ink)' }}>반영 시 보류 예상 · {ex.blocks[0]}</span> : null}
                     </button>
                     <div className="row" style={{ gap: 4, flexWrap: 'nowrap' }}>
                       {a === 'approve' ? <Button size="sm" variant="primary" icon="check" onClick={settled(() => act(c, 'approve'))}>승인</Button> : null}
-                      {a === 'apply' ? <Button size="sm" variant="accent" icon="zap" onClick={settled(() => act(c, 'apply'))}>반영</Button> : null}
+                      {a === 'apply' ? <Button size="sm" variant="accent" icon="zap" disabled={isExecuting(c)} title={isExecuting(c) ? '매체 반영이 진행 중입니다 — 끝나면 자동으로 갱신됩니다' : undefined} onClick={settled(() => act(c, 'apply'))}>{isExecuting(c) ? '반영 중' : '반영'}</Button> : null}
                       {a === 'resume' ? <Button size="sm" icon="play" onClick={settled(() => act(c, 'resume'))}>보류 해제</Button> : null}
                       <Button size="sm" variant="ghost" onClick={() => onOpen(c.id)}>상세</Button>
                     </div>
@@ -178,6 +184,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
                       <span className="flow-card-target">{c.target}</span>
                       <ChangeValue c={c} />
                       <ApproverBadge c={c} />
+                      <ExecBadge c={c} />
                       <span className="flow-card-meta"><span>{c.requestedBy}</span><span className="num">{fmtStamp(clock.toMs(c.createdAt))}</span></span>
                       <LeadBadge l={l} compact />
                     </button>

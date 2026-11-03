@@ -5,10 +5,16 @@
  *   GET   /api/w/:ws/changes[?status=&limit=]          read      → { changes }        최신순, 기본 500건
  *   POST  /api/w/:ws/changes { change }                 request   → { change }         클라이언트 id 허용 (같은 요청 재전송은 같은 건을 돌려줌)
  *   PATCH /api/w/:ws/changes/:id { patch, action, note } 전이별    → { change }         서버가 전이 · 권한 · 반영 / 롤백 실행을 판정하고 실제 결과를 돌려준다
- *                                                                  409 → { error, change } (같은 전이 재요청 · 불가능한 전이 · 실행 중)
+ *                                                                  409 → { error:{code,message,detail}, change } — code: same_status · invalid_transition ·
+ *                                                                  not_approved_before · executing · stale · rollback_order · not_editable · approver_changed(승인 시점 재판정으로 승인 주체가 올라감)
  *   GET   /api/w/:ws/changes/:id                        read      → { change }
  *   GET   /api/w/:ws/changes/:id/executions             read      → { executions }     매체 반영 시도 기록 (dry_run · live · 실패 · 롤백 · 되돌림)
  *   GET   /api/w/:ws/changes/:id/preflight              read      → { check, target }  반영 전 점검 · 대상 미리보기 (상태 변경 없음)
+ *
+ * 커넥터 반영 계약: apply(ctx, change) — change.targetId = wh_entities.external_id(GFA 광고그룹은 'gfa:adgroup:<cid>:<agid>'),
+ *   change.entity = { type, externalId, name?, text?, media?, campaignId?, adgroupId? } (웨어하우스 엔티티 요약, 선택 — dry_run 요청 표시용),
+ *   실행 모드는 커넥션 write_mode(off → 보류, dry_run, live — live는 연결 확인을 통과한 커넥션만, 데모 커넥터는 항상 dry_run 시뮬레이션).
+ *   execution.verifiedLive = 반영에 쓴 커넥터가 모두 실계정 호출로 검증됐는지(false면 화면에 '실계정 연결 전 확인 필요').
  *
  * 잡: 'changes.execute' { changeId, attemptId? } — 인라인 20초를 넘긴 반영 · 롤백의 마무리 · 비정상 종료 복구.
  *     실행 쪽 heartbeat가 최신이면 이어받지 않고(still_running) 다시 확인을 예약한다. 이어받을 때 저장된 계획에

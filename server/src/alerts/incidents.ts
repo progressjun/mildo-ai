@@ -35,6 +35,10 @@ export interface ServerFields {
   /** SLA 단계별 에스컬레이션 기록 (단계당 1회) */
   escalations?: Partial<Record<EscStage, { at: string; deadline: string; notified: number }>>;
   createdBy?: string;
+  /** 첫 '새 이슈' 알림 잡을 만든 시각 — 다른 도메인이 직접 넣은 이슈(대량 변경 등)는 SLA 잡이 이 값이 없으면 한 번 알린다 */
+  notifiedAt?: string;
+  /** 감지 당시 Dataset.meta.mode (demo · live · mixed) — demo 데이터 감지 이슈는 isTest */
+  dataMode?: string;
 }
 export type StoredIncident = AlertIncident & ServerFields;
 
@@ -99,42 +103,63 @@ export const IncidentPatch = z.object({
 });
 export type IncidentPatchInput = z.infer<typeof IncidentPatch>;
 
-const SERVER_KEYS: (keyof ServerFields)[] = ['source', 'dataDate', 'dataAsOf', 'stillDetected', 'clearedAt', 'escalations', 'createdBy'];
+/** 영향 추정 정규화: 금액(원) · 노출 수는 정수, NaN · Infinity · 음수는 버린다 (엔진은 소수로 계산한다) */
+export function normImpact(im: unknown): StoredIncident['impact'] {
+  const out: StoredIncident['impact'] = {};
+  if (!im || typeof im !== 'object') return out;
+  for (const k of ['impressionsLost', 'spendAtRisk', 'revenueLossEst'] as const) {
+    const v = Number((im as Record<string, unknown>)[k]);
+    if ((im as Record<string, unknown>)[k] !== undefined && Number.isFinite(v) && v >= 0) out[k] = Math.round(v);
+  }
+  return out;
+}
+
+const SERVER_KEYS: (keyof ServerFields)[] = ['source', 'dataDate', 'dataAsOf', 'stillDetected', 'clearedAt', 'escalations', 'createdBy', 'notifiedAt', 'dataMode'];
 const MAX_DOC_BYTES = 96 * 1024;
 
 /* ------------------------------ 클라이언트 생성 이슈 ------------------------------ */
 
-/** 화면 · 다른 모듈이 만든 이슈를 저장 형식으로: 서버 필드 제거, 감지 시각 보정, 담당 미지정 시 당번표 · 매체 담당 배정 */
-export function normalizeClientIncident(input: z.infer<typeof IncidentInput>, by: string, atMs = nowMs()): StoredIncident {
+/**
+ * 화면 · 다른 모듈이 만든 이슈를 저장 형식으로: 서버 필드 제거, 감지 시각 보정, 담당 미지정 시 당번표 · 매체 담당 배정.
+ * SLA 기록 시각(sla.*)은 받지 않는다 — 처음 받은 상태에 맞춰 서버 시각으로 찍는다(미리 '인지함'으로 채워 에스컬레이션을 피하지 못하게).
+ */
+export function normalizeClientIncident(input: z.infer<typeof IncidentInput>, by: string, atMs = nowMs(), opts: { offHoursMode?: boolean } = {}): StoredIncident {
   const raw = { ...(input as Record<string, unknown>) };
   for (const k of SERVER_KEYS) delete raw[k];
+  delete raw.sla;
   const at = msToKstIso(atMs);
   const det = input.detectedAt ? Date.parse(input.detectedAt) : NaN;
   // 감지 시각은 SLA 기준점 — 최근 24시간 ~ 5분 뒤 범위 밖이면 서버 수신 시각으로 둔다 (과거 · 미래로 꾸며 SLA를 피하지 못하게)
   const detectedAt = Number.isFinite(det) && det >= atMs - 24 * 3600_000 && det <= atMs + 5 * 60_000 ? msToKstIso(det) : at;
   const doc = {
     causeCandidates: [],
-    impact: {},
     autoActions: [],
     timeline: [],
     detectPath: '화면에서 생성',
     isTest: false,
     status: 'open' as IncidentStatus,
     ...raw,
+    impact: normImpact(raw.impact),
     detectedAt,
     occurredAt: input.occurredAt ?? detectedAt,
     source: 'client' as const,
     createdBy: by,
   } as unknown as StoredIncident;
   if (!doc.timeline.length) doc.timeline = [{ at: detectedAt, by, action: '이슈 생성' }];
-  if (!doc.assignee) Object.assign(doc, rosterAssignment(doc, kstToday(atMs)));
+  const st = doc.status;
+  const sla: Partial<Record<SlaKey, string>> = {};
+  if (st !== 'open') sla.ackAt = at;
+  if (st === 'action') sla.actionAt = at;
+  if (st === 'resolved') sla.resolvedAt = at;
+  doc.sla = sla as StoredIncident['sla'];
+  if (!doc.assignee) Object.assign(doc, rosterAssignment(doc, kstToday(atMs), !!opts.offHoursMode));
   if (Buffer.byteLength(JSON.stringify(doc)) > MAX_DOC_BYTES) throw conflict('이슈 문서가 너무 큽니다 (96KB 초과)');
   return doc;
 }
 
-/** p.48 담당 배정: 주말 · 공휴일이면 당번표, 평일이면 매체 담당 (없으면 총괄 PM) */
-export function rosterAssignment(i: Pick<Incident, 'media'>, date: string): Pick<StoredIncident, 'assignee' | 'backup' | 'assigneeRoleId' | 'backupRoleId' | 'onDuty' | 'ownerRoleId'> {
-  const regime = regimeOf(date);
+/** p.48 담당 배정: 주말 · 공휴일(또는 설정의 당번 체계 강제 offHoursMode)이면 당번표, 평일이면 매체 담당 (없으면 총괄 PM) */
+export function rosterAssignment(i: Pick<Incident, 'media'>, date: string, forcedOff = false): Pick<StoredIncident, 'assignee' | 'backup' | 'assigneeRoleId' | 'backupRoleId' | 'onDuty' | 'ownerRoleId'> {
+  const regime = regimeOf(date, forcedOff);
   const owner = (i.media && MEDIA_OWNER_ROLE[i.media as MediaId | SalesChannelId]) || 'pm';
   const assigneeRoleId = regime.off && regime.duty ? regime.duty.roleId : owner;
   const backupRoleId = backupOf(assigneeRoleId);

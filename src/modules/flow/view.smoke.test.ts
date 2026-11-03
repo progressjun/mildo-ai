@@ -115,6 +115,26 @@ describe('MILDO Flow 화면 렌더', () => {
     expect(await wrap(h(await harness('drawer', 'missing')))).toContain('요청을 찾지 못했습니다');
   });
 
+  it('서버 실행 상태: 보드 · 표 · 상세에 dry-run 기록 · 반영 중 표시, 반영 중에는 처리 버튼을 막는다 (데모 이력에는 없음)', async () => {
+    const at = '2026-10-31T05:00:00Z';
+    const dry = { ...SEEDS[0], id: 'srv_dry', target: '서버 dry-run 건', status: 'applied' as const, execution: { mode: 'dry_run' as const, ok: true, at, provider: 'naver_sa', request: { method: 'PUT', path: '/ncc/keywords/nkw-1' } } };
+    const running = { ...SEEDS[0], id: 'srv_run', target: '서버 반영 중 건', status: 'approved' as const, approver: 'PM' as const, executing: { phase: 'apply', since: at, background: true } };
+    setStore([dry, running as ChangeRequest, ...SEEDS]);
+    const board = await wrap(h(await harness('board')));
+    expect(board).toContain('매체 미반영 (dry-run 기록)');
+    expect(board).toContain('반영 중');
+    const drawer = await wrap(h(await harness('drawer', 'srv_dry')));
+    expect(drawer).toContain('매체 반영 · 서버 실행 기록');
+    expect(drawer).toContain('/ncc/keywords/nkw-1');
+    const runDrawer = await wrap(h(await harness('drawer', 'srv_run')));
+    expect(runDrawer).toContain('매체 반영 · 롤백이 서버에서 진행 중입니다');
+    // 데모 시연 이력만 있으면 실행 표시 없음 (데모 화면 그대로)
+    setStore(SEEDS);
+    const demo = await wrap(h(await harness('board')));
+    expect(demo).not.toContain('dry-run 기록');
+    expect(demo).not.toContain('flow-exec');
+  });
+
   it('대량 변경 상황: 이력 화면 경고 · 관련 카드 표시 (MILDO Alert detectBulkChange)', async () => {
     const burst: ChangeRequest[] = Array.from({ length: 10 }, (_, k) => ({
       id: `burst_${k}`, createdAt: `2026-10-31T14:${String(k).padStart(2, '0')}:00+09:00`, module: 'adpilot', kind: 'bid', target: `일괄 키워드 ${k}`, targetId: `kw_${k + 1}`,

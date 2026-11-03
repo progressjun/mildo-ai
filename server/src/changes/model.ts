@@ -16,6 +16,20 @@ export const CHANGE_STATUSES: readonly ChangeStatus[] = ['pending', 'approved', 
 /** 실행 단계 */
 export type ExecPhase = 'apply' | 'retry' | 'rollback';
 
+/**
+ * 커넥터에 함께 넘기는 웨어하우스 엔티티 정보 (비밀값 없음 · 화이트리스트 필드만).
+ * apply(ctx, change)의 change.entity로 전달 — 커넥터는 dry_run 요청에 광고그룹 · 캠페인 id를 그대로 보일 수 있다(live는 매체에서 다시 확인).
+ */
+export interface OpEntity {
+  type: 'keyword' | 'campaign' | 'account';
+  externalId: string;
+  name?: string;
+  text?: string;
+  media?: string;
+  campaignId?: string;
+  adgroupId?: string;
+}
+
 /** 매체 반영 단위 작업 — 한 변경 요청이 여러 대상에 쓰일 수 있다(예: 예산 재배분 = 받는 캠페인 + 주는 캠페인) */
 export interface ExecOp {
   /** 커넥터에 넘길 targetId (wh_entities.external_id 또는 GFA 광고그룹 규칙 'gfa:adgroup:<cid>:<agid>') */
@@ -30,6 +44,8 @@ export interface ExecOp {
   provider: string;
   /** 같은 값을 두 번 보내도 결과가 같은지 (절대값 설정 = true, 신규 생성 · 키워드 추가 = false) */
   idempotent: boolean;
+  /** 대상 엔티티 (웨어하우스에서 찾은 경우) */
+  entity?: OpEntity;
 }
 
 export interface ExecPlan {
@@ -48,6 +64,8 @@ export interface OpResult {
   response?: unknown;
   error?: string;
   appliedValue?: string | number;
+  /** 커넥터가 실계정 호출로 검증됐는지 (false = '실계정 연결 전 확인 필요') */
+  verifiedLive?: boolean;
 }
 
 /** 서버 실행 결과 (ChangeExecution + 서버 확장 필드) */
@@ -66,6 +84,10 @@ export interface ServerExecution extends ChangeExecution {
   checks?: { blocks: string[]; warnings: string[]; passes: string[] };
   /** 롤백 실행 시: 직전 반영 실행 기록 */
   applyExecution?: ServerExecution;
+  /** 반영에 쓴 커넥터가 모두 실계정 호출로 검증됐는지 — false면 화면에 '실계정 연결 전 확인 필요' (docs/SAAS_SPEC.md §0) */
+  verifiedLive?: boolean;
+  /** 커넥터 실행 로그 (비밀값 가림, 최대 20줄) */
+  logs?: string[];
 }
 
 export interface ExecPending {
@@ -147,7 +169,7 @@ export function toChange(r: ChangeRow, opts: { compact?: boolean } = {}): Change
 }
 
 function compactExecution(e: ServerExecution): ServerExecution {
-  const { plan: _p, results: _r, compensation, applyExecution, ...rest } = e;
+  const { plan: _p, results: _r, logs: _l, compensation, applyExecution, ...rest } = e;
   const out: ServerExecution = { ...rest };
   if (compensation?.length) out.compensation = compensation.map(({ request: _q, response: _s, ...c }) => c);
   if (applyExecution) out.applyExecution = compactExecution(applyExecution);
@@ -161,7 +183,8 @@ export function toEngineChange(r: ChangeRow): ChangeRequest {
   return rest;
 }
 
-const COLS = `id, workspace_id, created_at, updated_at, module, kind, target, target_id, before, after, change_pct, reason, requested_by,
+/** change_pct는 numeric이라 pg가 문자열로 돌려준다 — float8로 읽어 숫자로 비교 · 응답한다 */
+const COLS = `id, workspace_id, created_at, updated_at, module, kind, target, target_id, before, after, change_pct::float8 AS change_pct, reason, requested_by,
   requested_by_user, approver, status, history, execution, exec_pending, applied_at, rolled_back_at, version`;
 
 export async function getChange(q: Queryable, ws: string, id: string, lock = false): Promise<ChangeRow | null> {
@@ -187,6 +210,17 @@ export async function engineChanges(q: Queryable, ws: string, limit = 1000): Pro
   );
   const seen = new Set(recent.map((r) => r.id));
   return [...recent, ...cfg.rows.filter((r) => !seen.has(r.id))].map(toEngineChange);
+}
+
+/** 같은 키워드에 오늘(since 이후) 반영된 입찰 변경 (반영 시각 순) — 일 누적 조정 폭 점검용 */
+export async function appliedBidsSince(q: Queryable, ws: string, targetId: string, excludeId: string, since: Date): Promise<ChangeRequest[]> {
+  const r = await q.query<ChangeRow>(
+    `SELECT ${COLS} FROM change_requests
+      WHERE workspace_id = $1 AND kind = 'bid' AND target_id = $2 AND id <> $3 AND status = 'applied' AND applied_at >= $4
+      ORDER BY applied_at ASC LIMIT 200`,
+    [ws, targetId, excludeId, since],
+  );
+  return r.rows.map(toEngineChange);
 }
 
 export interface InsertChange {
