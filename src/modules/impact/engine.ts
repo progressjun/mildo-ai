@@ -628,9 +628,11 @@ const ivMul = (x: Interval, k: number): Interval => ({ point: x.point * k, lo: M
 const isUplift = (e: LedgerEntry['estimate']): e is UpliftEstimate => !!e && e.kind === 'uplift';
 const isLoss = (e: LedgerEntry['estimate']): e is LossEstimate => !!e && e.kind === 'loss';
 const isHours = (e: LedgerEntry['estimate']): e is HoursEstimate => !!e && e.kind === 'hours';
-export const krw = (n: number) => (fin(n) ? `${n < 0 ? '−' : ''}${fmt.krw(Math.abs(n))}원` : '—');
-export const krwFull = (n: number) => (fin(n) ? `${n < 0 ? '−' : ''}${fmt.int(Math.abs(n))}원` : '—');
-export const times = (n: number) => (fin(n) ? `${n < 0 ? '−' : ''}${fmt.dec1(Math.abs(n))}배` : '—');
+/** 음수 기호는 표시값이 0이 아닐 때만 ('−0.0배' · '−0원'처럼 반올림하면 0인 값에 기호를 붙이지 않는다) */
+const signOf = (n: number, shown: string) => (n < 0 && /[1-9]/.test(shown) ? '−' : '');
+export const krw = (n: number) => (fin(n) ? ((t) => `${signOf(n, t)}${t}원`)(fmt.krw(Math.abs(n))) : '—');
+export const krwFull = (n: number) => (fin(n) ? ((t) => `${signOf(n, t)}${t}원`)(fmt.int(Math.abs(n))) : '—');
+export const times = (n: number) => (fin(n) ? ((t) => `${signOf(n, t)}${t}배`)(fmt.dec1(Math.abs(n))) : '—');
 export const hoursText = (h: number) => (fin(h) ? `${fmt.dec1(h)}시간` : '—');
 
 function combineConfidence(list: Confidence[]): Confidence | 'none' {
@@ -649,6 +651,16 @@ export function paybackVerdict(p: Interval, anyData: boolean): PaybackVerdict {
 }
 
 export const PAYBACK_FORMULA = '회수 배수 = (측정 증분 이익 + 추정 손실 회피 × 공헌이익률 + 절감 시간 × 시간당 인건비) ÷ 월 구독료';
+
+/** 판정 보류(측정 · 추정 항목 없음 · 구독료 없음)에서는 회수 배수를 계산하지 않는다 — 0.0배로 적으면 '회수 0'으로 읽힌다 */
+export const PAYBACK_NOT_COMPUTED = '계산하지 않음';
+export const paybackJudged = (s: Pick<ImpactSummary, 'verdict'>) => s.verdict.tone !== 'neutral';
+/** 회수 배수 표기 — 판정 보류면 '—' */
+export function paybackText(s: Pick<ImpactSummary, 'verdict' | 'totals'>): { point: string; range: string } {
+  const pb = s.totals.paybackMultiple;
+  if (!paybackJudged(s)) return { point: '—', range: PAYBACK_NOT_COMPUTED };
+  return { point: times(pb.point), range: `${times(pb.lo)} ~ ${times(pb.hi)}` };
+}
 
 export const COUNTER_EXAMPLES = [
   '대조군 키워드 · 매체가 같은 기간 다른 변화(프로모션 · 품절 · 경쟁사 입찰)를 겪었다면 증분이 과대 또는 과소 추정된다.',
@@ -736,7 +748,8 @@ export function buildSummary(entries: readonly LedgerEntry[], cfg: ImpactConfig,
     },
   ];
 
-  const formulaFilled = `(${krwFull(profit.point)} + ${krwFull(lossAvoided)} × ${fmt.pct(cfg.margin * 100, 0)} + ${fmt.dec1(hoursSaved)}시간 × ${krwFull(cfg.hourlyCost)}) ÷ ${krwFull(fee)} = ${times(pb.point)}`;
+  const verdict = paybackVerdict(pb, anyData);
+  const formulaFilled = `(${krwFull(profit.point)} + ${krwFull(lossAvoided)} × ${fmt.pct(cfg.margin * 100, 0)} + ${fmt.dec1(hoursSaved)}시간 × ${krwFull(cfg.hourlyCost)}) ÷ ${krwFull(fee)} = ${verdict.tone === 'neutral' ? `${PAYBACK_NOT_COMPUTED} (${verdict.label})` : times(pb.point)}`;
   return {
     month,
     generatedAt: opts.generatedAt ?? new Date().toISOString(),
@@ -748,7 +761,7 @@ export function buildSummary(entries: readonly LedgerEntry[], cfg: ImpactConfig,
     config: cfg,
     formula: PAYBACK_FORMULA,
     formulaFilled,
-    verdict: paybackVerdict(pb, anyData),
+    verdict,
     components,
     counts,
     conditions: [
@@ -878,13 +891,14 @@ export function buildValueReport(summary: ImpactSummary, entries: readonly Ledge
   }
   if (!patterns.length) patterns.push('반복 관측으로 볼 만큼 측정 건수가 쌓이지 않았다 (변경 측정 · 사고 추정 각 2건 미만).');
 
-  const pb = t.paybackMultiple;
+  const pt = paybackText(summary);
+  const judged = paybackJudged(summary);
   const interp = [
-    `회수 배수 ${times(pb.point)} (80% 구간 ${times(pb.lo)} ~ ${times(pb.hi)}) — 판정 '${summary.verdict.label}' · 기준 ${summary.verdict.basis}.`,
+    judged
+      ? `회수 배수 ${pt.point} (80% 구간 ${pt.range}) — 판정 '${summary.verdict.label}' · 기준 ${summary.verdict.basis}.`
+      : `회수 배수는 ${PAYBACK_NOT_COMPUTED} — 판정 '${summary.verdict.label}' · 기준 ${summary.verdict.basis}.`,
     `구성: 측정 증분 이익 ${krw(t.measuredUpliftProfit.point)} · 손실 회피 원 환산 ${krw(summary.components[1].valueKrw)} (추정) · 절감 시간 원 환산 ${krw(summary.components[2].valueKrw)} (${hoursText(t.hoursSaved)}).`,
-    summary.components[0].valueKrw >= summary.components[1].valueKrw + summary.components[2].valueKrw
-      ? '회수의 대부분이 측정된 증분(대조군 보정)에서 나와 근거가 상대적으로 단단하다고 본다.'
-      : '회수의 상당 부분이 추정(손실 회피) · 가정(건당 절감 분)에서 나온다 — 측정된 증분이 쌓이기 전까지는 보수적으로 읽는다.',
+    paybackSourceReading(summary),
     '규칙 엔진 해석이다 (AI 미연결 시 대체) — 확정 팩트와 구분해 읽는다.',
   ];
   const actions = [
@@ -912,18 +926,33 @@ export function buildValueReport(summary: ImpactSummary, entries: readonly Ledge
   const md = [
     `# ${title}`,
     `> ${subtitle} · 대상 기간 ${days[0]} ~ ${days[days.length - 1]} · 데이터: ${dataLabel}`,
-    `**회수 배수 ${times(pb.point)}** (80% 구간 ${times(pb.lo)} ~ ${times(pb.hi)}) · 판정: ${summary.verdict.label} — ${summary.verdict.basis}`,
+    judged
+      ? `**회수 배수 ${pt.point}** (80% 구간 ${pt.range}) · 판정: ${summary.verdict.label} — ${summary.verdict.basis}`
+      : `**회수 배수 —** (${PAYBACK_NOT_COMPUTED}) · 판정: ${summary.verdict.label} — ${summary.verdict.basis}`,
     table,
     ...sections.map((s) => `### ${s.title}\n${s.lines.map((l) => `- ${l}`).join('\n')}`),
     '---',
     `_성과 증명 장부(MILDO OS Cloud)에서 자동 생성 · 증분은 측정, 손실 회피는 추정, 절감 시간은 가정 기반 환산${opts.appUrl ? ` · 장부 보기: ${opts.appUrl}/#impact` : ''}_`,
   ].join('\n\n');
   const messenger = [
-    `[MILDO 가치] ${monthLabel(m)} 회수 배수 ${times(pb.point)} (80% ${times(pb.lo)}~${times(pb.hi)}) · ${summary.verdict.label}${summary.dataMode === 'demo' ? ' · TEST DATA' : ''}`,
+    `[MILDO 가치] ${monthLabel(m)} 회수 배수 ${judged ? `${pt.point} (80% ${pt.range.replace(' ~ ', '~')})` : `— (${PAYBACK_NOT_COMPUTED})`} · ${summary.verdict.label}${summary.dataMode === 'demo' ? ' · TEST DATA' : ''}`,
     `측정 증분 이익 ${krw(t.measuredUpliftProfit.point)} (측정 ${c.change.measured}건) · 손실 회피 ${krw(t.lossAvoidedEst)} 추정 (${inc.length}건) · 절감 ${hoursText(t.hoursSaved)}`,
     `구독료 ${krw(t.costOfSubscription)} · 공헌이익률 ${fmt.pct(summary.config.margin * 100, 0)} · 시간당 ${krw(summary.config.hourlyCost)} 기준`,
   ].join('\n');
   return { title, subtitle, month: m, periodStart: days[0], periodEnd: days[days.length - 1], sections, markdown: md, messenger };
+}
+
+/**
+ * AI 해석 — 회수 근거가 어디서 나오는지. 판정 보류 · 구성 합 0원 이하면 출처를 나눠 해석하지 않는다
+ * (0원 ≥ 0원 + 0원을 '측정된 증분이 대부분'으로 읽지 않게). 측정 증분이 양수이고 나머지 합 이상일 때만 '근거가 단단하다'.
+ */
+export function paybackSourceReading(summary: Pick<ImpactSummary, 'verdict' | 'components'>): string {
+  const [up, loss, hours] = summary.components.map((c) => c.valueKrw);
+  if (!paybackJudged(summary)) return '이 달에 측정 · 추정된 항목이 없어 회수 근거를 해석하지 않는다 — 판정 보류.';
+  const total = up + loss + hours;
+  if (!(total > 0)) return `구성 요소 합이 ${krw(total)}이라 회수 근거의 출처를 나눠 해석하지 않는다.`;
+  if (up > 0 && up >= loss + hours) return '회수의 대부분이 측정된 증분(대조군 보정)에서 나와 근거가 상대적으로 단단하다고 본다.';
+  return '회수의 상당 부분이 추정(손실 회피) · 가정(건당 절감 분)에서 나온다 — 측정된 증분이 쌓이기 전까지는 보수적으로 읽는다.';
 }
 
 /* ============================== 데모 예시 (서버 없음) ============================== */

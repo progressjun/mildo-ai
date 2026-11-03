@@ -108,10 +108,39 @@ describe('승인 주체 재판정 (p.15 위임 범위)', () => {
     // GFA 만 원 단위 반올림 차이(1%p 이내)는 요청 폭 기준
     expect(routeApprover(mk({ kind: 'budget', before: 670000, after: 740000, changePct: 10, approver: 'AE' })).approver).toBe('AE');
   });
-  it('신규 캠페인은 CLIENT · 입찰은 재판정하지 않음', () => {
+  it('신규 캠페인은 CLIENT', () => {
     expect(routeApprover(mk({ kind: 'gfa', targetId: 'gfa:new:acc_gfa:신규', before: '—', after: 500000, approver: 'PM' })).approver).toBe('CLIENT');
     expect(routeApprover(mk({ kind: 'setting', targetId: 'flow:new:meta:x', approver: 'AE' })).approver).toBe('CLIENT');
-    expect(routeApprover(mk({ kind: 'bid', changePct: 50, approver: 'AE' })).approver).toBe('AE');
+  });
+  it('입찰도 변경 폭으로 재판정 (화면 Flow 신규 요청 · AD Pilot routeByPct와 같은 표) — AE가 보낸 승인 주체를 올린다', () => {
+    // QA 재현: +19% · +15% 입찰을 승인 주체 AE로 보내 담당 AE가 스스로 승인 · 반영
+    const r19 = routeApprover(mk({ kind: 'bid', targetId: 'kw_6', before: 1420, after: 1690, changePct: 19, approver: 'AE' }));
+    expect(r19.approver).toBe('PM');
+    expect(r19.notes.join(' ')).toMatch(/입찰가 변경 폭 19%/);
+    expect(routeApprover(mk({ kind: 'bid', targetId: 'kw_15', before: 870, after: 1000, changePct: 15, approver: 'AE' })).approver).toBe('PM');
+    // ±10% 이내는 AE 그대로 · 30% 초과는 CLIENT · 값과 다른 변경 폭은 큰 쪽
+    expect(routeApprover(mk({ kind: 'bid', before: 270, after: 280, changePct: 3.7, approver: 'AE' }))).toMatchObject({ approver: 'AE', notes: [] });
+    expect(routeApprover(mk({ kind: 'bid', before: 100, after: 150, changePct: 50, approver: 'AE' })).approver).toBe('CLIENT');
+    expect(routeApprover(mk({ kind: 'bid', before: 100, after: 120, changePct: 5, approver: 'AE' })).approver).toBe('PM');
+    // 화면이 더 높게 보낸 승인 주체는 낮추지 않는다
+    expect(routeApprover(mk({ kind: 'bid', before: 270, after: 280, changePct: 3.7, approver: 'PM' })).approver).toBe('PM');
+  });
+  it('브랜드 키워드 입찰은 PM 이상 (AD Pilot 브랜드 별도 기준) · 브랜드가 아니면 폭 기준 그대로', () => {
+    const b = routeApprover(mk({ kind: 'bid', before: 270, after: 280, changePct: 3.7, approver: 'AE' }), { brandKeyword: true });
+    expect(b.approver).toBe('PM');
+    expect(b.notes.join(' ')).toMatch(/브랜드 키워드/);
+    expect(routeApprover(mk({ kind: 'bid', before: 270, after: 280, changePct: 3.7, approver: 'AE' }), { brandKeyword: false }).approver).toBe('AE');
+    expect(routeApprover(mk({ kind: 'bid', before: 100, after: 150, changePct: 50, approver: 'AE' }), { brandKeyword: true }).approver).toBe('CLIENT');
+    // 예산에는 브랜드 기준을 쓰지 않는다
+    expect(routeApprover(mk({ kind: 'budget', before: 1000, after: 1050, changePct: 5, approver: 'AE' }), { brandKeyword: true }).approver).toBe('AE');
+  });
+  it('ON/OFF(status)는 PM 하한 (p.15) — AE로 보내도 PM, CLIENT는 유지', () => {
+    const s = routeApprover(mk({ kind: 'status', targetId: 'gfa:adgroup:cmp_1:ag_1', before: 'on', after: 'off', changePct: undefined, approver: 'AE' }));
+    expect(s.approver).toBe('PM');
+    expect(s.notes.join(' ')).toMatch(/ON\/OFF/);
+    expect(approverFloor(mk({ kind: 'status', targetId: 'kw_3' }))?.level).toBe('PM');
+    expect(routeApprover(mk({ kind: 'status', targetId: 'kw_3', before: 'on', after: 'off', changePct: undefined, approver: 'CLIENT' })).approver).toBe('CLIENT');
+    expect(routeApprover(mk({ kind: 'status', targetId: 'alert:inc_1:pause', before: 'on', after: 'off', changePct: undefined, approver: 'AE' })).approver).toBe('PM');
   });
   it('effectivePct', () => {
     expect(effectivePct({ before: 100, after: 110, changePct: 10 })).toMatchObject({ pct: 10, mismatch: false });

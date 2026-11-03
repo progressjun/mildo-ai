@@ -17,11 +17,11 @@ import { onServerEvent } from '@/saas/events';
 import { Markdown } from '@/ui/Markdown';
 import { Button, Callout, Card, DataTable, DownloadButton, Drawer, Empty, PageHeader, Pill, Segmented, Src, Stat, Tabs, type Column, type Tone } from '@/ui/primitives';
 import {
-  buildDemoImpact, buildValueReport, CONFIDENCE_LABEL, estimateText, hoursText, krw, krwFull, ledgerCsv, monthLabel, prevMonth, profitAt, SOURCE_LABEL, statusText, times,
-  type Confidence, type ImpactComponent, type ImpactSummary, type LedgerEntry, type LedgerStatus, type SourceType,
+  buildDemoImpact, buildValueReport, CONFIDENCE_LABEL, estimateText, hoursText, impactConfig, krw, krwFull, ledgerCsv, monthLabel, prevMonth, profitAt, SOURCE_LABEL, statusText, times,
+  type Confidence, type ImpactComponent, type ImpactConfig, type ImpactSummary, type LedgerEntry, type LedgerStatus, type SourceType,
 } from './engine';
 import * as remote from './api';
-import { REPORT_KIND_LABEL, TRIGGER_LABEL, type ReportItem, type ReportKind, type ScheduleRow } from './api';
+import { REPORT_KIND_LABEL, TRIGGER_LABEL, type DeliveryRecord, type ReportItem, type ReportKind, type ScheduleRow } from './api';
 
 type TabId = 'proof' | 'ledger' | 'reports';
 const errText = (e: unknown) => (e as { message?: string })?.message ?? '요청을 처리하지 못했습니다';
@@ -55,8 +55,18 @@ export interface ImpactData {
   reload: () => Promise<void>;
 }
 
+/**
+ * 서버 모드 TEST DATA 예시의 회수 배수 입력 — 서버 요약이 쓴 값(워크스페이스 설정 반영: 월 구독료 · 공헌이익률 · 시간당 인건비)을 그대로 쓴다.
+ * 요약을 아직 못 읽었으면 워크스페이스 설정(config)에서 같은 규칙(impactConfig)으로 읽는다. 데모 모드는 기본값.
+ */
+export function exampleConfigOf(serverSummary: Pick<ImpactSummary, 'config'> | null, wsConfig: unknown): ImpactConfig {
+  const c = serverSummary?.config;
+  if (c && Number.isFinite(c.monthlyFee) && Number.isFinite(c.margin) && Number.isFinite(c.hourlyCost) && c.sources) return c;
+  return impactConfig(wsConfig ?? null);
+}
+
 /** 서버 모드: API, 데모 모드: 데모 Dataset으로 만든 예시 (같은 추정기) */
-export function useImpactData(ws: string | null, month: string): ImpactData {
+export function useImpactData(ws: string | null, month: string, wsConfig: unknown = null): ImpactData {
   const store = useStoreOptional();
   const data = store?.state.data ?? DEMO;
   const incidents = store?.state.incidents ?? [];
@@ -92,12 +102,18 @@ export function useImpactData(ws: string | null, month: string): ImpactData {
     return () => { off(); if (timer) clearTimeout(timer); };
   }, [ws, reload]);
 
+  // 서버 모드 예시: 워크스페이스의 구독료 · 공헌이익률 · 시간당 인건비로 계산 (서버 화면 값과 같은 분모 · 환산)
+  const exCfg = ws ? exampleConfigOf(summary, wsConfig) : null;
+  const exKey = exCfg ? `${exCfg.monthlyFee}|${exCfg.margin}|${exCfg.hourlyCost}|${exCfg.sources.monthlyFee}|${exCfg.sources.margin}|${exCfg.sources.hourlyCost}` : '';
+  // 의존성은 exKey(설정 값 문자열) — 요약 객체가 새로 와도 값이 같으면 다시 계산하지 않는다
+  const example = useMemo(() => (exCfg ? buildDemoImpact(data, incidents, exCfg) : null), [data, incidents, exKey]);
+
   if (!ws) {
     return { demo: true, loading: false, error: null, month: demoState.month, months: [demoState.month], summary: demoState.summary, entries: demoState.entries, example: null, reload: async () => undefined };
   }
   const ready = !!summary && summary.month === month;
   // summary 자리 값은 타입을 맞추는 자리표시일 뿐 — ready가 false면 화면은 수치를 그리지 않는다
-  return { demo: false, loading, error, ready, month, months: monthOptions(kstNowMonth()), summary: ready ? summary : demoState.summary, entries: ready ? entries : [], example: demoState, reload };
+  return { demo: false, loading, error, ready, month, months: monthOptions(kstNowMonth()), summary: ready ? summary : demoState.summary, entries: ready ? entries : [], example: example ?? demoState, reload };
 }
 
 /** 최근 12개월 (이번 달부터) */
@@ -111,7 +127,7 @@ export default function View() {
   const saas = useSaas();
   const ws = saas.mode === 'server' ? saas.workspace?.id ?? null : null;
   const [month, setMonth] = useState(kstNowMonth);
-  const d = useImpactData(ws, month);
+  const d = useImpactData(ws, month, saas.config);
   return (
     <ImpactScreen d={d} ws={ws} canOperate={!d.demo && saas.can('operate')} onMonth={setMonth}
       workspaceName={saas.workspace?.brand_name || saas.workspace?.name || ''} />
@@ -448,6 +464,22 @@ function reportStatus(r: ReportItem): { text: string; tone: Tone } {
 const DEL_TONE: Record<string, Tone> = { sent: 'good', queued: 'neutral', failed: 'critical', skipped: 'outline' };
 const DEL_TEXT: Record<string, string> = { sent: '발송', queued: '발송 대기', failed: '실패', skipped: '보내지 않음' };
 
+/**
+ * 발송 요청 결과 안내 — 실제로 보낸 것(sent)과 발송 대기열에 넣기만 한 것(queued)을 구분한다.
+ * 대기열은 워커가 보낸 뒤 결과(발송 · 실패 · 보내지 않음)가 보관함에 표시된다. 보내지 않음 · 실패가 섞이면 주의 톤.
+ */
+export function deliveryToastOf(results: readonly Pick<DeliveryRecord, 'status' | 'channelName' | 'reason'>[]): { tone: 'good' | 'info' | 'warning'; title: string; body: string } {
+  const n = (st: DeliveryRecord['status']) => results.filter((x) => x.status === st).length;
+  const sent = n('sent'), queued = n('queued'), problems = n('failed') + n('skipped');
+  const body = results.map((x) => `${x.channelName} ${DEL_TEXT[x.status]}${x.reason ? ` (${x.reason})` : ''}`).join(' · ');
+  const title = sent
+    ? `${sent}개 채널로 보냈습니다${queued ? ` · ${queued}개 채널 발송 대기` : ''}`
+    : queued
+      ? `${queued}개 채널 발송 대기열에 넣었습니다 — 결과는 보관함에 표시됩니다`
+      : '보낸 채널이 없습니다';
+  return { tone: problems || (!sent && !queued) ? 'warning' : sent ? 'good' : 'info', title, body };
+}
+
 function ReportsTab({ ws, month, canOperate, demoSummary, demoEntries, seed }: { ws: string | null; month: string; canOperate: boolean; demoSummary: ImpactSummary | null; demoEntries: LedgerEntry[] | null; seed?: { reports: ReportItem[]; schedule: ScheduleRow[] } }) {
   const actions = useActions();
   const [kind, setKind] = useState<ReportKind | ''>('');
@@ -460,6 +492,9 @@ function ReportsTab({ ws, month, canOperate, demoSummary, demoEntries, seed }: {
   const [genType, setGenType] = useState<ReportKind>('daily');
   const [error, setError] = useState<string | null>(null);
 
+  // 열린 리포트(서랍) — 'report' 이벤트(발송 결과 반영 등)가 오면 서랍의 발송 기록도 다시 읽는다
+  const openRef = useRef<ReportItem | null>(null);
+  openRef.current = open;
   const load = useCallback(async () => {
     if (!ws) return;
     try {
@@ -470,7 +505,17 @@ function ReportsTab({ ws, month, canOperate, demoSummary, demoEntries, seed }: {
   useEffect(() => {
     void load();
     if (!ws) return;
-    return onServerEvent('report', () => void load());
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const off = onServerEvent('report', (e) => {
+      // 같은 리포트의 채널별 결과가 잇달아 오므로 묶어서 한 번 읽는다
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        void load();
+        const cur = openRef.current;
+        if (cur && (!e.id || e.id === cur.id)) void remote.fetchReport(ws, cur.id).then((x) => { if (openRef.current?.id === x.id) setOpen(x); }).catch(() => undefined);
+      }, 400);
+    });
+    return () => { off(); if (timer) clearTimeout(timer); };
   }, [ws, load]);
 
   const demoReport = useMemo(() => {
@@ -505,8 +550,8 @@ function ReportsTab({ ws, month, canOperate, demoSummary, demoEntries, seed }: {
   const deliver = (r: ReportItem) => run(`del:${r.id}`, async () => {
     const out = await remote.deliverReport(ws!, r.id);
     setArmed(null);
-    const sent = out.results.filter((x) => x.status === 'sent' || x.status === 'queued').length;
-    actions.toast({ tone: sent ? 'good' : 'warning', title: sent ? `${sent}개 채널로 보냈습니다` : '보낸 채널이 없습니다', body: out.results.map((x) => `${x.channelName} ${DEL_TEXT[x.status]}${x.reason ? ` (${x.reason})` : ''}`).join(' · ') });
+    actions.toast(deliveryToastOf(out.results));
+    if (openRef.current?.id === out.report.id) setOpen(out.report);
     await load();
   });
 

@@ -239,9 +239,17 @@ export function applyIncidentPatch(cur: StoredIncident, patch: IncidentPatchInpu
 
 interface IncidentRow { id: string; status: IncidentStatus; severity: Severity; rule_id: string; doc: StoredIncident; detected_at: Date; resolved_at: Date | null }
 
-/** 열 값이 원본 — doc에 같은 값을 맞춰 돌려준다 */
+/**
+ * 열 값이 원본 — doc에 같은 값을 맞춰 돌려준다 (status · severity · rule_id · detected_at).
+ * 감지 시각(detected_at)은 SLA 기한의 기준점이다. 열만 바뀐 경우(운영 보정 · 다른 도메인이 직접 넣은 이슈)에도 SLA 판정 · 목록 · 알림이
+ * 같은 시각을 쓰도록 doc.detectedAt을 열 값으로 맞춘다. 같은 순간이면(1초 미만 차이) doc 표기를 그대로 둔다.
+ */
 export function rowToIncident(r: IncidentRow): StoredIncident {
-  return { ...r.doc, id: r.id, status: r.status, severity: r.severity, ruleId: r.rule_id };
+  const out: StoredIncident = { ...r.doc, id: r.id, status: r.status, severity: r.severity, ruleId: r.rule_id };
+  const colMs = r.detected_at ? new Date(r.detected_at).getTime() : NaN;
+  const docMs = typeof r.doc?.detectedAt === 'string' ? Date.parse(r.doc.detectedAt) : NaN;
+  if (Number.isFinite(colMs) && !(Number.isFinite(docMs) && Math.abs(colMs - docMs) < 1000)) out.detectedAt = msToKstIso(colMs);
+  return out;
 }
 
 /** 열린 이슈 전부(등급 · 최신 순) + 최근 해결 500건 */

@@ -15,6 +15,7 @@
  *  DELETE /w/:ws/notify/channels/:id          configure → { ok }
  *  POST   /w/:ws/notify/channels/:id/test     configure → { result, channel }
  *  GET    /w/:ws/notify/log?channelId=&status=&event=&before=&limit=  read → { entries, nextBefore }
+ *         event=test는 이벤트 이름이 아니라 TEST DATA 이슈 알림(detail.isTest) 전체 — 저장되는 event는 incident · sla · resolved 그대로다
  *
  * 잡: alerts.scan · alerts.sla(SLA 에스컬레이션 + 다른 도메인이 직접 넣은 이슈 알림 접수) · notify.send (스케줄: 감지 10분마다, SLA 1분마다)
  *
@@ -311,7 +312,8 @@ export const routes: FastifyPluginAsync = async (app) => {
       `SELECT n.id, n.at, n.channel_id, c.name AS channel_name, COALESCE(n.channel_type, c.type) AS channel_type, n.event, n.ref_id, n.severity, n.status, n.attempts, n.detail
          FROM notifications n LEFT JOIN notification_channels c ON c.id = n.channel_id
         WHERE n.workspace_id = $1 AND ($2::uuid IS NULL OR n.channel_id = $2) AND ($3::text IS NULL OR n.status = $3)
-          AND ($4::text IS NULL OR n.event = $4) AND ($5::bigint IS NULL OR n.id < $5)
+          AND ($4::text IS NULL OR ($4 = 'test' AND COALESCE(n.detail->>'isTest', 'false') = 'true') OR ($4 <> 'test' AND n.event = $4))
+          AND ($5::bigint IS NULL OR n.id < $5)
         ORDER BY n.id DESC LIMIT $6`,
       [c.workspace.id, qy.channelId ?? null, qy.status ?? null, qy.event ?? null, qy.before ?? null, qy.limit],
     )).rows;

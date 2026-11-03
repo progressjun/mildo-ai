@@ -7,7 +7,7 @@ import type { Brief } from '@/ai/prompts';
 import type { ModuleAgentKit, ToolContext } from '../types';
 import { fmt } from '@/core/util';
 import {
-  buildDemoImpact, CONFIDENCE_LABEL, estimateText, hoursText, krw, monthLabel, SOURCE_LABEL, statusText, times,
+  buildDemoImpact, CONFIDENCE_LABEL, estimateText, hoursText, krw, monthLabel, PAYBACK_NOT_COMPUTED, paybackJudged, paybackSourceReading, paybackText, SOURCE_LABEL, statusText,
   type ImpactSummary, type LedgerEntry, type LedgerStatus, type SourceType,
 } from './engine';
 import { getImpactSnapshot } from './live';
@@ -54,13 +54,13 @@ export function impactBrief(ctx: ToolContext): Brief {
     const has = (w: string) => insuff.filter((e) => (e.detail.reasons ?? []).some((r) => r.includes(w))).length;
     patterns.push(`표본 부족 ${insuff.length}건 — 클릭 기준 미달 ${has('클릭')}건 · 전환 기준 미달 ${has('전환')}건 (기준: 창마다 클릭 30 · 전환 3 이상).`);
   }
-  const pb = t.paybackMultiple;
+  const pt = paybackText(s);
   const interpretation = [
-    `회수 배수 ${times(pb.point)} (80% 구간 ${times(pb.lo)} ~ ${times(pb.hi)}), 판정 '${s.verdict.label}' — 기준 ${s.verdict.basis}.`,
+    paybackJudged(s)
+      ? `회수 배수 ${pt.point} (80% 구간 ${pt.range}), 판정 '${s.verdict.label}' — 기준 ${s.verdict.basis}.`
+      : `회수 배수는 ${PAYBACK_NOT_COMPUTED}, 판정 '${s.verdict.label}' — 기준 ${s.verdict.basis}.`,
     `구성: 측정 증분 이익 ${krw(t.measuredUpliftProfit.point)} (측정) · 손실 회피 ${krw(t.lossAvoidedEst)} × 공헌이익률 ${fmt.pct(s.config.margin * 100, 0)} (추정) · 절감 ${hoursText(t.hoursSaved)} × 시간당 ${krw(s.config.hourlyCost)} (가정).`,
-    s.components[0].valueKrw >= s.components[1].valueKrw + s.components[2].valueKrw
-      ? '회수의 대부분이 대조군으로 측정한 증분에서 나와 근거가 상대적으로 단단하다고 본다.'
-      : '회수의 상당 부분이 추정(손실 회피) · 가정(건당 절감 분)에서 나와, 측정 증분이 쌓이기 전까지는 보수적으로 읽는 편이 맞다.',
+    paybackSourceReading(s),
   ];
   const actions = [
     c.change.pending ? `관측 중 ${c.change.pending}건은 반영 후 7일 데이터가 쌓이면 매일 06:00 측정에서 반영된다.` : '',

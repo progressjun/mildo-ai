@@ -86,14 +86,23 @@ export function approverFloor(c: Pick<ChangeRequest, 'kind' | 'targetId'>): { le
   if (/^alert:.+:topup$/.test(tid)) return { level: 'CLIENT', basis: '잔액 충전 → 결제 수단 소유자(수면밀도) 승인 (p.50)' };
   if (/^alert:.+:release$/.test(tid)) return { level: 'PM', basis: '자동 조정 보류 해제 → PM 승인' };
   if (tid.startsWith('flow:strategy')) return { level: 'CLIENT', basis: '전략 방향 · 월 예산 재배분 → 수면밀도 승인 (p.53)' };
+  // ON/OFF(캠페인 · 광고그룹 · 키워드)는 변경 폭이 없어 위임 범위 표의 고정 행 — 화면(Flow '캠페인 · 키워드 ON/OFF' · GFA 광고그룹 · AD Pilot 일시 중지)과 같은 PM
+  if (c.kind === 'status') return { level: 'PM', basis: 'ON/OFF(캠페인 · 광고그룹 · 키워드) → PM 승인 (p.15 위임 범위)' };
   return null;
+}
+
+/** 승인 주체 재판정에 쓰는 대상 정보 (DB에서 찾은 값 — 순수 함수 밖에서 채운다) */
+export interface ApproverContext {
+  /** 입찰 대상 키워드가 브랜드 키워드인지 (웨어하우스 키워드 문서 isBrand) — AD Pilot과 같이 브랜드 입찰은 PM 이상 */
+  brandKeyword?: boolean;
 }
 
 /**
  * 서버 승인 주체 재판정 (p.15 위임 범위 — 워크스페이스 설정의 위임 범위가 적용된 상태에서 호출).
- * 예산(budget) · GFA 신규(gfa): 변경 폭으로 다시 계산. 신규 캠페인은 CLIENT. 클라이언트가 보낸 승인 주체보다 낮추지 않는다.
+ * 예산(budget) · 입찰(bid): 변경 폭으로 다시 계산 (±10% 이내 AE · ±30% 이내 PM · 초과 · 계산 불가 CLIENT — 화면 Flow 신규 요청 · AD Pilot routeByPct와 같은 표).
+ * 브랜드 키워드 입찰은 PM 이상(AD Pilot 브랜드 별도 기준). ON/OFF는 PM 하한. 신규 캠페인은 CLIENT. 클라이언트가 보낸 승인 주체보다 낮추지 않는다.
  */
-export function routeApprover(c: Pick<ChangeRequest, 'kind' | 'targetId' | 'before' | 'after' | 'changePct' | 'approver'>): ApproverRoute {
+export function routeApprover(c: Pick<ChangeRequest, 'kind' | 'targetId' | 'before' | 'after' | 'changePct' | 'approver'>, ctx: ApproverContext = {}): ApproverRoute {
   const notes: string[] = [];
   const e = effectivePct(c);
   let changePct: number | null = finite(c.changePct) ? c.changePct : finite(e.computed) ? round1(e.computed) : null;
@@ -106,14 +115,18 @@ export function routeApprover(c: Pick<ChangeRequest, 'kind' | 'targetId' | 'befo
   if (isNewCampaign(c)) {
     required = 'CLIENT';
     if (LEVEL_RANK[c.approver] < LEVEL_RANK.CLIENT) notes.push(`신규 캠페인 → ${APPROVER_LABEL.CLIENT} 승인 (p.15 위임 범위)`);
-  } else if (c.kind === 'budget') {
+  } else if (c.kind === 'budget' || c.kind === 'bid') {
     const idx = delegationIndexByPct(e.pct);
     const row = GFA_DELEGATION[idx];
     required = row.approver;
     if (LEVEL_RANK[required] > LEVEL_RANK[c.approver]) {
       notes.push(finite(e.pct)
-        ? `변경 폭 ${round1(e.pct)}% → ${row.range} (p.15 위임 범위) · 승인 주체 ${APPROVER_LABEL[c.approver]} → ${APPROVER_LABEL[required]}`
+        ? `${c.kind === 'bid' ? '입찰가 ' : ''}변경 폭 ${round1(e.pct)}% → ${row.range}${c.kind === 'bid' ? ' 준용' : ''} (p.15 위임 범위) · 승인 주체 ${APPROVER_LABEL[c.approver]} → ${APPROVER_LABEL[required]}`
         : `변경 폭을 계산할 수 없어 최상위 승인(${APPROVER_LABEL.CLIENT})으로 보냅니다`);
+    }
+    if (c.kind === 'bid' && ctx.brandKeyword && LEVEL_RANK[required] < LEVEL_RANK.PM) {
+      required = 'PM';
+      if (LEVEL_RANK.PM > LEVEL_RANK[c.approver]) notes.push(`브랜드 키워드 입찰 → PM 이상 (AD Pilot 브랜드 별도 기준) · 승인 주체 ${APPROVER_LABEL[c.approver]} → ${APPROVER_LABEL.PM}`);
     }
   }
   const floor = approverFloor(c);

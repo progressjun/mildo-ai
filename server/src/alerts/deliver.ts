@@ -124,21 +124,36 @@ async function markChannel(q: Queryable, channelId: string, o: SendOutcome, test
 
 interface ChannelPick { id: string; type: ChannelType; min_severity: Severity; events: string[]; enabled: boolean }
 
+/** 이슈 이벤트(새 이슈 · SLA 기한 초과 · 해결 공유) — 채널의 'test'는 이 이벤트들을 TEST DATA 이슈에도 보낼지 정하는 추가 조건이다 */
+export const INCIDENT_EVENTS = ['incident', 'sla', 'resolved'] as const;
+
 /**
- * 이슈 알림을 받을 채널마다 notify.send 잡을 만든다. 테스트 데이터 이슈는 'test' 이벤트를 켠 채널만 받는다.
+ * 이슈 이벤트를 이 채널로 보낼지 — 실이슈는 그 이벤트를 켠 채널만.
+ * 테스트 데이터 이슈(isTest)는 'test'를 켠 채널 중에서 다시 그 이벤트를 켠 채널만 받는다('해결 공유'를 끈 채널은 TEST DATA 해결 알림도 받지 않음).
+ * 예외: 이슈 이벤트를 하나도 켜지 않고 'test'만 켠 채널은 TEST DATA 전용 시연 채널로 보고 TEST DATA 이슈의 모든 이슈 이벤트를 받는다(실이슈는 받지 않음).
+ */
+export function channelWantsIncident(events: readonly string[], event: (typeof INCIDENT_EVENTS)[number], isTest: boolean): boolean {
+  if (!isTest) return events.includes(event);
+  if (!events.includes('test')) return false;
+  const testOnly = !INCIDENT_EVENTS.some((e) => events.includes(e));
+  return testOnly || events.includes(event);
+}
+
+/**
+ * 이슈 알림을 받을 채널마다 notify.send 잡을 만든다 (채널 선택 규칙: channelWantsIncident).
  * 등급 기준에 못 미쳐 보내지 않은 경우도 이력(skipped)에 남긴다.
  */
 export async function fanOutIncident(q: Queryable, wsId: string, o: { event: 'incident' | 'sla' | 'resolved'; incident: StoredIncident; stage?: EscStage }): Promise<{ enqueued: number; skipped: number }> {
   const chans = (await q.query<ChannelPick>(`SELECT id, type, min_severity, events, enabled FROM notification_channels WHERE workspace_id = $1 ORDER BY created_at`, [wsId])).rows;
-  const key = o.incident.isTest ? 'test' : o.event;
+  const isTest = !!o.incident.isTest;
   let enqueued = 0, skipped = 0;
   for (const ch of chans) {
-    if (!ch.enabled || !ch.events.includes(key)) continue;
+    if (!ch.enabled || !channelWantsIncident(ch.events, o.event, isTest)) continue;
     if (!severityAllowed(ch.min_severity, o.incident.severity)) {
       skipped++;
       await recordNotification(q, {
         workspaceId: wsId, channelId: ch.id, channelType: ch.type, event: o.event, refId: o.incident.id, severity: o.incident.severity, status: 'skipped',
-        detail: { reason: `채널 등급 기준 ${ch.min_severity} 밖 (${o.incident.severity})`, title: o.incident.title, stage: o.stage ?? null },
+        detail: { reason: `채널 등급 기준 ${ch.min_severity} 밖 (${o.incident.severity})`, title: o.incident.title, stage: o.stage ?? null, isTest },
       });
       continue;
     }
@@ -164,12 +179,17 @@ export const EMAIL_BODY_MAX = 100_000;
 export async function fanOutGeneric(
   q: Queryable,
   wsId: string,
-  o: { event: string; refId?: string; title: string; text: string; body?: string; link?: string; severity?: Severity; onEnqueued?: (e: { channelId: string; jobId: string }) => void },
+  o: {
+    event: string; refId?: string; title: string; text: string; body?: string; link?: string; severity?: Severity; onEnqueued?: (e: { channelId: string; jobId: string }) => void;
+    /** 이번 발송에서 뺄 채널 (호출 측이 미리 '보내지 않음'으로 판정한 채널 — 예: SMTP 미설정 메일) */
+    excludeChannelIds?: readonly string[];
+  },
 ): Promise<number> {
   const chans = (await q.query<ChannelPick>(`SELECT id, type, min_severity, events, enabled FROM notification_channels WHERE workspace_id = $1 AND enabled ORDER BY created_at`, [wsId])).rows;
   let n = 0;
   for (const ch of chans) {
     if (!ch.events.includes(o.event)) continue;
+    if (o.excludeChannelIds?.includes(ch.id)) continue;
     if (o.severity && !severityAllowed(ch.min_severity, o.severity)) continue;
     const body = ch.type === 'email' && o.body ? o.body.slice(0, EMAIL_BODY_MAX) : undefined;
     const id = await enqueue(q, {
@@ -192,6 +212,17 @@ export async function loadWorkspaceInfo(q: Queryable, wsId: string): Promise<Wor
 }
 
 export async function notifySendJob(ctx: JobContext): Promise<SendOutcome & { channelId: string | null }> {
+  const p = ctx.payload as { event?: string; refId?: string | null };
+  try {
+    return await sendJob(ctx);
+  } finally {
+    // 리포트 발송 결과(발송 · 실패 · 보내지 않음 · 재시도 대기) → 리포트 보관함('report' 이벤트를 듣는다)이 '발송 대기'를 실제 결과로 바꾸게 한다.
+    // 보관함 조회(GET /reports)가 notifications.job_id로 결과를 반영한다(reports/deliver.ts syncDelivered). 이벤트 실패가 발송 결과를 바꾸지 않게 삼킨다
+    if (ctx.workspaceId && p.event === 'report' && p.refId) await ctx.publish(ctx.workspaceId, { type: 'report', id: String(p.refId) }).catch(() => undefined);
+  }
+}
+
+async function sendJob(ctx: JobContext): Promise<SendOutcome & { channelId: string | null }> {
   const { db, config, job } = ctx;
   const wsId = ctx.workspaceId;
   const p = ctx.payload as { channelId?: string; event?: string; refId?: string | null; payload?: Record<string, unknown> };
@@ -224,7 +255,7 @@ export async function notifySendJob(ctx: JobContext): Promise<SendOutcome & { ch
     }
     severity = inc.severity;
     if (inc.status === 'resolved' && event !== 'resolved') {
-      await recordNotification(db, { ...rec, severity, status: 'skipped', detail: { reason: '발송 전에 이미 해결된 이슈', title: inc.title, stage: stage ?? null } });
+      await recordNotification(db, { ...rec, severity, status: 'skipped', detail: { reason: '발송 전에 이미 해결된 이슈', title: inc.title, stage: stage ?? null, isTest: !!inc.isTest } });
       return { status: 'skipped', reason: '이미 해결됨', channelId: ch.id };
     }
     input = { event, workspace: ws, appUrl: config.appUrl, incident: inc, stage };

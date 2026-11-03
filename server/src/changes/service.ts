@@ -41,7 +41,7 @@ import {
 } from './model';
 import {
   ACTION_LABEL, LEVEL_RANK, STATUS_LABEL, canLowerApprover, checkActionPermission, checkEditPermission, checkNotePermission, effectivePct, historyLabel, maxLevel,
-  noteEntryOf, resolveTransition, routeApprover, targetStatusOf, type ServerAction,
+  noteEntryOf, resolveTransition, routeApprover, targetStatusOf, type ApproverContext, type ServerAction,
 } from './policy';
 import {
   evaluateGuards, laterLiveWrites, resolvePlan, resolveRollbackPlan, runPlan, tryBuildDataset, type GuardResult, type PlanLimits, type Resolution, type RunOutcome,
@@ -224,6 +224,19 @@ export interface CreateInput {
 
 const newChangeId = () => `chg_${randomToken(9)}`;
 
+/**
+ * 승인 주체 재판정에 쓰는 대상 정보 — 입찰 대상 키워드가 브랜드 키워드인지(웨어하우스 키워드 문서 isBrand, 출처 무관 하나라도).
+ * 화면(AD Pilot)이 브랜드 입찰을 PM 이상으로 보내는 기준을 서버도 적용해, 승인 주체를 AE로 보내 스스로 승인하는 우회를 막는다.
+ */
+async function approverContextOf(q: Queryable, ws: string, c: { kind: ChangeRequest['kind']; targetId?: string | null }): Promise<ApproverContext> {
+  const tid = (c.targetId ?? '').trim();
+  if (c.kind !== 'bid' || !tid) return {};
+  const r = await q.query(
+    `SELECT 1 FROM wh_entities WHERE workspace_id = $1 AND entity_type = 'keyword' AND external_id = $2 AND doc->>'isBrand' = 'true' LIMIT 1`, [ws, tid],
+  );
+  return { brandKeyword: r.rowCount > 0 };
+}
+
 function sameRequest(row: ChangeRow, userId: string, i: CreateInput): boolean {
   return row.requested_by_user === userId && row.module === i.module && row.kind === i.kind && row.target === i.target
     && (row.target_id ?? null) === (i.targetId ?? null) && JSON.stringify(row.before) === JSON.stringify(i.before) && JSON.stringify(row.after) === JSON.stringify(i.after);
@@ -235,9 +248,10 @@ export async function createChange(env: Env, wc: WorkspaceCtx, input: CreateInpu
   const at = nowDate();
   const atIso = at.toISOString();
   const cfg = await loadWorkspaceConfig(env.db, ws);
+  const actx = await approverContextOf(env.db, ws, input);
   const route = withWorkspaceConfig(cfg, () => routeApprover({
     kind: input.kind, targetId: input.targetId ?? undefined, before: input.before, after: input.after, changePct: input.changePct ?? undefined, approver: input.approver,
-  }));
+  }, actx));
   const notes: string[] = [];
   if (input.requestedBy && input.requestedBy.trim() && input.requestedBy.trim() !== actor.name) notes.push(`요청 경로 표기: ${input.requestedBy.trim().slice(0, 100)}`);
   notes.push(...route.notes);
@@ -391,7 +405,8 @@ async function simpleTransition(env: Env, wc: WorkspaceCtx, id: string, to: Chan
       const lowering = LEVEL_RANK[asked] < LEVEL_RANK[row.approver];
       const mayLower = lowering && canLowerApprover(wc.role, row.approver);
       const baseApprover = mayLower ? asked : maxLevel(row.approver, asked);
-      const route = withWorkspaceConfig(cfg, () => routeApprover({ ...next, approver: baseApprover }));
+      const actx = await approverContextOf(q, ws, next);
+      const route = withWorkspaceConfig(cfg, () => routeApprover({ ...next, approver: baseApprover }, actx));
       if (lowering && !mayLower) route.notes.unshift(`승인 주체 낮추기 요청(${STATUS_APPROVER(asked)})은 ${STATUS_APPROVER(row.approver)} 승인 권한이 있는 PM 이상만 할 수 있어 ${STATUS_APPROVER(row.approver)} 유지`);
       next.approver = route.approver;
       if (route.changePct !== null && !('changePct' in edits)) next.changePct = route.changePct;
@@ -418,7 +433,8 @@ async function simpleTransition(env: Env, wc: WorkspaceCtx, id: string, to: Chan
       action = tr.action!;
       // 승인 시점 재판정: 요청 뒤 워크스페이스 위임 범위 · 승인 주체 하한이 바뀌었으면 지금 기준으로 올린다 (낮추지는 않는다)
       if (action === 'approve') {
-        const reroute = withWorkspaceConfig(cfg, () => routeApprover(current));
+        const actx = await approverContextOf(q, ws, current);
+        const reroute = withWorkspaceConfig(cfg, () => routeApprover(current, actx));
         if (LEVEL_RANK[reroute.approver] > LEVEL_RANK[current.approver]) {
           history.push({
             at: atIso, by: SYSTEM_BY, action: '승인 주체 재판정',

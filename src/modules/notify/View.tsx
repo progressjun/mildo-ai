@@ -18,7 +18,7 @@ import { fmtDateShort, type AlertIncident, type DutyRow } from '@/modules/alert/
 import { DEMO } from '@/data/demo';
 import { buildMessage, type Message } from './message';
 import {
-  DEMO_CHANNELS, DEMO_INCIDENTS, demoLog, demoRuns, draftFromChannel, draftProblems, draftToBody, emptyDraft, EVENT_LABEL, EVENT_OPTIONS, fmtIso, localPolicy,
+  DEMO_CHANNELS, DEMO_INCIDENTS, demoLog, demoRuns, draftFromChannel, draftProblems, draftToBody, emptyDraft, EVENT_LABEL, EVENT_OPTIONS, fmtIso, localPolicy, logMatches,
   severityScopeLabel, SEVERITY_SCOPE, slaRows, STATUS_TEXT, summarize, TRIGGER_LABEL, TYPE_ICON, TYPE_LABEL,
   type Channel, type ChannelDraft, type ChannelEvent, type ChannelType, type LogEntry, type Policy, type ScanRun, type SlaRow,
 } from './model';
@@ -27,6 +27,17 @@ import * as remote from './api';
 type TabId = 'channels' | 'log' | 'policy' | 'roster' | 'runs';
 
 const errText = (e: unknown) => (e as { message?: string })?.message ?? '요청을 처리하지 못했습니다';
+
+/**
+ * 채널 목록의 주소 요약 — 서버 마스킹 값(target)은 이미 종류로 시작한다('Slack · …' · '메일 · 2명' · '웹훅 · …').
+ * 종류 표기가 없는 값(예전 응답 · 오류 문구)만 앞에 종류를 붙인다 — 'Slack · Slack · …'처럼 두 번 쓰지 않게.
+ */
+export function channelTargetText(c: Pick<Channel, 'type' | 'config'>): string {
+  const t = (c.config?.target ?? '').trim();
+  const words = [TYPE_LABEL[c.type], c.type === 'email' ? '메일' : ''].filter(Boolean);
+  if (!t) return TYPE_LABEL[c.type];
+  return words.some((w) => t === w || t.startsWith(`${w} · `)) ? t : `${TYPE_LABEL[c.type]} · ${t}`;
+}
 /** 더블클릭의 두 번째 클릭은 무시 (버튼이 같은 자리에서 바뀌는 화면 공통 규칙) */
 const once = (fn: () => void) => (e: MouseEvent<HTMLButtonElement>) => { if (e.detail > 1) return; fn(); };
 
@@ -105,7 +116,7 @@ export function useNotifyData(ws: string | null): NotifyData {
   const demoState = useMemo(() => ({ channels: DEMO_CHANNELS, log: demoLog(), runs: demoRuns(), policy: localPolicy(DEMO.today) }), []);
   if (!ws) {
     const f = filter;
-    const shown = demoState.log.filter((l) => (!f.status || l.status === f.status) && (!f.event || l.event === f.event) && (!f.channelId || l.channelId === f.channelId));
+    const shown = demoState.log.filter((l) => logMatches(l, f));
     return {
       demo: true, loading: false, error: null, channels: demoState.channels, log: shown, nextBefore: null, runs: demoState.runs, policy: demoState.policy,
       reload: async () => undefined, loadMore: async () => undefined, filter, setFilter,
@@ -188,7 +199,7 @@ export function CoverageNotes({ sum, runStale, lastRun, demo }: { sum: ReturnTyp
     notes.push({
       tone: sum.testCovered ? 'info' : 'warning',
       title: all ? '최근 감지가 TEST DATA로 돌았습니다' : '일부 매체가 TEST DATA입니다',
-      body: `${all ? '감지한 이슈는 전부' : '출처가 데모뿐인 매체의 이슈는'} TEST DATA로 표시되어 '테스트 데이터 이슈' 이벤트를 켠 채널로만 갑니다 (기준: 마지막 감지의 데이터 출처 ${all ? 'demo' : 'demo + 실연동'}). ${sum.testCovered ? '그 이벤트를 켠 채널이 있어 시연 알림은 나갑니다.' : '지금은 그 이벤트를 켠 채널이 없어 TEST DATA 이슈 알림은 나가지 않습니다.'} 실데이터를 연결하면 '새 이슈' 채널로 갑니다.`,
+      body: `${all ? '감지한 이슈는 전부' : '출처가 데모뿐인 매체의 이슈는'} TEST DATA로 표시되어 '테스트 데이터 이슈'를 켠 채널 중 해당 이벤트(새 이슈 · SLA 기한 초과 · 해결 공유)를 켠 채널로만 갑니다 — '테스트 데이터 이슈'만 켠 채널은 TEST DATA 이슈 알림을 모두 받습니다 (기준: 마지막 감지의 데이터 출처 ${all ? 'demo' : 'demo + 실연동'}). ${sum.testCovered ? '그 이벤트를 켠 채널이 있어 시연 알림은 나갑니다.' : '지금은 그 이벤트를 켠 채널이 없어 TEST DATA 이슈 알림은 나가지 않습니다.'} 실데이터를 연결하면 '새 이슈' 채널로 갑니다.`,
     });
   }
   if (!sum.p1Covered) notes.push({ tone: 'critical', title: '새 이슈를 받을 채널이 없습니다', body: "서버가 이슈를 감지해도 아무에게도 알림이 가지 않습니다. '새 이슈' 이벤트를 켠 채널을 하나 이상 두세요 (기준: 켜진 채널 중 이벤트 '새 이슈' 0개)." });
@@ -233,7 +244,7 @@ export function ChannelsTab({ d, ws, canConfigure }: { d: NotifyData; ws: string
   });
 
   const columns: Column<Channel>[] = [
-    { key: 'name', label: '채널', render: (c) => <div className="stack-sm" style={{ gap: 2 }}><strong className="row" style={{ gap: 6 }}><Icon name={TYPE_ICON[c.type]} size={14} />{c.name}</strong><span className="xs muted">{TYPE_LABEL[c.type]} · {c.config.target}{c.config.hasSecret ? ' · 서명 사용' : ''}</span></div>, sort: (c) => c.name },
+    { key: 'name', label: '채널', render: (c) => <div className="stack-sm" style={{ gap: 2 }}><strong className="row" style={{ gap: 6 }}><Icon name={TYPE_ICON[c.type]} size={14} />{c.name}</strong><span className="xs muted">{channelTargetText(c)}{c.config.hasSecret ? ' · 서명 사용' : ''}</span></div>, sort: (c) => c.name },
     { key: 'sev', label: '받는 등급', render: (c) => <span className="small nowrap" title={`${SEVERITY_LABEL[c.minSeverity]} 이상`}>{severityScopeLabel(c.minSeverity)}</span>, sort: (c) => c.minSeverity },
     { key: 'events', label: '이벤트', render: (c) => <div className="row" style={{ gap: 4 }}>{c.events.map((e) => <Pill key={e} tone={e === 'sla' ? 'serious' : e === 'test' ? 'dark' : 'neutral'}>{EVENT_LABEL[e] ?? e}</Pill>)}</div> },
     { key: 'state', label: '상태', render: (c) => <Pill tone={c.enabled ? 'good' : 'outline'}>{c.enabled ? '켜짐' : '꺼짐'}</Pill>, sort: (c) => (c.enabled ? 1 : 0) },
@@ -439,7 +450,7 @@ export function LogTab({ d }: { d: NotifyData }) {
   const columns: Column<LogEntry>[] = [
     { key: 'at', label: '시각', render: (l) => <span className="num nowrap">{fmtIso(l.at)}</span>, sort: (l) => l.at, width: 96 },
     { key: 'ch', label: '채널', render: (l) => <div className="xs"><strong>{l.channelName}</strong><div className="muted">{l.channelType ? TYPE_LABEL[l.channelType as ChannelType] ?? l.channelType : '—'}</div></div> },
-    { key: 'ev', label: '이벤트', render: (l) => <Pill tone={l.event === 'sla' ? 'serious' : l.event === 'channel_test' ? 'outline' : 'neutral'}>{EVENT_LABEL[l.event] ?? l.event}{l.detail.stage ? ` · ${({ ack: '인지', action: '1차 조치', report: '결과 보고' } as Record<string, string>)[l.detail.stage] ?? l.detail.stage}` : ''}</Pill> },
+    { key: 'ev', label: '이벤트', render: (l) => <div className="row" style={{ gap: 4 }}><Pill tone={l.event === 'sla' ? 'serious' : l.event === 'channel_test' ? 'outline' : 'neutral'}>{EVENT_LABEL[l.event] ?? l.event}{l.detail.stage ? ` · ${({ ack: '인지', action: '1차 조치', report: '결과 보고' } as Record<string, string>)[l.detail.stage] ?? l.detail.stage}` : ''}</Pill>{!d.demo && l.detail.isTest ? <span className="src demo" title="테스트 데이터 이슈 알림">TEST DATA</span> : null}</div> },
     { key: 'sev', label: '등급', render: (l) => (l.severity ? <Sev level={l.severity} /> : <span className="muted">—</span>), width: 56 },
     { key: 'st', label: '결과', render: (l) => <div className="xs"><Pill tone={l.status === 'sent' ? 'good' : l.status === 'failed' ? 'critical' : 'neutral'}>{STATUS_TEXT[l.status]}</Pill>{l.attempts > 1 ? <div className="muted">시도 {l.attempts}회</div> : null}{l.detail.retrying ? <div className="muted">재시도 대기</div> : null}</div>, sort: (l) => l.status },
     { key: 'body', label: '내용 · 사유', render: (l) => <div className="xs" style={{ maxWidth: 480 }}><div>{l.detail.subject ?? l.detail.title ?? l.refId ?? '—'}</div>{l.detail.reason ? <div className={l.status === 'failed' ? 'notify-err' : 'muted'}>{l.detail.reason}</div> : null}{l.detail.httpStatus ? <div className="muted">응답 {l.detail.httpStatus}</div> : null}</div> },
@@ -454,7 +465,7 @@ export function LogTab({ d }: { d: NotifyData }) {
         </select>
         <select className="select" aria-label="이벤트" style={{ width: 'auto' }} value={f.event} onChange={(e) => d.setFilter({ ...f, event: e.target.value })}>
           <option value="">이벤트 전체</option>
-          {[...EVENT_OPTIONS.map((o) => o.id as string), 'channel_test'].map((e) => <option key={e} value={e}>{EVENT_LABEL[e]}</option>)}
+          {[...EVENT_OPTIONS.map((o) => o.id as string), 'channel_test'].map((e) => <option key={e} value={e}>{e === 'test' ? `${EVENT_LABEL[e]} (TEST DATA 알림 전체)` : EVENT_LABEL[e]}</option>)}
         </select>
         <select className="select" aria-label="채널" style={{ width: 'auto' }} value={f.channelId} onChange={(e) => d.setFilter({ ...f, channelId: e.target.value })}>
           <option value="">채널 전체</option>

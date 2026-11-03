@@ -7,8 +7,9 @@ import type { Brief } from '@/ai/prompts';
 import type { ModuleAgentKit, ToolContext } from '../types';
 import { fmt, fmtDate } from '@/core/util';
 import { getLab } from '@/modules/lab/store';
+import { getImpactSnapshot } from '@/modules/impact/live';
 import {
-  aboutHours, aeTarget, automationRollout, availableMonths, buildTimetable, cadenceStatus, commentTarget, computeSavings, dataNowMinutes, fmtCut, generateReport, nextSends, reinvestPlan,
+  aboutHours, aeTarget, automationRollout, availableMonths, buildTimetable, cadenceStatus, serverCadence, commentTarget, computeSavings, dataNowMinutes, fmtCut, generateReport, nextSends, reinvestPlan,
   reportToMarkdown, scopeOf, type IssueLike, type Report,
 } from './engine';
 import type { ReportType } from './data';
@@ -144,7 +145,10 @@ export const agentKit: ModuleAgentKit = {
       match: /(일간|오늘|어제|전일)\s?(리포트|보고서?|성과)|일간|리포트|보고서|발송 현황/,
       build: (ctx): Brief => {
         const b = generateReport('daily', ctx.state.data, optsOf(ctx)).brief;
-        const cad = cadenceStatus(ctx.state.data, ctx.state.incidents, ctx.state.changes);
+        const cad0 = cadenceStatus(ctx.state.data, ctx.state.incidents, ctx.state.changes);
+        // 서버 모드(Dataset 메타 있음): 발송 상태는 리포트 보관함의 실제 발송 기록 기준 — 보관함을 아직 못 읽었으면 '확인 중'으로 (발송 완료로 추정하지 않음)
+        const snap = getImpactSnapshot();
+        const cad = snap?.reports ? serverCadence(cad0, snap.reports) : ctx.state.data.meta ? serverCadence(cad0, null) : cad0;
         return { ...b, facts: [...b.facts, `리포트 발송 현황: ${cad.map((c) => `${c.name} ${c.stateLabel}`).join(' · ')} (제안서 p.17 주기).`] };
       },
     },

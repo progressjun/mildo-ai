@@ -1926,6 +1926,65 @@ export function cadenceStatus(d: Dataset, incidentsIn: readonly Incident[] = [],
   ];
 }
 
+/* ============================== 서버 모드 발송 현황 (보관함 기준) ============================== */
+
+/** 서버 리포트 보관함 행 (GET /reports — src/modules/impact/api.ts ReportItem과 같은 모양의 필요한 부분만) */
+export interface ArchiveReportLite {
+  type: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  generatedAt: string;
+  delivered: readonly { status: 'queued' | 'sent' | 'failed' | 'skipped'; at: string }[];
+  deliveredAt?: string | null;
+}
+
+const kstStampOf = (iso: string | null | undefined): string => {
+  const ms = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(ms)) return '—';
+  const s = new Date(ms + 9 * 3600_000).toISOString();
+  return `${fmtDate(s.slice(0, 10))} ${s.slice(11, 16)}`;
+};
+const periodText = (r: Pick<ArchiveReportLite, 'periodStart' | 'periodEnd'>) =>
+  r.periodStart ? `${fmtDate(r.periodStart, false)}${r.periodEnd && r.periodEnd !== r.periodStart ? `–${fmtDate(r.periodEnd, false)}` : ''}` : '기간 —';
+/** 실제로 보낸 시각 (sent 기록 · delivered_at 중 가장 늦은 것) — 없으면 null */
+function sentAtOf(r: ArchiveReportLite): string | null {
+  const sent = r.delivered.filter((x) => x.status === 'sent').map((x) => x.at).filter((x) => Number.isFinite(Date.parse(x)));
+  if (r.deliveredAt && Number.isFinite(Date.parse(r.deliveredAt)) && sent.length) sent.push(r.deliveredAt);
+  return sent.length ? sent.sort((a, b) => Date.parse(b) - Date.parse(a))[0] : null;
+}
+
+/**
+ * 서버 모드 리포트 4종 발송 현황 — 일간 · 주간 · 월간 카드의 발송 상태를 데이터 시계 추정(cadenceStatus)이 아니라
+ * 서버 리포트 보관함의 실제 생성 · 발송 기록으로 바꾼다. '발송 완료'는 보관함에 실제 발송(sent) 기록이 있을 때만.
+ * archive = null이면 아직 못 읽은 상태(불러오는 중 · 오류) — 발송했다고 표시하지 않는다. 이슈 카드는 이슈 목록 기준 그대로.
+ */
+export function serverCadence(base: readonly CadenceStatus[], archive: readonly ArchiveReportLite[] | null, failed = false): CadenceStatus[] {
+  return base.map((c) => {
+    if (c.type === 'issue') return c;
+    if (!archive) {
+      return { ...c, last: null, state: 'scheduled' as const, stateLabel: failed ? '서버 발송 기록을 불러오지 못함' : '서버 발송 기록 확인 중', detail: `다음 ${c.next} · 발송 상태는 서버 리포트 보관함 기준` };
+    }
+    const mine = archive.filter((r) => r.type === c.type).sort((a, b) => Date.parse(b.generatedAt) - Date.parse(a.generatedAt));
+    const latest = mine[0];
+    const lastSent = mine.find((r) => sentAtOf(r) !== null) ?? null;
+    const lastSentAt = lastSent ? sentAtOf(lastSent) : null;
+    if (!latest) {
+      return { ...c, last: null, state: 'scheduled' as const, stateLabel: '서버 발송 기록 없음', detail: `다음 ${c.next} · 리포트 보관함에 생성 · 발송된 ${c.name} 리포트가 아직 없습니다` };
+    }
+    const latestSentAt = sentAtOf(latest);
+    if (latestSentAt) {
+      return { ...c, last: kstStampOf(latestSentAt), state: 'sent' as const, stateLabel: `${kstStampOf(latestSentAt)} 발송 완료`, detail: `${periodText(latest)} · 서버 보관함 발송 기록 기준 · 다음 ${c.next}` };
+    }
+    const st = latest.delivered.map((x) => x.status);
+    const label = st.includes('queued') ? '발송 대기' : st.includes('failed') ? '발송 실패' : st.includes('skipped') ? '생성됨 · 보내지 않음' : '생성됨 · 미발송';
+    return {
+      ...c, last: lastSentAt ? kstStampOf(lastSentAt) : null, state: 'scheduled' as const,
+      stateLabel: `${kstStampOf(latest.generatedAt)} ${label}`,
+      detail: `${periodText(latest)} · ${lastSentAt ? `마지막 발송 ${kstStampOf(lastSentAt)}` : '실제 발송 기록 없음'} · 다음 ${c.next}`,
+    };
+  });
+}
+
 /* ============================== 요약 (에이전트 · 홈) ============================== */
 
 export function decisionOwner(kind: 'ops' | 'budget' | 'rule' | 'strategy'): string {

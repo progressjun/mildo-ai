@@ -14,34 +14,52 @@ const ZONE_CLASS: Record<string, { cls: string; label: string }> = {
   '다음 액션': { cls: 'action', label: '다음 액션' },
 };
 
-function inline(text: string, keyBase: string): ReactNode[] {
-  // **bold**, `code`, [label](url)
+/**
+ * 인라인 문법: **굵게** · `코드` · [이름](https://…) · 맨 URL(https://…) · _기울임_.
+ * 기울임은 단어 경계의 밑줄만 본다 (snake_case · kw_6 같은 식별자는 그대로). 뒤보기(lookbehind) 없이 앞 글자를 캡처해 오래된 브라우저에서도 동작한다.
+ */
+const INLINE_RE = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\((https?:[^)\s]+)\)|https?:\/\/[^\s<>()[\]]*[^\s<>()[\].,;:!?'"_]|(^|[^A-Za-z0-9_])_(\S(?:[^_\n]*?\S)?)_(?![A-Za-z0-9_]))/g;
+
+export function inline(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
-  const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\((https?:[^)\s]+)\))/g;
+  const re = new RegExp(INLINE_RE.source, 'g');
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;
   while ((m = re.exec(text))) {
-    if (m.index > last) out.push(text.slice(last, m.index));
     const tok = m[0];
+    if (!tok) { re.lastIndex++; continue; }
+    if (m.index > last) out.push(text.slice(last, m.index));
     const k = `${keyBase}-${i++}`;
-    if (tok.startsWith('**')) out.push(<strong key={k}>{tok.slice(2, -2)}</strong>);
+    if (m[4] !== undefined) {
+      // _기울임_ — 앞 글자(공백 · 문장부호)는 그대로 두고 안쪽은 다시 인라인 처리(링크 · 굵게)
+      if (m[3]) out.push(m[3]);
+      out.push(<em key={k}>{inline(m[4], `${k}e`)}</em>);
+    } else if (tok.startsWith('**')) out.push(<strong key={k}>{tok.slice(2, -2)}</strong>);
     else if (tok.startsWith('`')) out.push(<code key={k}>{tok.slice(1, -1)}</code>);
-    else {
+    else if (tok.startsWith('[')) {
       const lm = tok.match(/^\[([^\]]+)\]\((.+)\)$/);
       out.push(lm ? <a key={k} href={lm[2]} target="_blank" rel="noreferrer">{lm[1]}</a> : tok);
-    }
+    } else out.push(<a key={k} href={tok} target="_blank" rel="noreferrer">{tok}</a>);
     last = m.index + tok.length;
   }
   if (last < text.length) out.push(text.slice(last));
   return out;
 }
 
+/** 인용(>) 블록 — 전역 스타일 없이 CSS 변수만 쓴다 */
+const QUOTE_STYLE = { margin: '0 0 8px', padding: '2px 0 2px 10px', borderLeft: '3px solid var(--line-strong)', color: 'var(--ink-2)' } as const;
+
 function renderBlocks(lines: string[], keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
   let para: string[] = [];
   let list: string[] = [];
   let table: string[] = [];
+  let quote: string[] = [];
+  const flushQuote = () => {
+    if (quote.length) out.push(<blockquote key={`${keyBase}-q${out.length}`} style={QUOTE_STYLE}>{inline(quote.join(' '), `${keyBase}-q${out.length}`)}</blockquote>);
+    quote = [];
+  };
   const flushPara = () => {
     if (para.length) out.push(<p key={`${keyBase}-p${out.length}`}>{inline(para.join(' '), `${keyBase}-p${out.length}`)}</p>);
     para = [];
@@ -67,6 +85,9 @@ function renderBlocks(lines: string[], keyBase: string): ReactNode[] {
   };
   for (const raw of lines) {
     const line = raw.trimEnd();
+    const q = line.match(/^\s*>\s?(.*)$/);
+    if (q) { flushTable(); flushPara(); flushList(); if (q[1].trim()) quote.push(q[1].trim()); else flushQuote(); continue; }
+    flushQuote();
     if (/^\s*\|.*\|\s*$/.test(line)) { flushPara(); flushList(); table.push(line.trim()); continue; }
     flushTable();
     if (!line.trim()) { flushPara(); flushList(); continue; }
@@ -77,7 +98,7 @@ function renderBlocks(lines: string[], keyBase: string): ReactNode[] {
     flushList();
     para.push(line.trim());
   }
-  flushTable(); flushPara(); flushList();
+  flushQuote(); flushTable(); flushPara(); flushList();
   return out;
 }
 

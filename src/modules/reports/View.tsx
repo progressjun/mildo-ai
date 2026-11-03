@@ -3,13 +3,16 @@
  * 리포트 4종 발송 현황 → 리포트(문서형 · 메신저형 · AE 코멘트 · 코멘트 단위 피드백 · AI 해석) / 데이터 제공 시간표 / SA 업무 절감 · 90일 일정
  * 성과 수치는 모두 state.data(시연용 테스트 데이터)에서 계산한다. AI는 버튼을 누를 때만 호출한다.
  */
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useStore } from '@/core/store';
+import { useSaas } from '@/saas/context';
+import { onServerEvent } from '@/saas/events';
+import { fetchReports } from '@/modules/impact/api';
 import { useLab } from '@/modules/lab/store';
 import { fmtDate, monthKey } from '@/core/util';
 import { PageHeader, Pill, Src, Tabs } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
-import { availableMonths, buildTimetable, cadenceStatus, computeSavings, dataNowMinutes, fmtCut, generateReport, type IssueLike, type ReportType } from './engine';
+import { availableMonths, buildTimetable, cadenceStatus, computeSavings, dataNowMinutes, fmtCut, generateReport, serverCadence, type ArchiveReportLite, type IssueLike, type ReportType } from './engine';
 import { ReportsTab, type Interp } from './ReportsTab';
 import { TimetableTab } from './TimetableTab';
 import { DEFAULT_SAVINGS_INPUTS, SavingsTab, type SavingsInputs } from './SavingsTab';
@@ -18,6 +21,28 @@ import './styles.css';
 type TabId = 'reports' | 'timetable' | 'savings';
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : 0);
+
+/**
+ * 서버 모드: 리포트 보관함(GET /reports)의 실제 생성 · 발송 기록 — 발송 현황 카드가 데이터 시계 추정 대신 이 기록을 쓴다.
+ * 'report' 이벤트(생성 · 발송 결과 반영)마다 다시 읽는다. 데모 모드(ws 없음)는 아무것도 읽지 않는다.
+ */
+function useServerArchive(ws: string | null): { archive: ArchiveReportLite[] | null; failed: boolean } {
+  const [archive, setArchive] = useState<ArchiveReportLite[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!ws) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => fetchReports(ws, { limit: 60 }).then((r) => { if (alive) { setArchive(r.reports); setFailed(false); } }).catch(() => { if (alive) setFailed(true); });
+    void load();
+    const off = onServerEvent('report', () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void load(), 600);
+    });
+    return () => { alive = false; off(); if (timer) clearTimeout(timer); };
+  }, [ws]);
+  return { archive: ws ? archive : null, failed };
+}
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 export default function View() {
@@ -40,7 +65,15 @@ export default function View() {
     const r = generateReport(type, d, { incidents, month, selectedIssueId: issueId, changes, labCriteria });
     return { report: r, genMs: now() - t0 };
   }, [type, d, incidents, month, issueId, changes, labCriteria]);
-  const cadence = useMemo(() => cadenceStatus(d, incidents, changes), [d, incidents, changes]);
+  const saas = useSaas();
+  const serverWs = saas.mode === 'server' ? saas.workspace?.id ?? null : null;
+  const server = saas.mode === 'server';
+  const { archive, failed: archiveFailed } = useServerArchive(serverWs);
+  // 서버 모드: 일간 · 주간 · 월간 발송 상태는 보관함의 실제 발송 기록으로 (데이터 시계로 '발송 완료'를 추정하지 않는다)
+  const cadence = useMemo(() => {
+    const base = cadenceStatus(d, incidents, changes);
+    return server ? serverCadence(base, archive, archiveFailed) : base;
+  }, [d, incidents, changes, server, archive, archiveFailed]);
   const tt = useMemo(() => buildTimetable(d, { offHours: state.offHoursMode, incidents, changes }), [d, state.offHoursMode, incidents, changes]);
   const sv = useMemo(() => computeSavings({ before: savings.before, measured: savings.measured, mode: savings.mode }), [savings.before, savings.measured, savings.mode]);
 
@@ -73,7 +106,7 @@ export default function View() {
       />
 
       <div className="row-between reports-noprint">
-        <span className="small ink2">리포트 4종 발송 현황 · 주기 · 채널은 제안서 기준, 발송 상태는 데이터 기준 시각 기준</span>
+        <span className="small ink2">{server ? '리포트 4종 발송 현황 · 주기 · 채널은 제안서 기준, 일간 · 주간 · 월간 발송 상태는 서버 리포트 보관함(실제 발송 기록) 기준' : '리포트 4종 발송 현황 · 주기 · 채널은 제안서 기준, 발송 상태는 데이터 기준 시각 기준'}</span>
         <span className="row" style={{ gap: 6 }}><Src kind="PROPOSAL" page="p.17" /><Src kind="DEMO" /></span>
       </div>
       <div className="reports-cadence reports-noprint" role="group" aria-label="리포트 4종 발송 현황">

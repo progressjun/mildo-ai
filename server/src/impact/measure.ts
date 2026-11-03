@@ -58,10 +58,18 @@ export interface LedgerRow {
 
 const iso = (v: Date | string | null) => (v === null ? null : new Date(v).toISOString());
 
+/**
+ * 이전 측정이 저장한 변경 라벨의 반복 종류어 정리 — 대상 이름이 이미 '… 입찰가' · '… 일 예산'으로 끝나는데 종류어를 또 붙인 행
+ * ('수면밀도 입찰가 입찰가 270 → 280', '… 일 예산 (naver_gfa) 일 예산 …')을 읽을 때 바로잡는다 (다음 측정에서 새 라벨로 덮어쓴다)
+ */
+export function tidyLedgerLabel(label: string): string {
+  return label.replace(/ (입찰가|일 예산)((?: \([^)]*\))?) \1(?= |$)/, '$2 $1');
+}
+
 export function toEntry(r: LedgerRow): LedgerEntry {
   const occ = new Date(r.occurred_at).getTime();
   return {
-    id: r.id, sourceType: r.source_type, sourceId: r.source_id, label: r.label, occurredAt: new Date(occ).toISOString(), month: r.month ?? kstMonthOf(occ),
+    id: r.id, sourceType: r.source_type, sourceId: r.source_id, label: r.source_type === 'change' ? tidyLedgerLabel(r.label) : r.label, occurredAt: new Date(occ).toISOString(), month: r.month ?? kstMonthOf(occ),
     windowDays: r.window_days, status: r.status, baseline: r.baseline ?? null, observed: r.observed ?? null, control: r.control ?? null, estimate: r.estimate ?? null,
     detail: r.detail ?? {}, measuredAt: iso(r.measured_at),
   };
@@ -179,6 +187,17 @@ const NOT_APPLIED_REASON = {
 const KIND_LABEL: Record<string, string> = { bid: '입찰가', budget: '일 예산' };
 const fmtVal = (v: unknown) => (typeof v === 'number' ? v.toLocaleString('ko-KR') : String(v ?? '—'));
 
+/**
+ * 장부 라벨: '<대상> [(<매체>)] <종류> <전> → <후>'. 화면이 만드는 대상 이름은 이미 종류어로 끝나는 경우가 많다
+ * (AD Pilot '<키워드> 입찰가' · Flow · GFA '<캠페인> 일 예산') — 그 종류어는 한 번만 쓴다.
+ */
+export function changeLabel(target: string, kind: string, before: unknown, after: unknown, media?: string): string {
+  const word = KIND_LABEL[kind] ?? kind;
+  const t = String(target ?? '').trim();
+  const base = t.endsWith(` ${word}`) ? t.slice(0, -word.length - 1).trimEnd() : t === word ? '' : t;
+  return [base, media ? `(${media})` : '', word, `${fmtVal(before)} → ${fmtVal(after)}`].filter(Boolean).join(' ');
+}
+
 /** 예산 변경 targetId → 캠페인 id (server/src/changes/targets.ts 규칙: budget:<받는>:<주는> · gfa:budget:<id> · flow:budget:<id>) */
 export function budgetCampaignOf(targetId: string | null): string | null {
   const t = (targetId ?? '').trim();
@@ -231,7 +250,7 @@ async function measureChange(ctx: Ctx, c: ChangeRowLite): Promise<EntryInput> {
   const beforeDates = datesBetween(addDaysUtc(D, -IMPACT_WINDOW_DAYS), addDaysUtc(D, -1));
   const afterDates = datesBetween(addDaysUtc(D, 1), addDaysUtc(D, IMPACT_WINDOW_DAYS));
   const base: EntryInput = {
-    sourceType: 'change', sourceId: c.id, label: `${c.target} ${KIND_LABEL[c.kind] ?? c.kind} ${fmtVal(c.before)} → ${fmtVal(c.after)}`,
+    sourceType: 'change', sourceId: c.id, label: changeLabel(c.target, c.kind, c.before, c.after),
     occurredAt: new Date(appliedMs).toISOString(), month: kstMonthOf(appliedMs), windowDays: IMPACT_WINDOW_DAYS, status: 'pending',
     baseline: null, observed: null, control: null, estimate: null,
     detail: {
@@ -322,7 +341,7 @@ async function measureChange(ctx: Ctx, c: ChangeRowLite): Promise<EntryInput> {
   const reasons = [...(est.sufficiency.ok ? [] : est.sufficiency.reasons), ...(donorMedia && donorMedia !== camp.media ? [`재배분으로 예산이 준 매체(${donorMedia})는 대조군에서 뺌`] : [])];
   return {
     ...base, status: fromTest ? 'excluded' : est.sufficiency.ok ? 'measured' : 'insufficient',
-    label: `${c.target} (${camp.media}) ${KIND_LABEL.budget} ${fmtVal(c.before)} → ${fmtVal(c.after)}`,
+    label: changeLabel(c.target, 'budget', c.before, c.after, camp.media),
     baseline: sumWindow(treated, beforeDates), observed: sumWindow(treated, afterDates),
     control: { basis: controlMedia.size ? 'media' : 'none', label: controlMedia.size ? '같은 기간 예산 변경이 없는 다른 매체 합계' : '대조군 없음', units: controlMedia.size, ids: [...controlMedia], before: controlMedia.size ? sumWindow(control, beforeDates) : null, after: controlMedia.size ? sumWindow(control, afterDates) : null },
     estimate: est,

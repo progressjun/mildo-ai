@@ -81,8 +81,24 @@ export const EVENT_OPTIONS: { id: ChannelEvent; label: string; hint: string }[] 
   { id: 'sla', label: 'SLA 기한 초과', hint: '인지 · 1차 조치 · 결과 보고 기한이 지나면 백업 · PM 에스컬레이션' },
   { id: 'resolved', label: '해결 공유', hint: '조치 내용 · 재발 방지 기록 포함' },
   { id: 'report', label: '리포트', hint: '일간 · 주간 · 월간 리포트 발송' },
-  { id: 'test', label: '테스트 데이터 이슈', hint: '데모 데이터 · 테스트 주입으로 만든 이슈 (TEST DATA 표기 · 시연 채널용)' },
+  { id: 'test', label: '테스트 데이터 이슈', hint: '켜면 위에서 고른 이슈 이벤트(새 이슈 · SLA · 해결 공유)를 데모 데이터 · 테스트 주입 이슈(TEST DATA 표기)에도 보냅니다. 이것만 켜면 TEST DATA 이슈 알림만 받는 시연 채널' },
 ];
+
+/** 이슈 이벤트 — 'test'(테스트 데이터 이슈)는 이 이벤트들을 TEST DATA 이슈에도 보낼지 정하는 추가 조건 (서버 server/src/alerts/deliver.ts channelWantsIncident와 같은 규칙) */
+export const INCIDENT_EVENTS: readonly ChannelEvent[] = ['incident', 'sla', 'resolved'];
+export function channelWantsIncident(events: readonly string[], event: string, isTest: boolean): boolean {
+  if (!isTest) return events.includes(event);
+  if (!events.includes('test')) return false;
+  return !INCIDENT_EVENTS.some((e) => events.includes(e)) || events.includes(event);
+}
+
+/** 발송 이력 필터 — 이벤트 '테스트 데이터 이슈'(test)는 이벤트 이름이 아니라 TEST DATA 이슈 알림 전체(detail.isTest) — 서버 GET /notify/log?event=test와 같은 규칙 */
+export function logMatches(l: LogEntry, f: { status?: string; event?: string; channelId?: string }): boolean {
+  if (f.status && l.status !== f.status) return false;
+  if (f.channelId && l.channelId !== f.channelId) return false;
+  if (f.event) return f.event === 'test' ? !!l.detail?.isTest : l.event === f.event;
+  return true;
+}
 export const EVENT_LABEL: Record<string, string> = {
   ...Object.fromEntries(EVENT_OPTIONS.map((e) => [e.id, e.label])),
   channel_test: '연결 테스트',

@@ -194,6 +194,40 @@ describe('생성 · 목록 · 입력 검증', () => {
     const audit = await auditActions(lied.id);
     expect(audit[0]).toMatchObject({ action: 'change.create', detail: { approver: 'CLIENT', clientApprover: 'AE' } });
   });
+
+  it('입찰 · ON/OFF도 서버가 승인 주체를 다시 정한다 — AE가 승인 주체 AE로 보낸 +19% · +15% 입찰 · ON→OFF를 스스로 승인 · 반영하지 못한다', async () => {
+    await saWithKeyword('dry_run');
+    // QA 재현: 퀸 매트리스 입찰가 1420 → 1690 (+19%) · 승인 주체 'AE'
+    const b19 = await create(u.ae, bid({ module: 'flow', target: '퀸 매트리스 입찰가', targetId: 'kw_6', before: 1420, after: 1690, changePct: 19, reason: 'x', approver: 'AE' }));
+    expect(b19.approver).toBe('PM');
+    expect(b19.history.map((h) => h.note).join(' ')).toMatch(/입찰가 변경 폭 19%.*승인 주체 담당 AE → PM/);
+    const ap = await to(u.ae, b19.id, 'approved', { action: '승인' });
+    expect(ap.status).toBe(403);
+    expect(ap.json.error.message).toMatch(/PM 승인 건/);
+    const b15 = await create(u.ae, bid({ target: '키워드 입찰가', targetId: 'kw_15', before: 870, after: 1000, changePct: 15, approver: 'AE' }));
+    expect(b15.approver).toBe('PM');
+    expect((await to(u.ae, b15.id, 'approved')).status).toBe(403);
+    // PM은 승인 · 반영할 수 있다
+    expect((await to(u.pm, b15.id, 'approved')).status).toBe(200);
+    // ±10% 이내 입찰은 AE 위임 범위 그대로
+    const small = await create(u.ae, bid());
+    expect(small.approver).toBe('AE');
+    expect((await to(u.ae, small.id, 'approved')).status).toBe(200);
+    // GFA 광고그룹 ON → OFF (승인 주체 'AE'로 보내도 PM)
+    const st = await create(u.ae, bid({ module: 'gfa', kind: 'status', target: 'GFA_Prospecting · 리타겟팅', targetId: 'gfa:adgroup:cmp_6:ag_2', before: 'on', after: 'off', changePct: undefined, approver: 'AE' }));
+    expect(st.approver).toBe('PM');
+    expect((await to(u.ae, st.id, 'approved')).status).toBe(403);
+    expect((await auditActions(st.id))[0]).toMatchObject({ action: 'change.create', detail: { approver: 'PM', clientApprover: 'AE' } });
+  });
+
+  it('브랜드 키워드(웨어하우스 isBrand) 입찰은 ±10% 이내여도 PM 이상', async () => {
+    const conn = await addConnection('naver_sa', 'naver_sa', 'dry_run', '네이버 SA');
+    await addEntity('keyword', 'kw_brand', conn, { id: 'kw_brand', text: '수면밀도', bid: 900, maxBid: 2000, isBrand: true });
+    const c = await create(u.ae, bid({ targetId: 'kw_brand', before: 900, after: 950, changePct: 5.6, approver: 'AE' }));
+    expect(c.approver).toBe('PM');
+    expect(c.history.map((h) => h.note).join(' ')).toMatch(/브랜드 키워드/);
+    expect((await to(u.ae, c.id, 'approved')).status).toBe(403);
+  });
 });
 
 /* ---------- 전이 · 권한 ---------- */
@@ -373,8 +407,9 @@ describe('대량 변경 실수 감지 (detectBulkChange)', () => {
 describe('반영 전 점검 → 보류', () => {
   it('일 조정 폭 상한 초과 입찰은 보류 · 매체 호출 없음', async () => {
     await saWithKeyword('live');
-    const c = await approved({ before: 270, after: 340, changePct: 25.9 });
-    const r = await to(u.ae, c.id, 'applied');
+    // +25.9% 입찰 = 위임 범위 PM 건 (서버 재판정) — PM이 승인 · 반영
+    const c = await approved({ before: 270, after: 340, changePct: 25.9 }, u.pm);
+    const r = await to(u.pm, c.id, 'applied');
     expect(r.json.change.status).toBe('held');
     expect(r.json.change.execution).toMatchObject({ mode: 'none', ok: false, phase: 'apply' });
     expect(r.json.change.execution.error).toMatch(/일 조정 폭 상한 20%/);
@@ -394,10 +429,11 @@ describe('반영 전 점검 → 보류', () => {
 
   it('키워드 일 누적 조정 폭 상한', async () => {
     await saWithKeyword('dry_run');
-    const a = await approved({ before: 270, after: 310, changePct: 14.8 });
-    expect((await to(u.ae, a.id, 'applied')).json.change.status).toBe('applied');
-    const b = await approved({ before: 310, after: 350, changePct: 12.9 });
-    const r = await to(u.ae, b.id, 'applied');
+    // 10% 초과 입찰은 PM 건 (서버 재판정)
+    const a = await approved({ before: 270, after: 310, changePct: 14.8 }, u.pm);
+    expect((await to(u.pm, a.id, 'applied')).json.change.status).toBe('applied');
+    const b = await approved({ before: 310, after: 350, changePct: 12.9 }, u.pm);
+    const r = await to(u.pm, b.id, 'applied');
     expect(r.json.change.status).toBe('held');
     expect(r.json.change.execution.error).toMatch(/오늘 누적 조정 폭 29.6%/);
   });
@@ -405,8 +441,8 @@ describe('반영 전 점검 → 보류', () => {
   it('엔티티 최대 입찰가 초과는 보류 (Dataset에 없는 실계정 키워드 id)', async () => {
     const conn = await addConnection('naver_sa', 'naver_sa', 'live');
     await addEntity('keyword', 'nkw-777', conn, { id: 'nkw-777', text: '허리 매트리스', bid: 520, maxBid: 560 });
-    const c = await approved({ module: 'flow', target: '허리 매트리스 입찰가', targetId: 'nkw-777', before: 520, after: 600, changePct: 15.4 });
-    const r = await to(u.ae, c.id, 'applied');
+    const c = await approved({ module: 'flow', target: '허리 매트리스 입찰가', targetId: 'nkw-777', before: 520, after: 600, changePct: 15.4 }, u.pm);
+    const r = await to(u.pm, c.id, 'applied');
     expect(r.json.change.status).toBe('held');
     expect(r.json.change.execution.error).toMatch(/최대 입찰가 560원/);
     expect(calls).toHaveLength(0);

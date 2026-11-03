@@ -15,7 +15,7 @@ import { generateReport as engineReport, isClientAuthor, reportToMarkdown, scope
 import type { Queryable } from '../db/pool';
 import { one } from '../db/pool';
 import { addDaysStr, kstHour, kstToday, nowMs } from '../lib/time';
-import { notFound } from '../lib/errors';
+import { HttpError, notFound } from '../lib/errors';
 import { loadWorkspaceConfig } from '../settings/service';
 import { engineChanges } from '../changes/model';
 import { listIncidents, getIncident } from '../alerts/incidents';
@@ -223,6 +223,26 @@ export interface Built {
   dataAsOf: string | null;
 }
 
+/** 대상 기간에 수집된 데이터가 있는 날짜 수 (매체 일별 · 판매 채널 일별 행 기준) */
+export function periodCoverage(ds: Pick<Dataset, 'mediaDaily' | 'salesDaily'>, from: string, to: string): number {
+  const days = new Set<string>();
+  for (const r of ds.mediaDaily ?? []) if (r.date >= from && r.date <= to) days.add(r.date);
+  for (const r of ds.salesDaily ?? []) if (r.date >= from && r.date <= to) days.add(r.date);
+  return days.size;
+}
+
+/** 웨어하우스에 보관 중인 일별 데이터 범위 (안내 문구용) */
+async function storedRange(q: Queryable, wsId: string): Promise<{ from: string; to: string } | null> {
+  const r = await one<{ from: string | null; to: string | null }>(
+    q,
+    `SELECT to_char(min(d), 'YYYY-MM-DD') AS "from", to_char(max(d), 'YYYY-MM-DD') AS "to" FROM (
+       SELECT min(date) AS d FROM wh_media_daily WHERE workspace_id = $1 UNION ALL SELECT max(date) FROM wh_media_daily WHERE workspace_id = $1
+       UNION ALL SELECT min(date) FROM wh_sales_daily WHERE workspace_id = $1 UNION ALL SELECT max(date) FROM wh_sales_daily WHERE workspace_id = $1) x`,
+    [wsId],
+  ).catch(() => null);
+  return r?.from && r.to ? { from: r.from, to: r.to } : null;
+}
+
 /** 리포트 본문 만들기 (저장하지 않음) */
 export async function buildReport(q: Queryable, wsId: string, input: GenerateInput, appUrl: string, now = { today: kstToday(), hour: kstHour() }): Promise<{ plan: Plan; built: Built }> {
   const plan = planFor(input, now);
@@ -238,6 +258,13 @@ export async function buildReport(q: Queryable, wsId: string, input: GenerateInp
     };
   }
   const ds: Dataset = await deps.buildDataset(q, wsId, { today: plan.today, hour: plan.hour, days: plan.days });
+  // 대상 기간에 수집된 데이터가 하나도 없으면 만들지 않는다 — 0원을 '확정 팩트'로 적은 리포트가 보관 · 발송되지 않게.
+  // 화면 요청은 400(no_data), 예약 생성은 오류로 끝내 잡이 재시도한다(전일 수집이 늦게 끝나는 경우)
+  if (input.type !== 'issue' && plan.periodStart && plan.periodEnd && periodCoverage(ds, plan.periodStart, plan.periodEnd) === 0) {
+    const range = await storedRange(q, wsId);
+    const msg = `대상 기간 ${plan.periodStart} ~ ${plan.periodEnd}에 수집된 데이터가 없어 리포트를 만들지 않았습니다${range ? ` (보관 중인 데이터 ${range.from} ~ ${range.to})` : ' (보관 중인 데이터 없음 — 데이터 연결에서 수집 상태를 확인하세요)'}`;
+    throw new HttpError(400, 'no_data', msg, { periodStart: plan.periodStart, periodEnd: plan.periodEnd, stored: range });
+  }
   const mode: DataMode = ds.meta?.mode ?? 'demo';
   const [cfg, changes, incidentsAll, crit] = await Promise.all([loadWorkspaceConfig(q, wsId), engineChanges(q, wsId), listIncidents(q, wsId), labCriteria(q, wsId)]);
   let incidents = incidentsAll as unknown as IssueLike[];

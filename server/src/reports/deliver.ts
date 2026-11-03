@@ -19,6 +19,8 @@ import { deps } from './deps';
 import { REPORT_COLS, type DeliveryRecord, type ReportRow } from './generate';
 
 const MAX_RECORDS = 60;
+/** notify.send(sendToChannel)가 남기는 사유와 같은 문구 */
+export const SMTP_MISSING = '서버 SMTP가 설정되지 않아 메일을 보내지 않았습니다 (SMTP_HOST)';
 /** notify.send가 본문을 2,900자로 자르므로, 안내 문구가 잘리지 않게 요약은 그보다 짧게 */
 const SUMMARY_MAX = 2600;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -75,16 +77,26 @@ export async function deliverReport(q: Queryable, config: AppConfig, wsId: strin
   const targetOf = (ch: ChannelRow) => { const c = decrypted.get(ch.id); return c ? maskConfig(ch.type, c).target : undefined; };
 
   if (chans.length && deps.queueAvailable()) {
-    const keys = chans.map((ch) => dedupeKeyOf(ch.id, r.id));
+    // 서버 SMTP가 없으면 메일은 잡을 만들어도 워커가 '보내지 않음'으로 끝낸다 — 서버가 아는 사실이므로 대기열에 넣지 않고 바로 사유를 남긴다
+    // (화면이 '발송 대기'를 보여 주다 나중에 바뀌지 않게). 테스트 환경은 메일 대신 테스트 보관함으로 보낸다(lib/mailer)
+    const noSmtp = !config.smtp && config.env !== 'test';
+    const mailSkipped = noSmtp ? chans.filter((ch) => ch.type === 'email') : [];
+    const queuedChans = chans.filter((ch) => !mailSkipped.includes(ch));
+    for (const ch of mailSkipped) {
+      const target = targetOf(ch);
+      records.push({ channelId: ch.id, channelType: ch.type, channelName: ch.name, at, by, via: 'notify.send', target, status: 'skipped', reason: SMTP_MISSING });
+      await recordNotification(q, { workspaceId: wsId, channelId: ch.id, channelType: ch.type, event: 'report', refId: r.id, status: 'skipped', detail: { subject: `[MILDO OS] ${title}`, target, reason: SMTP_MISSING } });
+    }
+    const keys = queuedChans.map((ch) => dedupeKeyOf(ch.id, r.id));
     const before = await activeJobs(q, keys);
     const mark = Number((await one<{ id: string | number }>(q, `SELECT COALESCE(max(id), 0) AS id FROM jobs`))?.id ?? 0);
     // 메일 채널은 마크다운 전문(body), Slack · 웹훅은 요약(text)
-    await deps.fanOut(q, wsId, { event: 'report', refId: r.id, title, text, body: r.markdown || undefined, link });
+    if (queuedChans.length) await deps.fanOut(q, wsId, { event: 'report', refId: r.id, title, text, body: r.markdown || undefined, link, excludeChannelIds: mailSkipped.map((ch) => ch.id) });
     // 이번 호출이 만든 잡 = 호출 전 최대 id보다 큰 같은 키 잡 (워커가 바로 끝냈어도 잡힌다)
-    const created = new Map((await q.query<{ id: string | number; dedupe_key: string }>(
+    const created = new Map(keys.length ? (await q.query<{ id: string | number; dedupe_key: string }>(
       `SELECT id, dedupe_key FROM jobs WHERE type = 'notify.send' AND dedupe_key = ANY($1::text[]) AND id > $2 ORDER BY id`, [keys, mark],
-    )).rows.map((x) => [x.dedupe_key, Number(x.id)]));
-    for (const ch of chans) {
+    )).rows.map((x) => [x.dedupe_key, Number(x.id)] as const) : []);
+    for (const ch of queuedChans) {
       const base = { channelId: ch.id, channelType: ch.type, channelName: ch.name, at, by, via: 'notify.send' as const, target: targetOf(ch) };
       const key = dedupeKeyOf(ch.id, r.id);
       const mine = created.get(key), prev = before.get(key);
@@ -121,13 +133,14 @@ export async function deliverReport(q: Queryable, config: AppConfig, wsId: strin
     }
   }
 
-  const ok = records.some((x) => x.status === 'sent' || x.status === 'queued');
+  // 발송 시각(delivered_at)은 실제로 보낸 기록이 있을 때만 — 대기열에 넣기만 한 발송(queued)은 워커 결과가 'sent'일 때 syncDelivered가 채운다
+  const sentNow = records.some((x) => x.status === 'sent');
   const all = [...(Array.isArray(r.delivered) ? r.delivered : []), ...records].slice(-MAX_RECORDS);
   const status = statusOf(all);
   const row = await one<ReportRow>(
     q,
     `UPDATE reports SET delivered = $3, status = $4, delivered_at = CASE WHEN $5 THEN $6::timestamptz ELSE delivered_at END WHERE workspace_id = $1 AND id = $2 RETURNING ${REPORT_COLS}`,
-    [wsId, r.id, JSON.stringify(all), status, ok, at],
+    [wsId, r.id, JSON.stringify(all), status, sentNow, at],
   );
   return { row: row!, records };
 }
@@ -141,24 +154,38 @@ export async function syncDelivered(q: Queryable, row: ReportRow): Promise<Repor
   const pending = list.filter((d) => d.status === 'queued' && d.jobId);
   if (!pending.length) return row;
   const ids = pending.map((d) => d.jobId!);
-  const notes = new Map((await q.query<{ job_id: number; status: 'sent' | 'failed' | 'skipped'; detail: { reason?: string | null; retrying?: boolean } }>(
-    `SELECT job_id, status, detail FROM notifications WHERE workspace_id = $1 AND job_id = ANY($2::bigint[])`, [row.workspace_id, ids],
+  const notes = new Map((await q.query<{ job_id: number; status: 'sent' | 'failed' | 'skipped'; detail: { reason?: string | null; retrying?: boolean }; at: Date }>(
+    `SELECT job_id, status, detail, at FROM notifications WHERE workspace_id = $1 AND job_id = ANY($2::bigint[])`, [row.workspace_id, ids],
   )).rows.map((n) => [Number(n.job_id), n]));
   const jobs = new Map((await q.query<{ id: number; status: string; last_error: string | null }>(
     `SELECT id, status, last_error FROM jobs WHERE id = ANY($1::bigint[]) AND workspace_id = $2 AND type = 'notify.send'`, [ids, row.workspace_id],
   )).rows.map((j) => [Number(j.id), j]));
   let changed = false;
+  /** 이번 반영에서 'sent'가 된 기록의 실제 발송 시각 중 가장 늦은 것 → delivered_at */
+  const acc: { sentAt: number | null } = { sentAt: null };
   const next = list.map((d) => {
     if (d.status !== 'queued' || !d.jobId) return d;
     const n = notes.get(Number(d.jobId));
     const j = jobs.get(Number(d.jobId));
-    if (n && !(n.status === 'failed' && n.detail?.retrying)) { changed = true; return { ...d, status: n.status, reason: n.detail?.reason ?? null }; }
+    if (n && !(n.status === 'failed' && n.detail?.retrying)) {
+      changed = true;
+      if (n.status === 'sent') {
+        const ms = n.at ? new Date(n.at).getTime() : nowMs();
+        acc.sentAt = Math.max(acc.sentAt ?? 0, Number.isFinite(ms) ? ms : nowMs());
+      }
+      return { ...d, status: n.status, reason: n.detail?.reason ?? null };
+    }
     if (j?.status === 'failed') { changed = true; return { ...d, status: 'failed' as const, reason: j.last_error ?? '발송 잡 실패' }; }
     if (!j) { changed = true; return { ...d, status: 'failed' as const, reason: '발송 잡을 찾을 수 없습니다' }; }
     return d;
   });
   if (!changed) return row;
   const status = statusOf(next);
-  const upd = await one<ReportRow>(q, `UPDATE reports SET delivered = $3, status = $4 WHERE workspace_id = $1 AND id = $2 RETURNING ${REPORT_COLS}`, [row.workspace_id, row.id, JSON.stringify(next), status]);
+  const upd = await one<ReportRow>(
+    q,
+    `UPDATE reports SET delivered = $3, status = $4, delivered_at = CASE WHEN $5::timestamptz IS NOT NULL THEN GREATEST(COALESCE(delivered_at, $5::timestamptz), $5::timestamptz) ELSE delivered_at END
+      WHERE workspace_id = $1 AND id = $2 RETURNING ${REPORT_COLS}`,
+    [row.workspace_id, row.id, JSON.stringify(next), status, acc.sentAt === null ? null : new Date(acc.sentAt).toISOString()],
+  );
   return upd ?? row;
 }
