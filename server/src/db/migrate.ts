@@ -22,6 +22,18 @@ export function migrationsDir(): string {
 }
 
 export async function migrate(db: Db, dir = migrationsDir()): Promise<string[]> {
+  // 앱 · 워커 · migrate 명령이 동시에 시작해도 같은 파일을 두 번 적용하지 않도록 스키마 단위 advisory lock
+  const lock = await db.connect();
+  try {
+    await lock.query("SELECT pg_advisory_lock(hashtext('mildo_migrate:' || current_schema()))");
+    return await migrateLocked(db, dir);
+  } finally {
+    await lock.query("SELECT pg_advisory_unlock(hashtext('mildo_migrate:' || current_schema()))").catch(() => undefined);
+    lock.release();
+  }
+}
+
+async function migrateLocked(db: Db, dir: string): Promise<string[]> {
   await db.query('CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
   const done = new Set((await db.query<{ name: string }>('SELECT name FROM schema_migrations')).rows.map((r) => r.name));
   const files = readdirSync(dir).filter((f) => /^\d{3}_.+\.sql$/.test(f)).sort();

@@ -91,6 +91,11 @@ export interface Keyword {
   prev14: KeywordStats;
   /** 최근 14일 일자별 (스파크라인/급변 탐지용) */
   daily: KeywordStats[];
+  /** 서버 모드: 키워드가 속한 매체 (없으면 네이버 SA) — Google Ads 키워드도 같은 목록에 들어온다 */
+  media?: MediaId;
+  /** 서버 모드: 매체 캠페인 · 광고그룹 원본 id */
+  campaignId?: string;
+  adgroupId?: string;
 }
 
 export interface Campaign {
@@ -102,6 +107,8 @@ export interface Campaign {
   spentToday: number; // 오늘 현재까지 소진액
   status: 'on' | 'off' | 'limited';
   hourOfData: number; // spentToday 기준 시각
+  /** 서버 모드: 매체에서 읽어 온 실제 광고그룹(GFA 광고 세트 등) — 있으면 데모 광고그룹 표 대신 쓴다 */
+  adGroups?: { id: string; name: string; status: 'on' | 'off'; dailyBudget: number }[];
 }
 
 export interface AdAccount {

@@ -16,9 +16,22 @@ async function main() {
   const ac = new AbortController();
   const stopScheduler = process.env.SCHEDULER === 'off' ? () => undefined : startScheduler(scheduleContext(db, config));
   const loop = workLoop(db, config, ac.signal, { concurrency: Number(process.env.WORKER_CONCURRENCY ?? 2) });
+  // 하트비트: 잡이 없는 한가한 시간에도 /api/ready가 워커 생존을 확인할 수 있게 60초마다 기록
+  const beat = () =>
+    db
+      .query(
+        `INSERT INTO worker_heartbeats (worker_id, last_seen_at, last_status) VALUES ($1, now(), 'idle')
+         ON CONFLICT (worker_id) DO UPDATE SET last_seen_at = now()`,
+        [config.workerId.slice(0, 200)],
+      )
+      .catch(() => undefined);
+  void beat();
+  const beatTimer = setInterval(beat, 60_000);
+  beatTimer.unref();
   const shutdown = async (sig: string) => {
     console.log(`[worker] ${sig} 수신 — 진행 중 잡을 마치고 종료`);
     stopScheduler();
+    clearInterval(beatTimer);
     ac.abort();
     await loop.catch(() => undefined);
     await db.end();

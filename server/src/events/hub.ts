@@ -4,7 +4,7 @@
  */
 import type { Db, Queryable } from '../db/pool';
 
-export type EventType = 'change' | 'incident' | 'comment' | 'dataset' | 'connection' | 'report' | 'config' | 'state' | 'member';
+export type EventType = 'change' | 'incident' | 'comment' | 'dataset' | 'connection' | 'report' | 'config' | 'state' | 'member' | 'notify';
 export interface WsEvent { type: EventType; id?: string; at?: string }
 
 export const CHANNEL = 'mildo_events';

@@ -7,6 +7,7 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { ServerContext } from './context';
 import { authPlugin } from '../auth/plugin';
 import { authRoutes } from '../auth/routes';
@@ -14,16 +15,33 @@ import { tenancyRoutes } from '../tenancy/routes';
 import { eventRoutes } from '../events/routes';
 import { registerAllRoutes } from '../domains';
 import { HttpError } from '../lib/errors';
-import { securityPlugin } from './security';
+import { securityPlugin, securityOptionsFromEnv } from './security';
 import './context';
 
 export const VERSION = process.env.APP_VERSION ?? '1.0.0';
 
 export async function buildApp(ctx: ServerContext, opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
+  // trustProxy: 앞단 프록시 홉 수만 신뢰 (true면 클라이언트가 X-Forwarded-For로 IP를 위조할 수 있다 — 감사 로그 · 로그인 제한 키)
+  const proxyHops = securityOptionsFromEnv(process.env, ctx.config.env).proxyHops;
   const app = Fastify({
-    logger: opts.logger ? { level: ctx.config.logLevel, redact: ['req.headers.cookie', 'req.headers.authorization', 'req.headers["x-csrf-token"]'] } : false,
-    trustProxy: true,
+    logger: opts.logger
+      ? {
+          level: ctx.config.logLevel,
+          redact: ['req.headers.cookie', 'req.headers.authorization', 'req.headers["x-csrf-token"]'],
+          serializers: {
+            // 초대 · 비밀번호 재설정 토큰이 URL에 실려 로그 저장소로 새지 않도록 가린다
+            req: (req: { method?: string; url?: string; ip?: string; id?: string }) => ({ method: req.method, url: maskTokenUrl(String(req.url ?? '')), ip: req.ip, reqId: req.id }),
+          },
+        }
+      : false,
+    // 함수형: 소켓부터 오른쪽으로 proxyHops개만 신뢰 (security.ts clientIp와 같은 규칙 · 숫자형은 inject에서 XFF를 읽지 않는다)
+    trustProxy: (_addr: string, i: number) => i < proxyHops,
     bodyLimit: 25 * 1024 * 1024, // CSV 업로드
+    genReqId: (req: { headers: Record<string, string | string[] | undefined> }) => {
+      const h = req.headers['x-request-id'];
+      const v = Array.isArray(h) ? h[0] : h;
+      return typeof v === 'string' && /^[A-Za-z0-9._:-]{8,64}$/.test(v) ? v : randomUUID();
+    },
   });
   app.decorate('ctx', ctx);
 
@@ -69,4 +87,11 @@ export async function buildApp(ctx: ServerContext, opts: { logger?: boolean } = 
     app.setNotFoundHandler((_req, reply) => reply.status(404).send({ error: { code: 'not_found', message: '경로를 찾을 수 없습니다' } }));
   }
   return app;
+}
+
+/** 로그용 URL 마스킹: /api/invites/<token>… 경로와 ?invite= · ?reset= · ?token= 쿼리 값 */
+export function maskTokenUrl(url: string): string {
+  return url
+    .replace(/(\/api\/invites\/)[^/?#]+/, '$1•••')
+    .replace(/([?&](?:invite|reset|token)=)[^&#]*/gi, '$1•••');
 }

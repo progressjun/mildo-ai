@@ -924,7 +924,7 @@ function keywordProposals(data: Dataset, cfg: AdPilotConfig, diag: KeywordDiagno
   const saPace = (i: IntentId) => paces.find((c) => c.media === 'naver_sa' && c.intent === i && c.status !== 'off');
   for (const d of diag) {
     const k = kwById.get(d.id)!;
-    const common = { keywordId: d.id, keyword: d.text, targetType: 'keyword' as const, changeTargetId: d.id, media: 'naver_sa' as MediaId, intent: d.intent, isBrand: d.isBrand };
+    const common = { keywordId: d.id, keyword: d.text, targetType: 'keyword' as const, changeTargetId: d.id, media: (k.media ?? 'naver_sa') as MediaId, intent: d.intent, isBrand: d.isBrand };
     if (d.verdict === 'hold') {
       const sold = d.ruleId === 'soldout';
       out.push({
@@ -1316,7 +1316,7 @@ export function applyIncidentHolds(proposals: readonly AdPilotProposal[], incide
       reason: `MILDO Alert에 '${k.text}' 키워드 성과 급변 이슈가 열려 있어 원인 확인 전까지 이 키워드의 입찰 자동 조정을 보류합니다.`,
       expected: '1시간 내 원인 보고 (P2) · 원인 확인 후 재판정',
       guard: ['MILDO Alert 이슈 연계 자동 조정 보류'], kind: 'bid', basis: incRef(ls),
-      targetType: 'keyword', changeTargetId: k.id, media: 'naver_sa', intent: k.intent, isBrand: k.isBrand,
+      targetType: 'keyword', changeTargetId: k.id, media: k.media ?? 'naver_sa', intent: k.intent, isBrand: k.isBrand,
       approver: 'PM', approverReason: '보류 해제 판단은 PM', unit: 'won', priority: 1,
       holdKind: 'incident', holdSource: 'alert', linkedIncidents: ls, costDelta: 0,
     });
@@ -1623,7 +1623,11 @@ export function gfaAccountsBase(data: Dataset): { account: AdAccount; demo: bool
 
 /** 광고그룹 상태: 기본(DEMO) + 반영된 ON/OFF 변경 */
 export function gfaAdGroups(campaign: Campaign, changes: readonly ChangeRequest[]): GfaAdGroupView[] {
-  const base = GFA_AD_GROUPS[campaign.name] ?? [];
+  // 서버 모드: 매체에서 읽어 온 실제 광고그룹이 있으면 그것을 쓴다 (share = 캠페인 예산 대비 비중)
+  const real = campaign.adGroups?.length
+    ? campaign.adGroups.map((g) => ({ id: g.id, name: g.name, status: g.status, share: campaign.dailyBudget > 0 ? g.dailyBudget / campaign.dailyBudget : 0 }))
+    : null;
+  const base = (real ?? GFA_AD_GROUPS[campaign.name] ?? []) as typeof GFA_AD_GROUPS[string];
   const applied = (changes ?? []).filter((c) => c.module === 'gfa' && c.kind === 'status' && c.status === 'applied' && c.targetId?.startsWith(`gfa:adgroup:${campaign.id}:`)).sort(byAppliedOrder);
   return base.map((g) => {
     let status = g.status;
@@ -1916,7 +1920,8 @@ export function holdIncident(data: Dataset, p: AdPilotProposal, at: string): Inc
     impact: { spendAtRisk: p.sim ? Math.round(p.sim.base.cost) : undefined },
     status: 'open',
     timeline: [{ at, by: 'AD Pilot', action: `감지 · 자동 조정 보류 (${p.basis})` }],
-    isTest: true,
+    // 실연동 데이터로 만든 보류는 실제 이슈 (데모 · 혼합 데이터는 테스트로 표시)
+    isTest: !data.meta || data.meta.mode !== 'live',
     autoActions: ['AD Pilot 자동 조정 보류'],
   };
 }
