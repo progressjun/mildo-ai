@@ -73,3 +73,18 @@ describe('데이터 연결 모델', () => {
     expect(ex.catalog.every((c) => c.verifiedLive === false)).toBe(true);
   });
 });
+
+describe('재수집 기간 · CSV 전용 안내', () => {
+  it('daily 재수집: 판매 채널 14일 · 매체 · 기타 3일 (서버 DAILY_RECOLLECT_DAYS와 같다)', async () => {
+    const { dailyRecollectDays, DAILY_RECOLLECT_DAYS } = await import('./model');
+    const { DAILY_RECOLLECT_DAYS: SERVER } = await import('../../../server/src/ingest/pipeline');
+    expect(DAILY_RECOLLECT_DAYS).toEqual(SERVER);
+    expect([dailyRecollectDays('sales'), dailyRecollectDays('media'), dailyRecollectDays('other'), dailyRecollectDays(null)]).toEqual([14, 3, 3, 3]);
+  });
+
+  it('csvOnlyLabel: 템플릿 이름 · id · 채널', async () => {
+    const { csvOnlyLabel } = await import('./model');
+    expect(csvOnlyLabel({ template: 'sales_daily', channel: 'ohouse', message: 'x' }, '판매 채널 일별')).toBe('CSV 업로드 전용 — 판매 채널 일별 템플릿(sales_daily, 채널 ohouse)');
+    expect(csvOnlyLabel({ template: 'media_daily', channel: null, message: 'x' }, '매체 일별')).toBe('CSV 업로드 전용 — 매체 일별 템플릿(media_daily)');
+  });
+});

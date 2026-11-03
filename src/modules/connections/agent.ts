@@ -13,7 +13,7 @@ import { detectMode } from '@/saas/mode';
 import { exampleState } from './demoState';
 import { connectionsApi, getSnapshot, type Snapshot } from './client';
 import { TEMPLATE_HELP, TEMPLATES, UPLOAD_TEMPLATES } from './csv';
-import { ago, channelLabel, connectionVerdict, JOB_LABEL, qualityCounts, RUN_STATUS_META, sourceModeOf, staleSources, STATUS_META, WRITE_MODE_META, type ConnectionView, type QualityItem, type RunView } from './model';
+import { ago, channelLabel, connectionVerdict, DAILY_RECOLLECT_DAYS, JOB_LABEL, qualityCounts, RUN_STATUS_META, sourceModeOf, staleSources, STATUS_META, WRITE_MODE_META, type ConnectionView, type QualityItem, type RunView } from './model';
 
 const WS_KEY = 'mildo-os/cloud/workspace';
 
@@ -140,7 +140,7 @@ function sourcesBrief(ctx: ToolContext): Brief {
     patterns,
     interpretation,
     conditions: [
-      '예약 수집: 매일 07:00 어제 포함 3일 재수집(늦게 잡히는 전환 반영) · 매시 10분 당일 시간대',
+      `예약 수집: 매일 07:00 어제 포함 매체 ${DAILY_RECOLLECT_DAYS.media}일(늦게 잡히는 전환) · 판매 채널 ${DAILY_RECOLLECT_DAYS.sales}일(늦게 들어오는 취소 · 반품) 재수집 · 매시 10분 당일 시간대`,
       '품질 기준: 같은 요일 직전 4주 평균 대비 ±80% 급변, 네이버 SA 키워드 합계 vs 매체 합계 10% 초과 차이, 26시간 수집 지연',
       `마지막 확인 ${ago(new Date(at).toISOString(), at)} · 출처 우선순위 API 100 > CSV 50 > 데모 10`,
     ],

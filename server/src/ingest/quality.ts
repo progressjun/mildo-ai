@@ -139,6 +139,8 @@ export function checkBatch(input: NormalizedBatch, c: CheckContext): CheckResult
     rowsIn += list.length;
     const ok = list.filter((x) => x && typeof x === 'object' && (typeof (x as { id?: unknown }).id === 'string' || typeof (x as { id?: unknown }).id === 'number'));
     if (ok.length !== list.length) push({ code: 'invalid_entities', severity: 'error', message: `${e}: id가 없는 항목 ${list.length - ok.length}개를 제외했습니다` });
+    // 전부 형식 오류면 '받지 못함'(undefined)으로 둔다 — 빈 배열은 웨어하우스가 '전부 사라짐'(상품 · 프로모션 삭제)으로 읽는다(warehouse/write.ts)
+    if (list.length && !ok.length) { delete (out as Record<string, unknown>)[e]; continue; }
     const seen = new Map<string, unknown>();
     for (const x of ok) seen.set(String((x as { id: string }).id), x);
     (out as Record<string, unknown>)[e] = [...seen.values()];

@@ -17,6 +17,13 @@ import { Dl, LandingPill, ScoreBar, TierPill, useClickGuard, type LabModel } fro
 
 /** 연관 검색어 · AI 검색 질의 후보는 데모 스냅샷(RELATED_SEEDS · AI_QUERY_SEEDS)에서 나온다 — 실연동 데이터여도 TEST DATA */
 const SNAPSHOT_SOURCES: readonly CandidateSource[] = ['related', 'ai_query'];
+
+/** 후보 상세 출처 태그 — AI 확장은 AI 해석, 스냅샷 후보는 시연용 예시(fixture), 그 외(검색어 보고서 · 48 진입점)는 데이터 출처를 따른다 */
+export function CandidateSrc({ source }: { source: CandidateSource | null | undefined }) {
+  if (source === 'ai_expand') return <Src kind="AI" />;
+  if (source && SNAPSHOT_SOURCES.includes(source)) return <Src kind="DEMO" fixture title="데모 스냅샷 · 실제 검색량 아님" />;
+  return <Src kind="DEMO" />;
+}
 const SOURCE_BASIS: Record<CandidateSource, string> = {
   search_term: '미등록 · 전환 발생 (실측)',
   related: '연관 검색어 · 데모 스냅샷',
@@ -159,7 +166,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
 
       <div className="grid g-3">
         <Card className="span-2" title="SKU 확장 생성기 · 검색 진입점 48개" sub="행 = 고객의 문제 · 열 = 구매 상황 · 칸 안 3개 = 비교 기준. 숫자는 우선순위 점수, 색이 진할수록 높음."
-          actions={<><Src kind="PROPOSAL" page="p.36" /><Src kind="DEMO" title="검색량은 데모 추정" /></>}>
+          actions={<><Src kind="PROPOSAL" page="p.36" /><Src kind="DEMO" fixture title="검색량은 데모 추정" /></>}>
           <div className="lab-formula">
             <span className="lab-formula-num">제품 {f.product} × 문제 {f.problems} × 상황 {f.situations} × 비교 {f.criteria} = <em>{f.total}</em></span>
             <span className="lab-sub">조합 → 구문형 키워드 (예: '{sku[0]?.phrase}' · 상위 구문 '{sku[1]?.sku?.head}')</span>
@@ -193,7 +200,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
           </div>
         </Card>
 
-        <Card title="후보 상세" sub={picked ? `${SOURCE_LABEL[picked.source]} · ${picked.origin}` : '그리드나 표에서 후보를 선택하세요'} actions={picked?.source === 'ai_expand' ? <Src kind="AI" /> : picked && SNAPSHOT_SOURCES.includes(picked.source) ? <Src kind="DEMO" fixture title="데모 스냅샷 · 실제 검색량 아님" /> : <Src kind="DEMO" />}>
+        <Card title="후보 상세" sub={picked ? `${SOURCE_LABEL[picked.source]} · ${picked.origin}` : '그리드나 표에서 후보를 선택하세요'} actions={<CandidateSrc source={picked?.source} />}>
           {picked ? (
             <div className="stack">
               <div className="row-between" style={{ alignItems: 'flex-start' }}>

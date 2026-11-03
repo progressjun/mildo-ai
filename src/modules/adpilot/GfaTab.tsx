@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { mediaRows, previousRange, rangeOf, totalsOf } from '@/core/selectors';
 import type { ChangeRequest } from '@/core/types';
 import { GFA_DELEGATION, MEDIA } from '@/data/constants';
+import { useSaas } from '@/saas/context';
 import { fmt, fmtDate, hhmm } from '@/core/util';
 import { Button, Callout, Card, type Column, DataTable, Field, NumberInput, Pill, ProgressBar, Segmented, Src, Stat } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
@@ -14,6 +15,8 @@ import { ChangeButtons } from './ProposalsTab';
 const showVal = (v: string | number) => (typeof v === 'number' ? fmt.krw(v) : v === 'on' || v === 'off' ? v.toUpperCase() : v);
 
 export function GfaTab({ ap }: { ap: AdPilotCtx }) {
+  /** 서버 모드: 역할 선택이 없다 — 승인 권한은 멤버십 역할로 정해지고 서버가 최종 판정한다 */
+  const server = useSaas().mode === 'server';
   const views = ap.gfa;
   const firstCampaign = views[0]?.campaigns[0];
   const [draft, setDraft] = useState<GfaRequestDraft>({ type: 'budget', accountId: views[0]?.account.id ?? '', campaignId: firstCampaign?.campaign.id, pct: 10, objective: GFA_OBJECTIVES[0], reason: '' });
@@ -228,7 +231,9 @@ export function GfaTab({ ap }: { ap: AdPilotCtx }) {
             </table>
           </div>
           <div className="xs muted">강조된 행이 지금 작성 중인 요청의 라우팅입니다. 담당 AE → PM → 광고주 순서로 범위가 넓어지며, 승인 후 실행 단계에서 잔액 · 계정 상태를 다시 검증하고 오류 시 보류 · 보고합니다.</div>
-          <div className="xs muted">역할 전환은 상단 바의 역할 선택에서 합니다 (승인 권한 시연).</div>
+          <div className="xs muted">{server
+            ? '승인 권한은 로그인 계정의 멤버십 역할로 정해지고 서버가 최종 판정합니다 — 역할은 팀 · 권한에서 관리자가 바꿉니다.'
+            : '역할 전환은 상단 바의 역할 선택에서 합니다 (승인 권한 시연).'}</div>
         </Card>
       </div>
 

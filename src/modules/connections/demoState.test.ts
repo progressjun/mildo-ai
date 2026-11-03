@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEMO_CATALOG } from './demoState';
 import { CONNECTORS } from '../../../server/src/connectors/registry';
+import { csvGuide } from '../../../server/src/connectors/ohouse';
 
 describe('예시 카탈로그 ↔ 서버 커넥터 정의', () => {
   it('공급자 목록 · 종류 · 채널 · 이름 · 공식 문서 · 실계정 검증 여부가 같다', () => {
@@ -35,5 +36,27 @@ describe('예시 카탈로그 ↔ 서버 커넥터 정의', () => {
       expect(p.capabilities.maxBackfillDays, `${p.provider} backfill`).toBeLessThanOrEqual(Math.min(400, d.capabilities.maxBackfillDays));
       if (p.available) expect(d.capabilities.reads.length, `${p.provider} available`).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('예시 카탈로그 판매 채널 4종 ↔ 서버 커넥터 정의 (같아야 한다)', () => {
+  it('네이버 커머스 · 쿠팡 · 카페24: available · 공식 문서 · 입력 항목(도움말 포함) · 기능이 서버 정의 그대로', () => {
+    for (const provider of ['naver_commerce', 'coupang', 'cafe24'] as const) {
+      const p = DEMO_CATALOG.find((x) => x.provider === provider)!;
+      const d = CONNECTORS[provider];
+      expect(p.available, provider).toBe(true);
+      expect(p.docsUrl, provider).toBe(d.docsUrl);
+      expect(p.credentialFields, provider).toEqual(d.credentialFields);
+      expect(p.capabilities, provider).toEqual(d.capabilities);
+      expect(p.csvOnly, provider).toBeUndefined();
+    }
+  });
+
+  it('오늘의집: 수집 없음(available false) · 파트너센터 문서 · CSV 전용 경로(서버 csvGuide와 같은 템플릿 · 채널 · 문구)', () => {
+    const p = DEMO_CATALOG.find((x) => x.provider === 'ohouse')!;
+    expect(p).toMatchObject({ available: false, docsUrl: 'https://partner.ohou.se', credentialFields: [], capabilities: CONNECTORS.ohouse.capabilities });
+    expect(p.csvOnly).toEqual({ template: csvGuide.template, channel: csvGuide.channel, message: csvGuide.message });
+    // CSV 전용은 오늘의집 하나 (csv · demo 출처는 해당 없음)
+    expect(DEMO_CATALOG.filter((x) => x.csvOnly).map((x) => x.provider)).toEqual(['ohouse']);
   });
 });

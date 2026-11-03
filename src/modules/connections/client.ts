@@ -27,6 +27,9 @@ export const connectionsApi = {
     api<{ connection: ConnectionView; connections: ConnectionView[] }>(wsPath(ws, `/connections/${id}`), { method: 'PATCH', body }),
   remove: (ws: string, id: string) => api<{ ok: boolean; purgedRows: number; connections: ConnectionView[] }>(wsPath(ws, `/connections/${id}`), { method: 'DELETE' }),
   test: (ws: string, id: string) => api<{ result: { ok: boolean; message: string; account?: string }; backfillQueued: boolean; connection: ConnectionView; connections: ConnectionView[] }>(wsPath(ws, `/connections/${id}/test`), { method: 'POST', body: {} }),
+  /** 카페24 인증 시작 — 응답 url로 같은 탭에서 이동한다(window.location.assign, 팝업 아님). 승인 뒤 서버 콜백이 #connections로 되돌린다 */
+  oauthStart: (ws: string, id: string) =>
+    api<{ url: string; redirectUri?: string; expiresAt?: string }>(wsPath(ws, `/connections/${id}/oauth/cafe24/start`), { method: 'POST', body: {} }),
   sync: (ws: string, id: string, range?: { from: string; to: string }) =>
     api<{ queued: boolean; alreadyQueued: boolean; connection: ConnectionView; connections: ConnectionView[] }>(wsPath(ws, `/connections/${id}/sync`), { method: 'POST', body: range ?? {} }),
   runs: (ws: string, q: { limit?: number; before?: string | null; status?: string } = {}) => {

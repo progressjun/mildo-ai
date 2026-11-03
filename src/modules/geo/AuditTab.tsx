@@ -43,7 +43,7 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
         </Card>
 
         <div className="stack-lg">
-          <Card title="진단 점수" sub="항목별 가중치 × (통과 1 · 개선 0.5 · 실패 0) · 해당 없음 제외 · 진단 항목은 p.29 SEO · 구조화 데이터 범위" actions={<><Src kind="PROPOSAL" page="p.29" />{sampleKind === 'defect' || sampleKind === 'fixed' ? <Src kind="DEMO" title="샘플은 시연용 테스트 데이터의 상품 · 옵션 · 프로모션으로 생성" /> : null}</>}>
+          <Card title="진단 점수" sub="항목별 가중치 × (통과 1 · 개선 0.5 · 실패 0) · 해당 없음 제외 · 진단 항목은 p.29 SEO · 구조화 데이터 범위" actions={<><Src kind="PROPOSAL" page="p.29" />{sampleKind === 'defect' || sampleKind === 'fixed' ? <Src kind="DEMO" fixture title="샘플 HTML은 시연용 예시 페이지 · 실제 제품페이지 아님 (데이터의 상품 · 옵션 · 프로모션으로 생성)" /> : null}</>}>
             <div className="row-between">
               <div className="geo-score"><span className="geo-score-num">{audit.empty ? '—' : audit.score}</span><span className="muted">/ 100</span></div>
               <VerdictBadge v={audit.grade} />
@@ -97,7 +97,7 @@ export function AuditTab({ d, html, onHtml, audit, sampleKind, onSample }: {
         actions={
           audit.empty ? null : (
             <>
-              {sampleKind === 'defect' || sampleKind === 'fixed' ? <Src kind="DEMO" title="샘플은 시연용 테스트 데이터의 상품 · 옵션 · 프로모션으로 생성" /> : null}
+              {sampleKind === 'defect' || sampleKind === 'fixed' ? <Src kind="DEMO" fixture title="샘플 HTML은 시연용 예시 페이지 · 실제 제품페이지 아님 (데이터의 상품 · 옵션 · 프로모션으로 생성)" /> : null}
               <CopyButton text={() => auditMarkdown(audit, label)} label="진단 결과 복사" />
               <DownloadButton filename={`searchtune-audit-${d.today}.md`} data={() => auditMarkdown(audit, label)} label=".md 다운로드" />
             </>

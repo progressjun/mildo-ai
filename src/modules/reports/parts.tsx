@@ -1,6 +1,7 @@
 /* Reports 하위 컴포넌트 — 리포트 문서 렌더러 · 섹션 코멘트 · 메신저/메일 미리보기 */
 import { Fragment, useState, type ReactNode } from 'react';
-import { useStore, type Comment } from '@/core/store';
+import { useStore, useStoreOptional, type Comment } from '@/core/store';
+import { dataSourceLabel, type DataSourceLabel } from '@/saas/sync';
 import { fmt, nowIso, uid } from '@/core/util';
 import { Button, Pill, Src, Stat, type Tone as UiTone } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
@@ -178,6 +179,13 @@ function CommentRow({ c, canResolve }: { c: Comment; canResolve: boolean }) {
 /* ---------- 문서형 ---------- */
 
 const ZONES: Zone[] = ['fact', 'pattern', 'ai', 'action'];
+/** 인쇄본 머리말의 데이터 출처 — 화면의 출처 태그(Src kind='DEMO')와 같은 기준 (데모 모드 · 테스트 데이터는 기존 문구 그대로) */
+const PRINT_SOURCE: Record<DataSourceLabel['tone'], string> = {
+  demo: 'TEST DATA (시연용 테스트 데이터)',
+  live: 'LIVE DATA (매체 · 판매 채널 실연동 데이터)',
+  mixed: 'LIVE + TEST (일부 매체 · 채널만 실연동 — 나머지는 테스트 데이터)',
+  empty: '데이터 없음 (연결된 데이터 출처 없음)',
+};
 
 export function ReportDocument({ report, interp, aeNotes, aiSlot }: {
   report: Report;
@@ -185,9 +193,10 @@ export function ReportDocument({ report, interp, aeNotes, aiSlot }: {
   aeNotes: Comment[];
   aiSlot: ReactNode;
 }) {
+  const source = dataSourceLabel(useStoreOptional()?.state.data.meta).tone;
   return (
     <section className="card reports-doc" aria-label="문서형 리포트">
-      <div className="reports-print-only">수면밀도 × 프로그레스미디어 · MILDO OS 자동 리포트 · TEST DATA (시연용 테스트 데이터)</div>
+      <div className="reports-print-only">수면밀도 × 프로그레스미디어 · MILDO OS 자동 리포트 · {PRINT_SOURCE[source]}</div>
       <header className="reports-doc-head">
         <div className="reports-doc-eyebrow">PRO-BOARD REPORT · {report.channel}</div>
         <h2 className="reports-doc-title">{report.title}</h2>

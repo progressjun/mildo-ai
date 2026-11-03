@@ -230,3 +230,94 @@ describe('GET /api/w/:ws/dataset', () => {
     expect((await t.anon().get(`/api/w/${t.ws}/dataset`)).status).toBe(401);
   });
 });
+
+describe('엔티티 스냅샷 교체 (writeBatch replaceEntities)', () => {
+  it('상품 · 프로모션: 빈 배열 = 전부 사라짐(그 출처 · 종류만 삭제), undefined = 받지 않음(유지). 키워드 · 캠페인 빈 배열과 replaceEntities 없는 쓰기는 지우지 않는다', async () => {
+    const ws = (await t.db.query<{ id: string }>(`INSERT INTO workspaces (org_id, slug, name, brand_name) VALUES ($1, 'snap-ws', '스냅샷', '스냅샷') RETURNING id`, [t.orgId])).rows[0].id;
+    const prod = (id: string) => ({ id, name: `상품 ${id}`, price: 100_000, options: [] }) as never;
+    const promo = (id: string) => ({ id, channel: 'own_mall', name: `프로모션 ${id}`, discountPct: 10, start: '2026-10-01', end: '2026-11-30', status: 'live' }) as never;
+    const kw = (id: string) => ({ id, text: `키워드 ${id}`, intent: 'generic', bid: 500 }) as never;
+    const camp = (id: string) => ({ id, media: 'naver_sa', name: `캠페인 ${id}`, dailyBudget: 100_000, spentToday: 0, status: 'on', hourOfData: 0 }) as never;
+    const count = async (source: string, type: string) => Number((await t.db.query<{ n: string }>(
+      `SELECT count(*) AS n FROM wh_entities WHERE workspace_id = $1 AND source = $2 AND entity_type = $3`, [ws, source, type],
+    )).rows[0].n);
+    await writeBatch(t.db, ws, 'conn-a', { products: [prod('a1'), prod('a2')], promotions: [promo('x1')], keywords: [kw('k1')], campaigns: [camp('c1')] }, { replaceEntities: true });
+    await writeBatch(t.db, ws, 'conn-b', { products: [prod('b1')], promotions: [promo('y1')] }, { replaceEntities: true });
+    // 목록 없음(이번에 받지 않음) → 그대로
+    await writeBatch(t.db, ws, 'conn-a', { salesDaily: [] }, { replaceEntities: true });
+    expect([await count('conn-a', 'product'), await count('conn-a', 'promotion')]).toEqual([2, 1]);
+    // replaceEntities 없는 쓰기(당일 수집)의 빈 배열 → 그대로
+    await writeBatch(t.db, ws, 'conn-a', { products: [], promotions: [] });
+    expect([await count('conn-a', 'product'), await count('conn-a', 'promotion')]).toEqual([2, 1]);
+    // 명시적인 빈 배열(진행 중 프로모션이 끝남 · 판매 상품 0개) → 그 출처의 그 종류만 지운다
+    await writeBatch(t.db, ws, 'conn-a', { products: [], promotions: [], keywords: [], campaigns: [] }, { replaceEntities: true });
+    expect([await count('conn-a', 'product'), await count('conn-a', 'promotion')]).toEqual([0, 0]);
+    expect([await count('conn-a', 'keyword'), await count('conn-a', 'campaign')]).toEqual([1, 1]);
+    expect([await count('conn-b', 'product'), await count('conn-b', 'promotion')]).toEqual([1, 1]);
+    // 일부만 남은 목록은 빠진 것만 지운다 (기존 규칙)
+    await writeBatch(t.db, ws, 'conn-b', { products: [prod('b2')] }, { replaceEntities: true });
+    expect((await t.db.query<{ external_id: string }>(`SELECT external_id FROM wh_entities WHERE workspace_id = $1 AND source = 'conn-b' AND entity_type = 'product'`, [ws])).rows.map((r) => r.external_id)).toEqual(['b2']);
+  });
+});
+
+describe('판매 채널 방문 지표 보충 (API 매출 + CSV 방문 · 상세 조회 · 장바구니)', () => {
+  it('방문 지표를 줄 수 없는 API 행(세 지표 0 + 네이버 커머스 · 쿠팡 또는 funnel_unavailable 경고)만 같은 날짜 · 채널의 최선 CSV 행에서 세 값만 채우고 meta.sources에 api+csv로 적는다', async () => {
+    const ws = (await t.db.query<{ id: string }>(`INSERT INTO workspaces (org_id, slug, name, brand_name) VALUES ($1, 'funnel-ws', '방문', '방문') RETURNING id`, [t.orgId])).rows[0].id;
+    const conn = async (provider: string, channel: string) => (await t.db.query<{ id: string }>(
+      `INSERT INTO connections (workspace_id, provider, kind, channel, label, status) VALUES ($1, $2, 'sales', $3, $2, 'active') RETURNING id`, [ws, provider, channel],
+    )).rows[0].id;
+    const upload = async (createdAt: string) => (await t.db.query<{ id: string }>(
+      `INSERT INTO uploads (workspace_id, template, filename, bytes, status, created_at) VALUES ($1, 'sales_daily', 'funnel.csv', 10, 'imported', $2) RETURNING id`, [ws, createdAt],
+    )).rows[0].id;
+    type Ch = 'coupang' | 'own_mall' | 'brandstore';
+    const sale = (date: string, channel: Ch, o: Partial<{ visitors: number; detailViews: number; carts: number; orders: number; revenue: number; adAttributedRevenue: number }> = {}) =>
+      ({ date, channel, visitors: 0, detailViews: 0, carts: 0, orders: 5, revenue: 500_000, adAttributedRevenue: 20_000, ...o });
+    const cp = await conn('coupang', 'coupang');
+    const c24 = await conn('cafe24', 'own_mall');
+    const older = await upload('2026-10-01T00:00:00Z');
+    const newer = await upload('2026-10-02T00:00:00Z');
+    await writeBatch(t.db, ws, cp, { salesDaily: [sale('2026-10-28', 'coupang'), sale('2026-10-29', 'coupang'), sale('2026-10-30', 'coupang', { visitors: 70 })] });
+    await writeBatch(t.db, ws, c24, { salesDaily: [sale('2026-10-28', 'own_mall'), sale('2026-10-29', 'own_mall')] });
+    // CSV: 방문 · 조회 · 장바구니 + (다른) 주문 · 매출 — 주문 · 매출은 API 값을 쓴다
+    const csvRow = (date: string, channel: Ch, v: number) => ({ date, channel, visitors: v, detailViews: v / 2, carts: v / 10, orders: 1, revenue: 1, adAttributedRevenue: 1 });
+    await writeBatch(t.db, ws, `csv:${older}`, { salesDaily: [csvRow('2026-10-28', 'coupang', 1000), csvRow('2026-10-29', 'coupang', 3000), csvRow('2026-10-30', 'coupang', 9000), csvRow('2026-10-28', 'own_mall', 500), csvRow('2026-10-29', 'own_mall', 600)] });
+    await writeBatch(t.db, ws, `csv:${newer}`, { salesDaily: [csvRow('2026-10-29', 'coupang', 2000), { ...csvRow('2026-10-28', 'coupang', 0) }] });
+    const opts = { today: '2026-10-31', hour: 15 };
+
+    let d = await buildDataset(t.db, ws, opts);
+    const row = (date: string, ch: Ch) => d.salesDaily.find((r) => r.date === date && r.channel === ch)!;
+    // 쿠팡(API에 방문 지표 없음): 세 지표만 CSV에서 — 같은 날짜에 CSV가 둘이면 우선순위 → 최근 업로드, 방문 지표가 0인 CSV 행은 쓰지 않는다
+    expect(row('2026-10-28', 'coupang')).toEqual({ date: '2026-10-28', channel: 'coupang', visitors: 1000, detailViews: 500, carts: 100, orders: 5, revenue: 500_000, adAttributedRevenue: 20_000 });
+    expect(row('2026-10-29', 'coupang')).toMatchObject({ visitors: 2000, detailViews: 1000, carts: 200, orders: 5, revenue: 500_000 });
+    // API가 방문 지표를 준 날은 덮어쓰지 않는다
+    expect(row('2026-10-30', 'coupang')).toMatchObject({ visitors: 70, detailViews: 0, carts: 0 });
+    // 카페24(방문 지표를 줄 수 있는 커넥터): 경고가 없으면 0을 실제 값으로 본다
+    expect(row('2026-10-28', 'own_mall')).toMatchObject({ visitors: 0, detailViews: 0, carts: 0, orders: 5 });
+    const metaOf = (ch: string) => d.meta!.sources.filter((s) => s.channel === ch).map((s) => ({ source: s.source, kind: s.kind, latestDate: s.latestDate }));
+    expect(metaOf('coupang')).toEqual([{ source: `${cp}+csv`, kind: 'api', latestDate: '2026-10-30' }]);
+    expect(metaOf('own_mall')).toEqual([{ source: c24, kind: 'api', latestDate: '2026-10-29' }]);
+    expect(d.meta!.mode).toBe('live');
+
+    // 그 날짜를 담은 수집 실행이 방문 지표 경고(funnel_unavailable · Cafe24 Analytics 실패)를 남겼으면 보충한다 — 경고 기간 밖 날짜는 그대로
+    await t.db.query(
+      `INSERT INTO ingest_runs (workspace_id, connection_id, job, range_from, range_to, status, source, issues) VALUES ($1, $2, 'daily', '2026-10-29', '2026-10-29', 'succeeded', $3, $4)`,
+      [ws, c24, c24, JSON.stringify([{ code: 'analytics_unavailable', severity: 'warning', message: 'Cafe24 Analytics 조회 실패' }])],
+    );
+    d = await buildDataset(t.db, ws, opts);
+    expect(row('2026-10-29', 'own_mall')).toMatchObject({ visitors: 600, detailViews: 300, carts: 60, orders: 5, revenue: 500_000 });
+    expect(row('2026-10-28', 'own_mall')).toMatchObject({ visitors: 0 });
+    expect(metaOf('own_mall')).toEqual([{ source: `${c24}+csv`, kind: 'api', latestDate: '2026-10-29' }]);
+    // 실패한 실행의 경고는 근거로 쓰지 않는다
+    await t.db.query(`UPDATE ingest_runs SET status = 'failed' WHERE workspace_id = $1`, [ws]);
+    d = await buildDataset(t.db, ws, opts);
+    expect(row('2026-10-29', 'own_mall')).toMatchObject({ visitors: 0 });
+    await t.db.query(`UPDATE ingest_runs SET status = 'succeeded', issues = $2 WHERE workspace_id = $1`, [ws, JSON.stringify([{ code: 'funnel_unavailable', severity: 'warning', message: 'x' }])]);
+    d = await buildDataset(t.db, ws, opts);
+    expect(row('2026-10-29', 'own_mall')).toMatchObject({ visitors: 600 });
+
+    // CSV가 그 채널 · 날짜의 우선 출처면(우선순위가 더 높으면) 보충이 아니라 CSV 행 전체를 쓴다 (기존 출처 선택 규칙)
+    await t.db.query(`UPDATE connections SET priority = 10 WHERE id = $1`, [cp]);
+    d = await buildDataset(t.db, ws, opts);
+    expect(row('2026-10-29', 'coupang')).toMatchObject({ visitors: 2000, orders: 1, revenue: 1 });
+  });
+});

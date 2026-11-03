@@ -21,6 +21,7 @@ import type { ConnectorDef, ConnectorHttp, DateRange, NormalizedBatch } from '..
 import { getConnector } from '../connectors/registry';
 import { buildConnectorContext, loadConnection, MAX_BACKFILL_DAYS, sourceKeyOf, type ConnectionRow } from '../connectors/service';
 import { scrubSecrets, type FetchLike } from '../connectors/http';
+import { needsOAuthApproval, oauthApprovalMessage } from '../connectors/credentials';
 import { blockingIssues, csvToBatch, normalizeCsv, type UploadTemplate } from '../connectors/csv';
 import { writeBatch } from '../warehouse/write';
 import { checkBatch, hasErrors, historyRange, type HistoryRow, type QualityIssue } from './quality';
@@ -120,7 +121,11 @@ export async function ingestConnection(db: Db, config: AppConfig, conn: Connecti
     if (!def) throw new Error(`알 수 없는 공급자: ${conn.provider}`);
     const ctx = buildConnectorContext(db, config, conn, { dryRun: true, http: o.http, fetchImpl: o.fetchImpl, log: o.log });
     const parsedCreds = def.credentialsSchema.safeParse(ctx.credentials);
-    if (!parsedCreds.success) throw new Error(`자격증명 항목을 확인해 주세요: ${parsedCreds.error.issues.map((i) => i.path.join('.') || '(전체)').join(', ')}`);
+    if (!parsedCreds.success) {
+      // OAuth 승인 대기(앱 정보만 저장 — 카페24): 토큰 필드 오류 대신 인증 시작 버튼을 안내한다
+      if (needsOAuthApproval(def.provider, ctx.credentials)) throw new Error(oauthApprovalMessage(def));
+      throw new Error(`자격증명 항목을 확인해 주세요: ${parsedCreds.error.issues.map((i) => i.path.join('.') || '(전체)').join(', ')}`);
+    }
     const raw: NormalizedBatch = await def.fetch({ ...ctx, credentials: parsedCreds.data }, o.range, o.intradayDate ? { intradayDate: o.intradayDate } : undefined);
     const history = o.job === 'intraday' ? [] : await loadHistory(db, wsId, source, o.range);
     const { batch, issues, rowsIn } = checkBatch(raw ?? {}, {

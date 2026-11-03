@@ -59,6 +59,8 @@ describe('데이터 연결 에이전트 키트', () => {
     const all = [...brief.facts, ...brief.patterns, ...brief.interpretation, ...brief.conditions, ...brief.counter, ...brief.actions].join('\n');
     expect(all).not.toMatch(/^\s*\d+[.)]\s/m);
     expect(all).not.toMatch(/NaN|undefined|Infinity/);
+    // 예약 수집 기간: 매체 3일 · 판매 채널 14일 (서버 daily 재수집과 같은 근거)
+    expect(brief.conditions.join(' ')).toMatch(/매체 3일.*판매 채널 14일.*취소 · 반품/);
     const live = b.build(ctx({ ...DEMO, meta: { mode: 'live', builtAt: '', sources: [{ channel: 'naver_sa', source: 'x', kind: 'api', latestDate: '2026-10-28' }] } }));
     expect(live.facts[0]).toMatch(/LIVE DATA/);
     expect(live.patterns.join(' ')).toMatch(/어제.*네이버 SA/);

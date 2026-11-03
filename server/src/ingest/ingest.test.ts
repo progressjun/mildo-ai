@@ -9,7 +9,7 @@ import { setNowForTest, addDaysStr, dateRange } from '../lib/time';
 import { runScheduleNow, scheduleContext, registeredSchedules } from '../jobs/scheduler';
 import { registeredJobTypes } from '../jobs/queue';
 import { drainIngest, installConnector, kst, registerDataJobsForTest } from './testkit';
-import { chunkRange, backfillRange, dailyRange } from './pipeline';
+import { chunkRange, backfillRange, brandTerms, dailyRange, dailyRangeFor, DAILY_RECOLLECT_DAYS } from './pipeline';
 import { checkBatch } from './quality';
 import type { DateRange, NormalizedBatch } from '../connectors/types';
 import type { MediaId } from '@/core/types';
@@ -330,5 +330,102 @@ describe('GET /ingest/runs · /ingest/quality', () => {
     expect((await viewer.get(`/api/w/${other}/ingest/runs`)).status).toBe(404);
     expect((await viewer.get(`/api/w/${other}/ingest/quality`)).status).toBe(404);
     expect((await t.anon().get(`/api/w/${t.ws}/ingest/runs`)).status).toBe(401);
+  });
+});
+
+describe('판매 채널 재수집 기간 · 백필 자격증명 회전 · 브랜드 판정어', () => {
+  const sales: { provider: string; range: DateRange; intraday?: string; token?: string }[] = [];
+  const salesRow = (date: string, channel: 'coupang' | 'own_mall') => ({ date, channel, visitors: 0, detailViews: 0, carts: 0, orders: 3, revenue: 300_000, adAttributedRevenue: 0 });
+  beforeAll(() => {
+    restores.push(installConnector('coupang', {
+      credentialsSchema: z.object({}).passthrough(), settingsSchema: z.object({}).passthrough(), credentialFields: [],
+      capabilities: { reads: ['salesDaily'], writes: [], intraday: false, maxBackfillDays: 400 },
+      async test() { return { ok: true, message: 'ok' }; },
+      async fetch(_ctx, range) {
+        sales.push({ provider: 'coupang', range });
+        return { salesDaily: dateRange(range.from, range.to).map((d) => salesRow(d, 'coupang')) };
+      },
+    }));
+    // OAuth 갱신 토큰 회전: 호출마다 받은 토큰의 다음 번호를 저장한다(카페24 · 네이버처럼 이전 토큰은 폐기)
+    restores.push(installConnector('cafe24', {
+      credentialsSchema: z.object({ refreshToken: z.string() }).passthrough(), settingsSchema: z.object({}).passthrough(), credentialFields: [],
+      capabilities: { reads: ['salesDaily'], writes: [], intraday: true, maxBackfillDays: 400 },
+      async test() { return { ok: true, message: 'ok' }; },
+      async fetch(ctx, range, opts) {
+        const token = String(ctx.credentials.refreshToken);
+        sales.push({ provider: 'cafe24', range, intraday: opts?.intradayDate, token });
+        await ctx.saveCredentials!({ ...ctx.credentials, refreshToken: `rt-${Number(token.split('-').pop()) + 1}` });
+        return opts?.intradayDate ? {} : { salesDaily: dateRange(range.from, range.to).map((d) => salesRow(d, 'own_mall')) };
+      },
+    }));
+  });
+  beforeEach(() => { sales.length = 0; });
+  async function salesConn(provider: 'coupang' | 'cafe24', channel: string, creds?: Record<string, unknown>): Promise<string> {
+    const { encryptCredentials } = await import('../connectors/credentials');
+    return (await t.db.query<{ id: string }>(
+      `INSERT INTO connections (workspace_id, provider, kind, channel, label, status, credentials_enc) VALUES ($1, $2, 'sales', $3, $4, 'active', $5) RETURNING id`,
+      [t.ws, provider, channel, `${provider} 판매`, creds ? encryptCredentials(creds, t.config.encryptionKey) : null],
+    )).rows[0].id;
+  }
+
+  it('daily 재수집: 판매 채널(def.kind sales)은 어제 포함 14일(늦은 취소 · 반품), 매체는 3일 그대로', async () => {
+    expect(dailyRangeFor({ kind: 'sales' }, TODAY)).toEqual({ from: '2026-10-19', to: '2026-11-01' });
+    expect(dailyRangeFor({ kind: 'media' }, TODAY)).toEqual({ from: '2026-10-30', to: '2026-11-01' });
+    expect(dailyRangeFor(null, TODAY)).toEqual(dailyRange(TODAY));
+    expect(DAILY_RECOLLECT_DAYS).toEqual({ media: 3, sales: 14 });
+    await t.db.query(`DELETE FROM connections WHERE workspace_id = $1`, [t.ws]);
+    const cp = await salesConn('coupang', 'coupang');
+    const g = await conn('google_ads', 'active', 'google');
+    // 커넥션 하나 (수동 수집 · 연결 직후와 같은 잡)
+    await job('ingest.daily', { connectionId: cp, trigger: 'manual' });
+    await drainIngest(t.db, t.config);
+    expect(sales.map((f) => f.range)).toEqual([{ from: '2026-10-19', to: '2026-11-01' }]);
+    expect((await t.db.query('SELECT 1 FROM wh_sales_daily WHERE source = $1', [cp])).rowCount).toBe(14);
+    // 워크스페이스 전체 예약 daily: 커넥터 종류마다 기간이 다르다
+    sales.length = 0;
+    fetched.length = 0;
+    await job('ingest.daily', {});
+    await drainIngest(t.db, t.config);
+    expect(sales.map((f) => f.range)).toEqual([{ from: '2026-10-19', to: '2026-11-01' }]);
+    expect(fetched.filter((f) => f.provider === 'google_ads').map((f) => f.range)).toEqual([{ from: '2026-10-30', to: '2026-11-01' }]);
+    expect((await runsOf(cp)).map((r) => [r.job, r.range_from, r.range_to])).toEqual([['daily', '2026-10-19', '2026-11-01'], ['daily', '2026-10-19', '2026-11-01']]);
+    expect((await runsOf(g)).map((r) => [r.job, r.range_from])).toEqual([['daily', '2026-10-30']]);
+  });
+
+  it('백필: 묶음마다 · 끝의 intraday 전에 커넥션 행을 다시 읽어 앞 묶음이 회전 저장한 자격증명으로 이어 간다', async () => {
+    const id = await salesConn('cafe24', 'own_mall', { refreshToken: 'rt-0' });
+    await job('ingest.backfill', { connectionId: id, days: 70 });
+    await drainIngest(t.db, t.config);
+    expect(sales.map((f) => [f.intraday ? 'intraday' : 'backfill', f.range.from, f.token])).toEqual([
+      ['backfill', '2026-08-24', 'rt-0'],
+      ['backfill', '2026-09-24', 'rt-1'],
+      ['backfill', '2026-10-25', 'rt-2'],
+      ['intraday', TODAY, 'rt-3'],
+    ]);
+    const { decryptCredentials } = await import('../connectors/credentials');
+    const row = (await t.db.query<{ credentials_enc: string }>('SELECT credentials_enc FROM connections WHERE id = $1', [id])).rows[0];
+    expect(decryptCredentials(row.credentials_enc, t.config.encryptionKey)).toEqual({ refreshToken: 'rt-4' });
+    expect((await runsOf(id)).every((r) => r.status === 'succeeded')).toBe(true);
+  });
+
+  it('브랜드 판정어: 워크스페이스 brand_name + 설정 brand.name(비어 있지 않은 문자열만) + brandKeywords', async () => {
+    const ws = (await t.db.query<{ id: string }>(
+      `INSERT INTO workspaces (org_id, slug, name, brand_name, config) VALUES ($1, 'brand-terms', '브랜드', '수면밀도', $2) RETURNING id`,
+      [t.orgId, JSON.stringify({ brand: { name: ' 슬립밀도 ' }, brandKeywords: ['sumyeon', ' ', 3] })],
+    )).rows[0].id;
+    expect((await brandTerms(t.db, ws)).sort()).toEqual(['sumyeon', '수면밀도', '슬립밀도'].sort());
+    for (const name of ['', '   ', 123, null]) {
+      await t.db.query(`UPDATE workspaces SET config = $2 WHERE id = $1`, [ws, JSON.stringify({ brand: { name } })]);
+      expect(await brandTerms(t.db, ws), String(name)).toEqual(['수면밀도']);
+    }
+  });
+
+  it('엔티티 목록이 전부 형식 오류(id 없음)면 빈 스냅샷으로 넘기지 않는다 (기존 상품 · 프로모션을 지우지 않게)', () => {
+    const base = { range: { from: '2026-11-01', to: '2026-11-01' }, job: 'daily' as const, today: TODAY, hour: 7, provider: 'cafe24', channel: 'own_mall' };
+    const bad = checkBatch({ products: [{ name: 'id 없음' } as never], promotions: [] }, base);
+    expect(bad.batch.products).toBeUndefined();
+    expect(bad.issues.map((i) => i.code)).toContain('invalid_entities');
+    expect(bad.batch.promotions).toEqual([]); // 진짜 빈 목록은 그대로 (= 전부 사라짐)
+    expect(checkBatch({}, base).batch.products).toBeUndefined();
   });
 });

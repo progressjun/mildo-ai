@@ -2,7 +2,7 @@
  * 데이터 연결 (07 관리 · 연동) — 매체 · 판매 채널 API 커넥션, CSV 업로드, 수집 일정 · 현황, 데이터 품질.
  * 서버 모드: 실제 API (권한은 서버가 최종 판정 — 화면은 버튼만 맞춘다). 데모 모드: 예시 상태 읽기 전용 + 브라우저 안 CSV 미리보기.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Callout, Card, DataTable, PageHeader, Pill, Segmented, Src, Stat, Tabs } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
 import { useActions, useStore } from '@/core/store';
@@ -15,6 +15,8 @@ import { connectionsApi } from './client';
 import { errorText, useConnections } from './useConnections';
 import { CatalogCard, ConfirmModal, ConnectionCard, ConnectionFormModal, LiveConfirmModal, QualityItemRow, RunDrawer, SyncModal, type ConnectionFormValue } from './parts';
 import { UploadPanel } from './UploadPanel';
+import { oauthOf, readOAuthError, startOAuth, stripOAuthError } from './oauth';
+import type { UploadTemplate } from './csv';
 import './styles.css';
 
 type Tab = 'connections' | 'catalog' | 'runs' | 'quality' | 'upload';
@@ -47,7 +49,14 @@ export default function View() {
   const [busy, setBusy] = useState<{ id: string; what: string } | null>(null);
   const [run, setRun] = useState<RunView | null>(null);
   const [runFilter, setRunFilter] = useState<'all' | 'failed' | 'partial'>('all');
+  const [uploadPreset, setUploadPreset] = useState<{ template: UploadTemplate; channel: string | null } | null>(null);
+  // 카페24 인증 콜백 실패로 돌아온 경우(?oauth_error=<코드>#connections) — 코드별 한국어 안내 (서버 모드에서만 보인다)
+  const [oauthError, setOauthError] = useState(() => (typeof location !== 'undefined' ? readOAuthError(location.search) : null));
   const server = s.mode === 'server';
+  useEffect(() => {
+    if (!server || !oauthError || typeof history === 'undefined' || typeof location === 'undefined') return;
+    history.replaceState(history.state, '', stripOAuthError(location.href)); // 새로고침 · 공유 시 남지 않게
+  }, [server, oauthError]);
   const perms = { configure: s.can('configure'), operate: s.can('operate'), liveWrite: s.can('live_write') };
   const src = sourceModeOf(data.meta);
   const stale = staleSources(data.meta, data.today);
@@ -100,6 +109,11 @@ export default function View() {
     void s.refresh();
   });
 
+  // 카페24 인증 시작: 서버가 서명한 state를 담은 승인 URL로 같은 탭에서 이동 (팝업 · 새 창 아님)
+  const onOAuth = (c: ConnectionView) => ws && quick(c, 'oauth', async () => {
+    await startOAuth(() => connectionsApi.oauthStart(ws, c.id), (url) => window.location.assign(url));
+  });
+
   const onWriteMode = (c: ConnectionView, m: WriteMode) => {
     if (!ws) return;
     if (m === 'live') {
@@ -136,7 +150,7 @@ export default function View() {
   return (
     <div className="page conn-page">
       <PageHeader eyebrow="07 DATA SOURCES · 데이터 연결" title="데이터 연결"
-        sub="매체 · 판매 채널 API를 연결하거나 CSV를 올리면 매일 07:00 전일 확정(어제 포함 3일 재수집) · 매시 10분 당일 시간대를 자동으로 받습니다. 수집마다 품질 검사를 돌리고, 매체 반영은 커넥션별 쓰기 모드(기본 dry_run)를 따릅니다."
+        sub="매체 · 판매 채널 API를 연결하거나 CSV를 올리면 매일 07:00 전일 확정(어제 포함 매체 3일 · 판매 채널 14일 재수집 — 늦은 전환 · 취소 · 반품 반영) · 매시 10분 당일 시간대를 자동으로 받습니다. 수집마다 품질 검사를 돌리고, 매체 반영은 커넥션별 쓰기 모드(기본 dry_run)를 따릅니다."
         sources={<>{/* 출처 배지: 스토어 Dataset 메타에 따라 TEST DATA · LIVE + TEST · LIVE DATA · 데이터 없음 (플랫폼 공용 규칙) */}<Src kind="DEMO" /><Pill tone="outline" title={src.basis}>Dataset 출처: {src.label}</Pill></>}
         actions={server ? <Button size="sm" icon="refresh" onClick={() => void s.refresh()} disabled={s.loading}>{s.loading ? '불러오는 중…' : '새로 고침'}</Button> : undefined} />
 
@@ -146,6 +160,12 @@ export default function View() {
         </Callout>
       ) : null}
       {s.error ? <Callout tone="critical" title="불러오지 못했습니다">{s.error}</Callout> : null}
+      {server && oauthError ? (
+        <Callout tone="critical" title="카페24 인증을 마치지 못했습니다">
+          <span>{oauthError.message}</span> <span className="xs muted">(코드 {oauthError.code})</span>{' '}
+          <Button size="sm" variant="ghost" onClick={() => setOauthError(null)}>닫기</Button>
+        </Callout>
+      ) : null}
 
       <Card>
         <div className="grid g-4">
@@ -171,7 +191,8 @@ export default function View() {
             <ConnectionCard key={c.id} c={c} nowMs={s.nowMs} perms={perms} readOnly={s.readOnly} busy={busy?.id === c.id ? busy.what : null}
               onTest={() => void onTest(c)} onSync={() => setDialog({ kind: 'sync', c })}
               onEdit={() => { const p = providerOf(c.provider); if (p) setDialog({ kind: 'edit', c, provider: p }); }}
-              onDelete={() => setDialog({ kind: 'delete', c })} onWriteMode={(m) => onWriteMode(c, m)} onToggle={() => void onToggle(c)} />
+              onDelete={() => setDialog({ kind: 'delete', c })} onWriteMode={(m) => onWriteMode(c, m)} onToggle={() => void onToggle(c)}
+              oauth={server ? oauthOf(c, s.catalog) : null} onOAuth={() => void onOAuth(c)} />
           )) : (
             <Card>
               <div className="stack" style={{ alignItems: 'flex-start' }}>
@@ -199,7 +220,8 @@ export default function View() {
               <div className="grid g-auto">
                 {byKind(k).map((p) => (
                   <CatalogCard key={p.provider} p={p} readOnly={s.readOnly} canAdd={perms.configure} exists={p.provider === 'demo' && hasDemo}
-                    onAdd={() => setDialog({ kind: 'add', provider: p })} />
+                    onAdd={() => setDialog({ kind: 'add', provider: p })}
+                    onUpload={p.csvOnly ? () => { setUploadPreset({ template: p.csvOnly!.template as UploadTemplate, channel: p.csvOnly!.channel }); setTab('upload'); } : undefined} />
                 ))}
               </div>
             </div>
@@ -241,7 +263,8 @@ export default function View() {
       ) : null}
 
       {tab === 'upload' ? (
-        <UploadPanel server={server} workspaceId={ws} canOperate={server ? perms.operate : true} canConfigure={perms.configure} csvConnections={csvConnections} uploads={s.uploads} onImported={() => void s.refresh()} />
+        <UploadPanel key={uploadPreset ? `${uploadPreset.template}:${uploadPreset.channel ?? ''}` : 'default'} server={server} workspaceId={ws} canOperate={server ? perms.operate : true} canConfigure={perms.configure} csvConnections={csvConnections} uploads={s.uploads} onImported={() => void s.refresh()}
+          initialTemplate={uploadPreset?.template} initialChannel={uploadPreset?.channel} />
       ) : null}
 
       {dialog?.kind === 'add' || dialog?.kind === 'edit' ? (

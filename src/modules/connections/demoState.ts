@@ -9,11 +9,13 @@ import { addDays } from './model';
 
 const iso = (date: string, hour: number, minute = 0) => `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+09:00`;
 const NONE = { reads: [], writes: [], intraday: false, maxBackfillDays: 0 };
+/** 서버 server/src/connectors/ohouse/index.ts csvGuide.message와 같은 문구 (demoState.test.ts가 확인) */
+const OHOUSE_CSV_MESSAGE = "오늘의집은 판매자용 공개 API 문서가 확인되지 않아 API 연결을 지원하지 않습니다 — 파트너센터에서 내려받은 일별 판매 실적을 판매 채널 일별 CSV 템플릿(sales_daily, 채널 값 ohouse 또는 '오늘의집')에 옮겨 데이터 연결 화면의 업로드로 올려 주세요. 방문자 · 상세 조회 · 장바구니 · 주문 · 매출 열을 모두 담을 수 있습니다";
 
 /**
  * 예시 카탈로그 — 서버 레지스트리(server/src/connectors/<provider>/index.ts)의 공급자 정의를 옮겨 둔 것.
- * 화면이 서버 없이도 입력 항목 · 수집 범위를 보여 주기 위함이다. 구현 중(수집 미지원)인 공급자는 빈 기능으로 두고
- * '서버 카탈로그(공식 문서 기준)에서 표시'로 안내한다. demoState.test.ts가 서버 정의와 어긋나지 않는지(부분 집합인지) 확인한다.
+ * 화면이 서버 없이도 입력 항목 · 수집 범위를 보여 주기 위함이다. API 수집 근거가 없는 공급자(오늘의집)는 빈 기능 + csvOnly(CSV 업로드 경로)로 둔다.
+ * demoState.test.ts가 서버 정의와 어긋나지 않는지(부분 집합인지, 판매 채널은 입력 항목 · 기능이 같은지) 확인한다.
  */
 export const DEMO_CATALOG: CatalogProvider[] = [
   { provider: 'naver_sa', kind: 'media', channel: 'naver_sa', label: '네이버 검색광고', docsUrl: 'https://naver.github.io/searchad-apidoc/', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true,
@@ -54,10 +56,33 @@ export const DEMO_CATALOG: CatalogProvider[] = [
       { key: 'managerAccountNo', label: '관리 계정 번호', secret: false, optional: true },
     ],
     capabilities: { reads: ['mediaDaily', 'mediaHourly', 'campaigns', 'accounts'], writes: ['status'], intraday: true, maxBackfillDays: 400 } },
-  { provider: 'naver_commerce', kind: 'sales', channel: 'brandstore', label: '네이버 브랜드스토어(커머스 API)', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: false, credentialFields: [], capabilities: NONE },
-  { provider: 'coupang', kind: 'sales', channel: 'coupang', label: '쿠팡 Wing', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: false, credentialFields: [], capabilities: NONE },
-  { provider: 'cafe24', kind: 'sales', channel: 'own_mall', label: '카페24 자사몰', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: false, credentialFields: [], capabilities: NONE },
-  { provider: 'ohouse', kind: 'sales', channel: 'ohouse', label: '오늘의집', docsUrl: '', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: false, credentialFields: [], capabilities: NONE },
+  { provider: 'naver_commerce', kind: 'sales', channel: 'brandstore', label: '네이버 브랜드스토어(커머스 API)', docsUrl: 'https://apicenter.commerce.naver.com/docs/commerce-api/current', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true,
+    credentialFields: [
+      { key: 'clientId', label: '애플리케이션 ID', secret: false, help: '커머스API센터 > 애플리케이션 등록 후 받은 애플리케이션 ID. API 그룹에 주문 · 상품 조회 권한을 넣어 주세요' },
+      { key: 'clientSecret', label: '애플리케이션 시크릿', secret: true, help: '같은 화면의 시크릿($2a$로 시작하는 29자). 서버가 bcrypt 전자서명을 만들 때만 쓰고 네이버로 직접 보내지 않습니다' },
+      { key: 'accountId', label: '판매자 ID (솔루션사 전용)', secret: false, optional: true, help: '솔루션사가 다른 판매자 스토어를 연동할 때만 입력합니다(토큰 유형 SELLER). 자기 스토어 애플리케이션이면 비워 두세요' },
+    ],
+    capabilities: { reads: ['salesDaily', 'products', 'promotions'], writes: [], intraday: true, maxBackfillDays: 400 } },
+  { provider: 'coupang', kind: 'sales', channel: 'coupang', label: '쿠팡 Wing', docsUrl: 'https://developers.coupang.com/ko/api', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true,
+    credentialFields: [
+      { key: 'vendorId', label: '판매자 ID (업체 코드)', secret: false, help: '쿠팡 Wing 우측 상단 업체 코드(A00012345 형식)' },
+      { key: 'accessKey', label: '액세스 키 (Access Key)', secret: true, help: 'Wing > 판매자 정보 > 추가판매정보 > OPEN API 키 발급에서 받은 Access Key. 키 발급 화면에 이 서버의 공인 IP를 호출 허용 IP로 등록해야 합니다' },
+      { key: 'secretKey', label: '시크릿 키 (Secret Key)', secret: true, help: '같은 화면의 Secret Key. 요청마다 HMAC-SHA256 서명에만 쓰고 쿠팡으로 직접 보내지 않습니다' },
+    ],
+    capabilities: { reads: ['salesDaily', 'products', 'promotions'], writes: [], intraday: true, maxBackfillDays: 400 } },
+  { provider: 'cafe24', kind: 'sales', channel: 'own_mall', label: '카페24 자사몰', docsUrl: 'https://apidocs.cafe24.com/docs/guide/intro', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: true,
+    credentialFields: [
+      { key: 'mallId', label: '쇼핑몰 ID (mall_id)', secret: false, help: '카페24 관리자 로그인 ID와 같은 쇼핑몰 ID. API 주소 https://{mall_id}.cafe24api.com에 들어갑니다' },
+      { key: 'clientId', label: '클라이언트 ID (Client ID)', secret: false, help: '카페24 개발자센터 > Apps > 개발정보의 Client ID. 앱 권한 범위에 주문 · 상품 · 상점 · 프로모션 읽기(필요하면 접속통계 mall.read_analytics)를 넣어 주세요' },
+      { key: 'clientSecret', label: '클라이언트 시크릿 (Client Secret)', secret: true, help: '같은 화면의 Client Secret. 토큰 발급 · 갱신 요청의 Basic 인증에만 씁니다' },
+      { key: 'refreshToken', label: '갱신 토큰 (Refresh Token)', secret: true, optional: true, help: '이미 발급받은 갱신 토큰(2주 유효). 넣으면 서버가 2시간마다 액세스 토큰을 갱신하고 새 갱신 토큰을 자동 저장합니다' },
+      { key: 'authCode', label: '인증 코드 (처음 한 번)', secret: true, optional: true, help: '갱신 토큰이 없으면 https://{mall_id}.cafe24api.com/api/v2/oauth/authorize?response_type=code&client_id={Client ID}&state=임의값&redirect_uri={Redirect URI}&scope=mall.read_order+mall.read_product+mall.read_store+mall.read_promotion+mall.read_analytics 를 브라우저로 열어 승인한 뒤 돌아온 주소의 code 값. 1분 안에 저장하고 바로 연결 확인을 눌러 주세요(1회용)' },
+      { key: 'redirectUri', label: '리디렉션 URI (Redirect URI)', secret: false, optional: true, help: '앱에 등록한 Redirect URI 전체 — 인증 코드를 교환할 때 같은 값이 필요합니다' },
+    ],
+    capabilities: { reads: ['salesDaily', 'products', 'promotions'], writes: [], intraday: true, maxBackfillDays: 400 } },
+  // 오늘의집: 공개 판매자 API 근거가 없어 CSV 업로드 전용 (server/src/connectors/ohouse/index.ts csvGuide)
+  { provider: 'ohouse', kind: 'sales', channel: 'ohouse', label: '오늘의집', docsUrl: 'https://partner.ohou.se', verifiedLive: false, sourceKind: 'api', defaultPriority: 100, available: false, credentialFields: [], capabilities: NONE,
+    csvOnly: { template: 'sales_daily', channel: 'ohouse', message: OHOUSE_CSV_MESSAGE } },
   { provider: 'csv', kind: 'other', channel: null, label: 'CSV · TSV 업로드', docsUrl: 'https://www.rfc-editor.org/rfc/rfc4180', verifiedLive: false, sourceKind: 'csv', defaultPriority: 50, available: true, credentialFields: [],
     capabilities: { reads: ['mediaDaily', 'mediaHourly', 'salesDaily', 'keywordDaily', 'searchTermDaily', 'keywords'], writes: [], intraday: false, maxBackfillDays: 0 } },
   { provider: 'demo', kind: 'other', channel: null, label: '데모 데이터 (TEST DATA)', docsUrl: '', verifiedLive: false, sourceKind: 'demo', defaultPriority: 10, available: true, credentialFields: [],

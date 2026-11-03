@@ -7,6 +7,7 @@
  *  - 카페24 갱신 토큰 회전: ctx.saveCredentials → connections.credentials_enc 암호화 저장 · 감사(connection.credentials_refreshed, 값 없음)
  *  - 테넌트 격리: 다른 워크스페이스 커넥션 404
  */
+import { csvGuide } from '../ohouse';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp, type TestClient } from '../../../test/app';
 import { drainIngest, kst, registerDataJobsForTest } from '../../ingest/testkit';
@@ -186,13 +187,13 @@ describe('커넥션 생성 → 연결 확인 → 초기 백필 → Dataset', () 
 });
 
 describe('오늘의집 — CSV 경로', () => {
-  it('커넥션은 만들 수 있지만 연결 확인은 CSV 안내 · 예약 수집 대상 아님, 판매 채널 일별 CSV로 들어간 행은 출처 csv', async () => {
+  it('API 커넥션은 만들 수 없고(csv_only · CSV 안내), 판매 채널 일별 CSV로 들어간 행은 출처 csv', async () => {
     const c = await u.pm.post(base(), { provider: 'ohouse' });
-    expect(c.status).toBe(200);
-    const test = await u.pm.post(`${base()}/${c.json.connection.id}/test`, {});
-    expect(test.json.result.ok).toBe(false);
-    expect(test.json.result.message).toMatch(/sales_daily/);
-    expect(test.json.backfillQueued).toBe(false);
+    expect(c.status).toBe(400);
+    expect(c.json.error.code).toBe('csv_only');
+    expect(c.json.error.message).toBe(csvGuide.message);
+    expect(c.json.error.detail).toMatchObject({ template: 'sales_daily', channel: 'ohouse' });
+    expect((await t.db.query(`SELECT 1 FROM connections WHERE workspace_id = $1 AND provider = 'ohouse'`, [t.ws])).rowCount).toBe(0);
 
     const content = ['일자,판매채널,방문자,상세조회,장바구니,주문,매출', '2026-11-01,오늘의집,1200,700,80,15,14500000', '2026-11-02,ohouse,1300,720,85,16,15200000'].join('\n');
     const up = await u.pm.post(`/api/w/${t.ws}/uploads`, { template: 'sales_daily', filename: 'ohouse-2026-11.csv', content });

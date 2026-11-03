@@ -24,15 +24,17 @@ const SAMPLE: Record<UploadTemplate, string> = {
 
 type PreviewState = { result: UploadResult; local: boolean } | null;
 
-export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csvConnections, uploads, onImported }: {
+export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csvConnections, uploads, onImported, initialTemplate, initialChannel }: {
   server: boolean; workspaceId: string | null; canOperate: boolean; canConfigure: boolean; csvConnections: ConnectionView[]; uploads: UploadView[]; onImported: () => void;
+  /** 처음 고를 템플릿 · 고정 채널 (CSV 전용 공급자 카드의 'CSV 업로드로 이동') */
+  initialTemplate?: UploadTemplate; initialChannel?: string | null;
 }) {
   const { toast } = useActions();
-  const [template, setTemplate] = useState<UploadTemplate>('media_daily');
+  const [template, setTemplate] = useState<UploadTemplate>(initialTemplate && UPLOAD_TEMPLATES.includes(initialTemplate) ? initialTemplate : 'media_daily');
   const [filename, setFilename] = useState('붙여넣기.csv');
   const [content, setContent] = useState('');
   const [encoding, setEncoding] = useState<string | null>(null);
-  const [channel, setChannel] = useState('');
+  const [channel, setChannel] = useState(initialChannel ?? '');
   const [connectionId, setConnectionId] = useState('');
   const [mapping, setMapping] = useState<Record<string, string | null>>({});
   const [preview, setPreview] = useState<PreviewState>(null);

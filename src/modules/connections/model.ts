@@ -25,7 +25,13 @@ export interface CatalogProvider {
   sourceKind: SourceKind;
   defaultPriority: number;
   available: boolean;
+  /** API 수집 근거가 없는 공급자(예: 오늘의집)의 CSV 업로드 경로 — 이 공급자는 커넥션을 만들 수 없다(서버 400 csv_only) */
+  csvOnly?: CsvOnlyGuide;
+  /** 브라우저 승인(OAuth 인증 코드) 흐름 — redirectUri는 공급자 앱에 등록할 콜백 주소 (서버 모드 카탈로그에만) */
+  oauth?: { startLabel: string; redirectUri: string };
 }
+
+export interface CsvOnlyGuide { template: string; channel: string | null; message: string }
 
 export interface RunSummary {
   id: string;
@@ -129,7 +135,16 @@ export const RUN_STATUS_META: Record<RunSummary['status'], { label: string; tone
   failed: { label: '실패', tone: 'critical' },
 };
 
-export const JOB_LABEL: Record<string, string> = { daily: '전일 확정(3일)', intraday: '당일 시간대', backfill: '기간 수집', upload: 'CSV 업로드' };
+export const JOB_LABEL: Record<string, string> = { daily: '전일 확정 재수집', intraday: '당일 시간대', backfill: '기간 수집', upload: 'CSV 업로드' };
+
+/** 예약 · 수동 daily 재수집 일수 (어제 포함) — 서버 ingest/pipeline.ts DAILY_RECOLLECT_DAYS와 같다: 매체 3일(늦은 전환), 판매 채널 14일(늦은 취소 · 반품) */
+export const DAILY_RECOLLECT_DAYS = { media: 3, sales: 14 } as const;
+export const dailyRecollectDays = (kind: string | null | undefined): number => (kind === 'sales' ? DAILY_RECOLLECT_DAYS.sales : DAILY_RECOLLECT_DAYS.media);
+
+/** CSV 전용 공급자 안내 한 줄 — 'CSV 업로드 전용 — 판매 채널 일별 템플릿(sales_daily, 채널 ohouse)' */
+export function csvOnlyLabel(g: CsvOnlyGuide, templateLabel: string): string {
+  return `CSV 업로드 전용 — ${templateLabel} 템플릿(${g.template}${g.channel ? `, 채널 ${g.channel}` : ''})`;
+}
 export const SEVERITY_META: Record<Severity, { label: string; tone: 'critical' | 'warning' | 'neutral' }> = {
   error: { label: '오류', tone: 'critical' }, warning: { label: '경고', tone: 'warning' }, info: { label: '참고', tone: 'neutral' },
 };

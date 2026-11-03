@@ -30,7 +30,7 @@ async function render(node: ReactNode, mode: 'server' | 'demo', role: Role = 'ad
   const { StoreProvider } = await import('@/core/store');
   const { SaasTestProvider } = await import('@/saas/context');
   const inner = h(StoreProvider, null, node);
-  const tree = mode === 'server' ? h(SaasTestProvider, { value: { mode: 'server', role } }, inner) : inner;
+  const tree = mode === 'server' ? h(SaasTestProvider, { value: { mode: 'server', role }, children: inner }) : inner;
   return renderToString(tree).replace(/<!-- -->/g, '');
 }
 

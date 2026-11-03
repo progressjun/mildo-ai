@@ -19,7 +19,7 @@ import type { AppConfig } from '../config';
 import type { ConnectorContext, ConnectorDef, ConnectorHttp } from './types';
 import { getConnector } from './registry';
 import { createConnectorHttp, scrubSecrets, type FetchLike } from './http';
-import { cleanCredentials, decryptCredentials, encryptCredentials, maskedCredentials, mergeCredentials, needsOAuthApproval, OAUTH_APPS, oauthPendingCredentials, type Credentials } from './credentials';
+import { cleanCredentials, decryptCredentials, encryptCredentials, maskedCredentials, mergeCredentials, needsOAuthApproval, oauthApprovalMessage, oauthPendingCredentials, type Credentials } from './credentials';
 import { csvGuide as ohouseCsvGuide } from './ohouse';
 import { z, parseBody } from '../lib/validate';
 import { badRequest, conflict, forbidden, notFound, HttpError } from '../lib/errors';
@@ -261,8 +261,7 @@ export async function runConnectionTest(db: Queryable, config: AppConfig, row: C
     const ctx = buildConnectorContext(db, config, row, { ...opts, dryRun: true });
     const parsed = def.credentialsSchema.safeParse(ctx.credentials);
     if (!parsed.success && needsOAuthApproval(def.provider, ctx.credentials)) {
-      const label = OAUTH_APPS[def.provider].startLabel;
-      result = { ok: false, message: `${def.label} 인증이 필요합니다 — 커넥션 카드의 '${label}'으로 쇼핑몰 운영자 승인을 받은 뒤 연결 확인을 눌러 주세요` };
+      result = { ok: false, message: oauthApprovalMessage(def) };
     } else if (!parsed.success) {
       result = { ok: false, message: `자격증명 항목을 확인해 주세요: ${parsed.error.issues.map((i) => i.path.join('.') || '(전체)').join(', ')}` };
     } else {

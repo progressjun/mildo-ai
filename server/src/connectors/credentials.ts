@@ -107,6 +107,12 @@ export function oauthPendingCredentials(provider: string, input: Credentials, is
   return app.success ? app.data : null;
 }
 
+/** 승인 대기 커넥션의 연결 확인 · 수집 안내 (연결 확인 결과 · 수집 실패 사유에 같은 문구) */
+export function oauthApprovalMessage(def: Pick<ConnectorDef, 'provider' | 'label'>): string {
+  const label = OAUTH_APPS[def.provider]?.startLabel ?? '인증 시작';
+  return `${def.label} 인증이 필요합니다 — 커넥션 카드의 '${label}'으로 쇼핑몰 운영자 승인을 받은 뒤 연결 확인을 눌러 주세요`;
+}
+
 /** 저장된 자격증명에 토큰이 없고 앱 정보만 있는 OAuth 커넥션인지 (연결 확인 · 수집 전에 승인이 필요) */
 export function needsOAuthApproval(provider: string, creds: Credentials): boolean {
   const spec = OAUTH_APPS[provider];

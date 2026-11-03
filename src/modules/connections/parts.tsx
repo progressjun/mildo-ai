@@ -7,10 +7,12 @@ import { Button, Callout, Drawer, Field, Modal, NumberInput, Pill, Segmented, Sr
 import { Icon } from '@/ui/Icon';
 import { fmt } from '@/core/util';
 import {
-  ago, addDays, channelLabel, connectionVerdict, fmtDuration, fmtStamp, JOB_LABEL, KIND_LABEL, LIVE_CONFIRM_TEXT, READ_LABEL, RUN_STATUS_META, SEVERITY_META,
+  ago, addDays, channelLabel, connectionVerdict, csvOnlyLabel, dailyRecollectDays, fmtDuration, fmtStamp, JOB_LABEL, KIND_LABEL, LIVE_CONFIRM_TEXT, READ_LABEL, RUN_STATUS_META, SEVERITY_META,
   SOURCE_KIND_LABEL, STATUS_META, syncBounds, validateSyncRange, WRITE_LABEL, WRITE_MODE_META,
   type CatalogProvider, type ConnectionView, type QualityIssue, type QualityItem, type RunView, type WriteMode,
 } from './model';
+import { TEMPLATES, type UploadTemplate } from './csv';
+import { awaitingApproval } from './oauth';
 
 const UNVERIFIED = '실계정 연결 전 확인 필요';
 const UNVERIFIED_HINT = '공식 API 문서대로 구현했지만 실제 계정으로 호출해 검증하기 전입니다. 첫 연결 확인 · 수집 결과를 매체 관리 화면 값과 대조해 주세요.';
@@ -37,16 +39,21 @@ function KV({ k, v }: { k: ReactNode; v: ReactNode }) {
 
 export interface CardPerms { configure: boolean; operate: boolean; liveWrite: boolean }
 
-export function ConnectionCard({ c, nowMs, perms, readOnly, busy, onTest, onSync, onEdit, onDelete, onWriteMode, onToggle }: {
+export function ConnectionCard({ c, nowMs, perms, readOnly, busy, onTest, onSync, onEdit, onDelete, onWriteMode, onToggle, oauth, onOAuth }: {
   c: ConnectionView; nowMs: number; perms: CardPerms; readOnly: boolean; busy?: string | null;
   onTest: () => void; onSync: () => void; onEdit: () => void; onDelete: () => void; onWriteMode: (m: WriteMode) => void; onToggle: () => void;
+  /** 브라우저 승인(OAuth) 흐름이 있는 공급자(카페24) — 서버 모드 카탈로그에서만 온다 */
+  oauth?: CatalogProvider['oauth'] | null; onOAuth?: () => void;
 }) {
   const st = STATUS_META[c.status];
   const v = connectionVerdict(c, nowMs);
   const writes = c.capabilities?.writes ?? [];
   const lock = readOnly ? '서버 연결 시 사용할 수 있습니다' : undefined;
   const isCsv = c.sourceKind === 'csv';
-  const schedule = isCsv ? '업로드할 때' : c.capabilities?.intraday ? '매일 07:00 전일 확정 · 매시 10분 당일 시간대' : '매일 07:00 전일 확정';
+  const recollect = `어제 포함 ${dailyRecollectDays(c.kind)}일`;
+  const schedule = isCsv ? '업로드할 때' : c.capabilities?.intraday ? `매일 07:00 전일 확정(${recollect}) · 매시 10분 당일 시간대` : `매일 07:00 전일 확정(${recollect})`;
+  const showOAuth = !!oauth && !readOnly && !!onOAuth;
+  const awaiting = showOAuth && awaitingApproval(c);
   return (
     <section className="card conn-card" aria-label={`${c.label} 커넥션`}>
       <div className="row-between">
@@ -75,6 +82,12 @@ export function ConnectionCard({ c, nowMs, perms, readOnly, busy, onTest, onSync
       </div>
 
       {c.lastError && c.status !== 'disabled' ? <Callout tone="critical" title="마지막 오류">{c.lastError}</Callout> : null}
+      {awaiting && oauth ? (
+        <Callout tone="warning" title="쇼핑몰 운영자 승인 전">
+          '{oauth.startLabel}'을 누르면 카페24 승인 화면으로 이동하고, 승인하면 이 화면으로 돌아와 토큰이 암호화 저장됩니다. 그 뒤 연결 확인을 눌러 주세요.
+          카페24 개발자센터 앱의 Redirect URI에 <code>{oauth.redirectUri}</code>를 등록해 두어야 합니다.
+        </Callout>
+      ) : null}
 
       {Object.keys(c.credentials).length ? (
         <div className="conn-creds" aria-label="저장된 자격증명 (마스킹)">
@@ -99,6 +112,12 @@ export function ConnectionCard({ c, nowMs, perms, readOnly, busy, onTest, onSync
       </div>
 
       <div className="row conn-actions">
+        {showOAuth && oauth ? (
+          <Button size="sm" icon="external" variant={awaiting ? 'primary' : undefined} onClick={onOAuth} disabled={!perms.configure || c.status === 'disabled' || busy === 'oauth'}
+            title={!perms.configure ? 'PM · 관리자 · 소유자만' : c.status === 'disabled' ? '사용 중지된 커넥션입니다' : `카페24 승인 화면으로 이동 (승인 후 ${oauth.redirectUri}로 돌아옵니다)`}>
+            {busy === 'oauth' ? '이동 중…' : oauth.startLabel}
+          </Button>
+        ) : null}
         {c.sourceKind === 'api' ? <Button size="sm" icon="check" onClick={onTest} disabled={readOnly || !perms.configure || busy === 'test'} title={lock ?? (!perms.configure ? 'PM · 관리자 · 소유자만' : undefined)}>{busy === 'test' ? '확인 중…' : '연결 확인'}</Button> : null}
         {!isCsv ? <Button size="sm" icon="refresh" variant="primary" onClick={onSync} disabled={readOnly || !perms.operate || c.status === 'disabled' || busy === 'sync'} title={lock ?? (!perms.operate ? '담당 AE 이상' : undefined)}>지금 수집</Button> : null}
         <Button size="sm" icon="edit" onClick={onEdit} disabled={readOnly || !perms.configure} title={lock}>설정</Button>
@@ -111,9 +130,10 @@ export function ConnectionCard({ c, nowMs, perms, readOnly, busy, onTest, onSync
 
 /* ---------- 카탈로그 카드 ---------- */
 
-export function CatalogCard({ p, readOnly, canAdd, exists, onAdd }: { p: CatalogProvider; readOnly: boolean; canAdd: boolean; exists: boolean; onAdd: () => void }) {
+export function CatalogCard({ p, readOnly, canAdd, exists, onAdd, onUpload }: { p: CatalogProvider; readOnly: boolean; canAdd: boolean; exists: boolean; onAdd: () => void; onUpload?: () => void }) {
   const cap = p.capabilities;
   const known = cap.reads.length > 0;
+  const csvOnly = p.csvOnly ?? null;
   const disabledWhy = readOnly ? '서버 연결 시 사용할 수 있습니다' : !canAdd ? 'PM · 관리자 · 소유자만 추가할 수 있습니다' : !p.available ? '구현 중 — 아직 수집을 지원하지 않습니다' : p.provider === 'demo' && exists ? '데모 데이터는 워크스페이스에 하나만 둘 수 있습니다' : undefined;
   return (
     <section className="card conn-cat" aria-label={`${p.label} 커넥터`}>
@@ -125,7 +145,12 @@ export function CatalogCard({ p, readOnly, canAdd, exists, onAdd }: { p: Catalog
         </span>
       </div>
       {p.sourceKind === 'api' && !p.verifiedLive ? <UnverifiedPill /> : null}
-      {known ? (
+      {csvOnly ? (
+        <div className="stack-sm">
+          <strong className="xs">{csvOnlyLabel(csvOnly, TEMPLATES[csvOnly.template as UploadTemplate]?.label ?? csvOnly.template)}</strong>
+          <span className="xs muted">{csvOnly.message}</span>
+        </div>
+      ) : known ? (
         <div className="stack-sm xs">
           <span><span className="muted">수집</span> {cap.reads.map((r) => READ_LABEL[r] ?? r).join(' · ')}</span>
           <span><span className="muted">반영</span> {cap.writes.length ? cap.writes.map((w) => WRITE_LABEL[w] ?? w).join(' · ') : '없음 (수집 전용)'}</span>
@@ -136,7 +161,9 @@ export function CatalogCard({ p, readOnly, canAdd, exists, onAdd }: { p: Catalog
       )}
       <div className="row-between">
         {p.docsUrl ? <a className="xs" href={p.docsUrl} target="_blank" rel="noreferrer noopener">공식 문서 <Icon name="external" size={11} /></a> : <span className="xs muted">{p.sourceKind === 'demo' ? '시연용 생성기 (실제 성과 아님)' : p.sourceKind === 'csv' ? '파일 업로드' : '공식 문서 확인 중'}</span>}
-        <Button size="sm" icon="plus" variant="primary" onClick={onAdd} disabled={!!disabledWhy} title={disabledWhy}>연결 추가</Button>
+        {csvOnly
+          ? <Button size="sm" icon="download" onClick={onUpload} disabled={!onUpload} title={`${csvOnly.template} 템플릿${csvOnly.channel ? ` · 채널 ${csvOnly.channel}` : ''}으로 업로드 탭을 엽니다`}>CSV 업로드로 이동</Button>
+          : <Button size="sm" icon="plus" variant="primary" onClick={onAdd} disabled={!!disabledWhy} title={disabledWhy}>연결 추가</Button>}
       </div>
     </section>
   );
@@ -172,6 +199,12 @@ export function ConnectionFormModal({ provider, initial, editing, saving, error,
       </>}>
       <div className="stack">
         {provider.sourceKind === 'api' && !provider.verifiedLive ? <Callout tone="warning" title={UNVERIFIED}>{UNVERIFIED_HINT}</Callout> : null}
+        {provider.oauth && !editing ? (
+          <Callout tone="info" title={`토큰 없이 시작할 수 있습니다 — ${provider.oauth.startLabel}`}>
+            쇼핑몰 ID · Client ID · Client Secret만 저장한 뒤 커넥션 카드의 '{provider.oauth.startLabel}'으로 쇼핑몰 운영자 승인을 받으면 토큰을 서버가 받아 암호화 저장합니다.
+            앱의 Redirect URI에는 <code>{provider.oauth.redirectUri}</code>를 등록해 주세요.
+          </Callout>
+        ) : null}
         <Field label="이름" id="conn-label"><input id="conn-label" className="input" value={label} maxLength={80} onChange={(e) => setLabel(e.target.value)} /></Field>
         {provider.credentialFields.length ? (
           <div className="stack-sm">
@@ -251,14 +284,15 @@ export function SyncModal({ c, today, saving, error, onClose, onSubmit }: { c: C
   const [from, setFrom] = useState(addDays(y, -30));
   const [to, setTo] = useState(y);
   const problem = mode === 'range' ? validateSyncRange(from, to, today, c.capabilities) : null;
+  const recent = dailyRecollectDays(c.kind);
   const preset = (days: number) => { setFrom(addDays(y, -(days - 1)) < b.min ? b.min : addDays(y, -(days - 1))); setTo(y); };
   return (
     <Modal title={`${c.label} 지금 수집`} onClose={onClose}
       footer={<><Button onClick={onClose}>취소</Button><Button variant="primary" icon="refresh" disabled={!!problem || saving} onClick={() => onSubmit(mode === 'range' ? { from, to } : null)}>{saving ? '등록 중…' : '수집 대기열에 등록'}</Button></>}>
       <div className="stack">
-        <Segmented<'recent' | 'range'> label="수집 범위" value={mode} onChange={setMode} options={[{ id: 'recent', label: '최근 3일 + 오늘' }, { id: 'range', label: '기간 지정' }]} />
+        <Segmented<'recent' | 'range'> label="수집 범위" value={mode} onChange={setMode} options={[{ id: 'recent', label: `최근 ${recent}일 + 오늘` }, { id: 'range', label: '기간 지정' }]} />
         {mode === 'recent' ? (
-          <span className="small ink2">어제 포함 3일({addDays(today, -3)} ~ {y})을 다시 받아 늦게 잡힌 전환까지 반영하고{c.capabilities?.intraday ? ', 오늘 시간대 데이터를 함께 받습니다' : ''}. 매일 07:00 예약 수집과 같은 범위입니다.</span>
+          <span className="small ink2">어제 포함 {recent}일({addDays(today, -recent)} ~ {y})을 다시 받아 {c.kind === 'sales' ? '늦게 들어온 취소 · 반품까지 결제일 매출에 반영하고' : '늦게 잡힌 전환까지 반영하고'}{c.capabilities?.intraday ? ', 오늘 시간대 데이터를 함께 받습니다' : ''}. 매일 07:00 예약 수집과 같은 범위입니다.</span>
         ) : (
           <>
             <div className="grid g-2">
