@@ -41,7 +41,7 @@ export function DemandTab({ d, marginalRoas }: { d: Dataset; marginalRoas: numbe
 
   return (
     <div className="stack-lg">
-      <Card title={<>신규 매체 발굴 · 채널 선정 기준 <Src kind="PROPOSAL" page="p.38" /><Src kind="DEMO" title="후보 점수는 데모 평가 · 매체 미팅 후 확정" /></>}
+      <Card title={<>신규 매체 발굴 · 채널 선정 기준 <Src kind="PROPOSAL" page="p.38" /><Src kind="DEMO" fixture title="후보 점수는 데모 평가 · 매체 미팅 후 확정" /></>}
         sub="수면밀도 타겟 데이터로 채널 선정 기준을 먼저 세우고, 소액 파일럿으로 검증한 뒤 확대 · 점수(1~5)는 데모 평가 — 온보딩 중 매체 미팅 후 확정 · 가중치 편집 시 순위 재계산">
         <div className="table-wrap">
           <table className="tbl">

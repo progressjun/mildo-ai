@@ -112,7 +112,7 @@ export default function View() {
         <div className="geo-principle"><Icon name="shield" size={15} /><strong>{GEO_PRINCIPLE}</strong><span className="muted">정기 진단 매주 월 · 개선 반영 후 2회 연속 결과로 판정</span></div>
       </Card>
 
-      <Card title={`핵심 지표 · ${vis.date ? fmtDate(vis.date) : ''} 정기 진단`} sub={`${vis.prevDate ? `직전 ${fmtDate(vis.prevDate)} 대비` : '직전 회차 없음'} · 질의 × 엔진 ${o.total}셀`} actions={<Src kind="DEMO" />}>
+      <Card title={`핵심 지표 · ${vis.date ? fmtDate(vis.date) : ''} 정기 진단`} sub={`${vis.prevDate ? `직전 ${fmtDate(vis.prevDate)} 대비` : '직전 회차 없음'} · 질의 × 엔진 ${o.total}셀`} actions={<Src kind="DEMO" fixture title="데모 진단 스냅샷 · 실제 엔진 응답 아님" />}>
         <div className="geo-kpis">
           <div className="geo-kpi hl"><Stat label="브랜드 언급률" value={fmt.pct(o.rate * 100, 1)} foot={<span className="muted">{o.mentioned}/{o.total}셀{o.deltaPp !== null ? ` · 직전 ${o.deltaPp >= 0 ? '+' : ''}${o.deltaPp.toFixed(1)}pp` : ''}</span>} /></div>
           <div className="geo-kpi"><Stat label="평균 언급 순서" value={Number.isFinite(o.avgPosition) ? `${fmt.dec1(o.avgPosition)}번째` : '—'} foot={<span className="muted">첫 번째 언급 {fmt.pct(o.firstRate * 100, 0)}</span>} /></div>

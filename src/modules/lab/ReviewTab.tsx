@@ -169,7 +169,7 @@ export function ReviewTab({ m }: { m: LabModel }) {
 
       <Card title={`검수 대기 · 운영 문안 ${review.total}건`} sub="가설 A · B · C · SA 캠페인 메시지(p.35) · 프로모션 소재 표기가 · VisualTune 베리에이션 초안(DEMO) · 테스트 카드 문안 · AI 문안"
         actions={<>
-          <Src kind="DEMO" title="VisualTune 초안은 시연용" />
+          <Src kind="DEMO" fixture title="VisualTune 초안은 시연용" />
           <Segmented options={[{ id: 'all', label: `전체 ${review.total}` }, { id: 'block', label: `차단 ${review.count.block}` }, { id: 'warn', label: `경고 ${review.count.warn}` }, { id: 'check', label: `확인 ${review.count.check}` }, { id: 'pass', label: `통과 ${review.count.pass}` }]} value={filter} onChange={setFilter} label="판정 필터" />
         </>}>
         <DataTable rows={rows} columns={cols} rowKey={(x) => x.item.id} initialSort={{ key: 'level', dir: 'desc' }} maxHeight={520} />

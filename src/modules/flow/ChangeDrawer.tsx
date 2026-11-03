@@ -15,7 +15,7 @@ import { ExecBadge, ExecutionPanel } from './ExecutionPanel';
 import { isExecuting } from './execution';
 
 export function ChangeDrawer({ ctx, id, onClose: close }: { ctx: FlowCtx; id: string; onClose: () => void }) {
-  const { changes, state, data, incidents, clock, act, bulkAlerts } = ctx;
+  const { changes, state, data, incidents, clock, act, bulkAlerts, server } = ctx;
   const c = changes.find((x) => x.id === id);
   const [note, setNote] = useState('');
   // 더블 클릭의 두 번째 클릭으로 막 열린 창이 닫히는 것은 공용 Drawer 오버레이가 막는다(event.detail < 2)
@@ -42,7 +42,7 @@ export function ChangeDrawer({ ctx, id, onClose: close }: { ctx: FlowCtx; id: st
           <ApproverBadge c={c} />
           <LeadBadge l={lead} />
           <ExecBadge c={c} />
-          {isSeed(c) ? <Src kind="DEMO" title="시연용 이력 · 실제 운영 이력 아님" /> : null}
+          {isSeed(c) ? <Src kind="DEMO" fixture title="시연용 이력 · 실제 운영 이력 아님" /> : null}
         </div>
       </div>
 
@@ -58,7 +58,11 @@ export function ChangeDrawer({ ctx, id, onClose: close }: { ctx: FlowCtx; id: st
         <KV k="판정 시한" v={<>{dec.rule.label} <span className="muted">· {dec.rule.note}</span></>} />
         <KV k="대상 매체" v={mediaName(media)} />
         <KV k="현재 역할" v={<>{state.role} · 승인 범위 {roleScopeLabel(state.role)} {perm.ok ? <Pill tone="good" icon="check">처리 가능</Pill> : <Pill tone="neutral" icon="x">권한 밖</Pill>}</>} />
-        {!perm.ok ? <div className="xs muted">{perm.reason}. 상단 역할 선택에서 {APPROVER_LABEL[c.approver]}(으)로 바꾸면 처리할 수 있습니다.</div> : null}
+        {!perm.ok ? (
+          <div className="xs muted">
+            {perm.reason}. {server ? '승인 권한은 멤버십 역할로 정해집니다 — 팀 · 권한에서 관리자가 바꿉니다' : `상단 역할 선택에서 ${APPROVER_LABEL[c.approver]}(으)로 바꾸면 처리할 수 있습니다`}.
+          </div>
+        ) : null}
       </div>
 
       {bulkHits.length ? (

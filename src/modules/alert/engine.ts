@@ -1615,7 +1615,11 @@ export function falsePositiveByMetric(records: readonly SlaRecord[]): Record<str
 
 /* ============================== 연휴 전날 사전 점검 (p.48) ============================== */
 
-export interface PrecheckItem { group: '예산' | '소재' | '결제 잔액' | '권한 · 당번'; item: string; level: 'pass' | 'warn' | 'fail'; detail: string; action: string }
+export interface PrecheckItem {
+  group: '예산' | '소재' | '결제 잔액' | '권한 · 당번'; item: string; level: 'pass' | 'warn' | 'fail'; detail: string; action: string;
+  /** 시연용 예시 소재 목록(DEMO_CREATIVES)에서 나온 항목 — 워크스페이스 데이터가 실연동이어도 TEST DATA로 표시한다 */
+  fixture?: true;
+}
 export function holidayPrecheck(data: Dataset, block: OffBlock, opts: { creatives?: CreativeReview[]; config?: Partial<AlertConfig>; tfNames?: Record<string, string> } = {}): { items: PrecheckItem[]; coverHours: number; from: string; to: string } {
   const cfg = resolveConfig(opts.config);
   const creatives = opts.creatives ?? DEMO_CREATIVES;
@@ -1660,11 +1664,12 @@ export function holidayPrecheck(data: Dataset, block: OffBlock, opts: { creative
       });
     } else items.push({ group: '예산', item: '월 예산 잔여 (연 배분/12)', level: 'pass', detail: `연휴 중 이번 달 ${inMonth}일 집행분 잔여 충분`, action: '—' });
   }
-  // 소재
+  // 소재 (소재 목록을 넘기지 않으면 시연용 예시 소재 — 그 항목은 fixture로 표시)
+  const fx = creatives === DEMO_CREATIVES ? { fixture: true as const } : {};
   for (const cr of creatives) {
-    if (cr.status === 'rejected') items.push({ group: '소재', item: cr.name, level: 'fail', detail: `반려 · ${cr.reason ?? ''}`, action: '대체 소재 검수 완료 후 연휴 진입' });
-    else if (cr.status === 'pending') items.push({ group: '소재', item: cr.name, level: 'warn', detail: `검수 대기 (${cr.submittedAt.slice(5, 16).replace('T', ' ')} 제출)`, action: '연휴 전 검수 완료 확인 · 미완료 시 기존 소재 유지' });
-    if (cr.landingStatus >= 400) items.push({ group: '소재', item: `${cr.name} 랜딩`, level: 'fail', detail: `응답 ${cr.landingStatus}`, action: 'URL 교체' });
+    if (cr.status === 'rejected') items.push({ group: '소재', item: cr.name, level: 'fail', detail: `반려 · ${cr.reason ?? ''}`, action: '대체 소재 검수 완료 후 연휴 진입', ...fx });
+    else if (cr.status === 'pending') items.push({ group: '소재', item: cr.name, level: 'warn', detail: `검수 대기 (${cr.submittedAt.slice(5, 16).replace('T', ' ')} 제출)`, action: '연휴 전 검수 완료 확인 · 미완료 시 기존 소재 유지', ...fx });
+    if (cr.landingStatus >= 400) items.push({ group: '소재', item: `${cr.name} 랜딩`, level: 'fail', detail: `응답 ${cr.landingStatus}`, action: 'URL 교체', ...fx });
   }
   for (const s of soldOutKeywords(data)) items.push({ group: '소재', item: `'${s.keyword.text}' 랜딩`, level: 'fail', detail: `${s.option} 옵션 품절 상세로 랜딩`, action: '연휴 전 키워드 일시 중지 또는 대체 랜딩 승인' });
   for (const pc of checkPromoPrices(data)) {

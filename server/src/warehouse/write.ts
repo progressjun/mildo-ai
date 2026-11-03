@@ -48,7 +48,12 @@ const MEDIA_CHANNELS = new Set<string>(MEDIA_IDS);
 export interface WriteResult { total: number; byTable: Record<string, number> }
 
 export interface WriteOptions {
-  /** 엔티티 목록이 '전체 스냅샷'이면 같은 출처 · 종류의 빠진 엔티티를 지운다 (daily · backfill). 빈 목록은 지우지 않는다 */
+  /**
+   * 엔티티 목록이 '전체 스냅샷'이면 같은 출처 · 종류의 빠진 엔티티를 지운다 (daily · backfill).
+   * 목록이 없으면(undefined = 이번에 받지 않음) 그대로 둔다. 빈 배열은 상품 · 프로모션만 '전부 사라짐'으로 보고 그 출처의 해당 종류를 지운다
+   * (진행 중 프로모션이 끝났거나 판매 상품이 0개 — 커넥터는 받지 못했을 때 undefined를 둔다). 키워드 · 캠페인 · 계정의 빈 배열은 지우지 않는다
+   * (매체 응답 일부 누락으로 계정 전체 엔티티를 날리지 않게).
+   */
   replaceEntities?: boolean;
   /** 키워드 엔티티 채널 (기본 naver_sa) */
   keywordChannel?: string;
@@ -136,7 +141,8 @@ export async function writeBatch(q: Queryable, wsId: string, source: string, b: 
       { name: 'channel', type: 'text', get: (r) => e.channel(r) },
       { name: 'doc', type: 'jsonb', get: (r) => r },
     ], list);
-    if (o.replaceEntities && list.length) {
+    const emptySnapshot = list.length === 0 && (e.type === 'product' || e.type === 'promotion');
+    if (o.replaceEntities && (list.length || emptySnapshot)) {
       await q.query(
         `DELETE FROM wh_entities WHERE workspace_id = $1 AND entity_type = $2 AND source = $3 AND NOT (external_id = ANY($4::text[]))`,
         [wsId, e.type, source, list.map((x) => String(x.id))],

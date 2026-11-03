@@ -8,6 +8,10 @@ import { TYPE_LABEL, WEEKEND_ACK_MIN } from './data';
 import { mediaName } from './parts';
 import type { AlertCtx } from './hooks';
 
+/** 월간 SLA 리포트는 지난 이력(SLA_HISTORY · 시연용 예시)을 포함한다 — 워크스페이스 데이터가 실연동이어도 TEST DATA (fixture) */
+function HistSrc() {
+  return <Src kind="DEMO" fixture title="지난 이력(10월)은 시연용 예시 · 실제 운영 이력 아님 (이번 세션 처리분 포함)" />;
+}
 const p = (x: number) => (Number.isFinite(x) ? `${x.toFixed(0)}%` : '—');
 
 export function SlaTab({ ctx }: { ctx: AlertCtx }) {
@@ -56,15 +60,15 @@ export function SlaTab({ ctx }: { ctx: AlertCtx }) {
   return (
     <div className="stack-lg">
       <div className="grid g-5 alert-kpis">
-        <Card><Stat label="10월 이슈" src={<Src kind="DEMO" />} value={rep.total.total} foot={<span>이번 세션 처리 {session.length} · 진행 중 {inProgress}</span>} /></Card>
-        <Card><Stat label="인지 SLA 달성" src={<Src kind="DEMO" />} value={p(rep.total.ack.pct)} foot={<span>{rep.total.ack.ok}/{rep.total.ack.n} · <span className="nowrap">P1 15분</span> · <span className="nowrap">P2 1시간</span> · <span className="nowrap">P3 1일</span></span>} /></Card>
-        <Card><Stat label="1차 조치 달성" src={<Src kind="DEMO" />} value={p(rep.total.action.pct)} foot={<span>{rep.total.action.ok}/{rep.total.action.n} · 매체 지연 제외 산정</span>} /></Card>
-        <Card><Stat label="오탐률" src={<Src kind="DEMO" />} value={p(rep.total.falsePositive.pct)} foot={<span>{rep.total.falsePositive.n}건 · 탐지 기준 튜닝 근거</span>} /></Card>
-        <Card><Stat label="재발 · 매체 지연" src={<Src kind="DEMO" />} value={<span>{rep.total.recurrence}<span className="small muted"> / 지연 {rep.total.mediaDelay.n}</span></span>} foot={<span>매체 지연 합계 {rep.total.mediaDelay.min}분 (별도 표기)</span>} /></Card>
+        <Card><Stat label="10월 이슈" src={<HistSrc />} value={rep.total.total} foot={<span>이번 세션 처리 {session.length} · 진행 중 {inProgress}</span>} /></Card>
+        <Card><Stat label="인지 SLA 달성" src={<HistSrc />} value={p(rep.total.ack.pct)} foot={<span>{rep.total.ack.ok}/{rep.total.ack.n} · <span className="nowrap">P1 15분</span> · <span className="nowrap">P2 1시간</span> · <span className="nowrap">P3 1일</span></span>} /></Card>
+        <Card><Stat label="1차 조치 달성" src={<HistSrc />} value={p(rep.total.action.pct)} foot={<span>{rep.total.action.ok}/{rep.total.action.n} · 매체 지연 제외 산정</span>} /></Card>
+        <Card><Stat label="오탐률" src={<HistSrc />} value={p(rep.total.falsePositive.pct)} foot={<span>{rep.total.falsePositive.n}건 · 탐지 기준 튜닝 근거</span>} /></Card>
+        <Card><Stat label="재발 · 매체 지연" src={<HistSrc />} value={<span>{rep.total.recurrence}<span className="small muted"> / 지연 {rep.total.mediaDelay.n}</span></span>} foot={<span>매체 지연 합계 {rep.total.mediaDelay.min}분 (별도 표기)</span>} /></Card>
       </div>
 
       <div className="grid g-3">
-        <Card className="span-2" title="월간 SLA 리포트 · 2026년 10월" sub="등급별 달성률 · 오탐률 · 재발 건수 · 매체 지연은 별도 표기 · 달성률은 매월 공개 (p.49)" actions={<><Src kind="PROPOSAL" page="p.49" /><Src kind="DEMO" /><CopyButton text={md} /><DownloadButton filename="MILDO-Alert-월간-SLA-2026-10.md" data={md} mime="text/markdown;charset=utf-8" label=".md" /></>}>
+        <Card className="span-2" title="월간 SLA 리포트 · 2026년 10월" sub="등급별 달성률 · 오탐률 · 재발 건수 · 매체 지연은 별도 표기 · 달성률은 매월 공개 (p.49)" actions={<><Src kind="PROPOSAL" page="p.49" /><HistSrc /><CopyButton text={md} /><DownloadButton filename="MILDO-Alert-월간-SLA-2026-10.md" data={md} mime="text/markdown;charset=utf-8" label=".md" /></>}>
           <div className="table-wrap">
             <table className="tbl">
               <thead><tr><th>등급</th><th className="r">건수</th><th className="r">인지 달성</th><th className="r">1차 조치 달성</th><th className="r">결과 보고 달성</th><th className="r">오탐률</th><th className="r">재발</th><th className="r">매체 지연 (별도)</th></tr></thead>
@@ -86,7 +90,7 @@ export function SlaTab({ ctx }: { ctx: AlertCtx }) {
           </div>
           <div className="xs muted">산정: 오탐은 조치 · 보고 분모에서 제외, 매체 지연(검수 대기 · 집계 지연)은 조치 · 보고 시간에서 빼고 별도 집계. 주말 · 공휴일 인지 목표는 당번 {WEEKEND_ACK_MIN}분 (p.48). 지난 이력은 시연용 DEMO 데이터.</div>
         </Card>
-        <Card title="등급별 인지 SLA 달성률" sub="목표 100% · 세로선 90%" actions={<Src kind="DEMO" />}>
+        <Card title="등급별 인지 SLA 달성률" sub="목표 100% · 세로선 90%" actions={<HistSrc />}>
           <HBarChart data={rep.rows.map((r) => ({ label: `${r.severity} 인지`, value: Number.isFinite(r.ack.pct) ? r.ack.pct : 0, colorVar: '--series-1' }))
             .concat(rep.rows.filter((r) => SLA[r.severity].actionMin !== null).map((r) => ({ label: `${r.severity} 1차 조치`, value: Number.isFinite(r.action.pct) ? r.action.pct : 0, colorVar: '--series-7' })))}
             format={(v) => `${v.toFixed(0)}%`} max={100} refValue={90} refLabel="관리 기준 90% (운영 가정)" />

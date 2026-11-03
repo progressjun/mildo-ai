@@ -17,6 +17,11 @@ type IntentFilter = 'all' | IntentId;
 
 const LIVE_DENIED_COPY = 'Claude 사용이 허용되지 않아 라이브 진단을 실행할 수 없습니다. 매트릭스(데모 스냅샷)와 지난 라이브 기록은 그대로 볼 수 있습니다.';
 
+/** 이 탭의 수치는 모두 데모 진단 스냅샷(buildGeoSnapshot)에서 나온다 — 워크스페이스 데이터가 실연동이어도 TEST DATA (fixture) */
+function SnapSrc() {
+  return <Src kind="DEMO" fixture title="데모 진단 스냅샷 · 실제 엔진 응답 아님" />;
+}
+
 export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLive, onClearLive }: {
   snap: GeoSnapshot; vis: Visibility; roundIndex: number; onRound: (i: number) => void;
   live: LiveRecord[]; latest: Record<string, LiveRecord>; onLive: (r: LiveRecord) => void; onClearLive: () => void;
@@ -124,7 +129,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
           sub={`${dateLabel(vis.date)} 정기 진단 · 질의 ${vis.queries.length}개 × 엔진 ${snap.engines.length}개 · 셀: 수면밀도 언급 순서 · 경쟁사 수 · 최근 ${GEO_ROUNDS}회 중 언급 횟수`}
           actions={
             <>
-              <Src kind="DEMO" title="데모 진단 스냅샷 · 실제 엔진 응답 아님" />
+              <SnapSrc />
               <CopyButton text={() => visibilityMarkdown(vis, latest)} label="진단 결과 복사" />
               <DownloadButton filename={`searchtune-geo-${vis.date ?? 'snapshot'}.md`} data={() => visibilityMarkdown(vis, latest)} label=".md" />
               <DownloadButton filename={`searchtune-geo-${vis.date ?? 'snapshot'}.csv`} data={() => toCsv(visibilityRows(vis, latest))} mime="text/csv;charset=utf-8" label="CSV" />
@@ -145,7 +150,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
         </Card>
 
         <div className="stack-lg">
-          <Card title={selected ? `'${selected.query.text}'` : '질의 선택'} sub={selected ? `${INTENT_LABEL[selected.query.intent]} · ${dateLabel(vis.date)} 진단` : '매트릭스에서 질의를 고르세요'} actions={<Src kind="DEMO" />}>
+          <Card title={selected ? `'${selected.query.text}'` : '질의 선택'} sub={selected ? `${INTENT_LABEL[selected.query.intent]} · ${dateLabel(vis.date)} 진단` : '매트릭스에서 질의를 고르세요'} actions={<SnapSrc />}>
             {selected ? (
               <div className="stack-sm">
                 <VerdictBadge v={selected.status} inline />
@@ -204,7 +209,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
       </div>
 
       <div className="grid g-3">
-        <Card className="span-2" title="엔진별 브랜드 언급률 추이" sub={`최근 ${vis.trend.length}회 정기 진단(매주 월) · 질의 ${vis.queries.length}개 기준`} actions={<Src kind="DEMO" />}>
+        <Card className="span-2" title="엔진별 브랜드 언급률 추이" sub={`최근 ${vis.trend.length}회 정기 진단(매주 월) · 질의 ${vis.queries.length}개 기준`} actions={<SnapSrc />}>
           <LineChart series={trendSeries} height={210} yFormat={(v) => `${Math.round(v)}%`} xFormat={(x) => fmtDate(x, false)} zeroBased ariaLabel="엔진별 브랜드 언급률 추이" />
           <DataTable rows={vis.engines} rowKey={(e) => e.id}
             columns={[
@@ -218,7 +223,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
             ]} />
         </Card>
         <div className="stack-lg">
-          <Card title="경쟁 6개사 대비 언급 점유" sub={`${dateLabel(vis.date)} · 셀 단위 언급 수 기준 (RFP 경쟁사)`} actions={<Src kind="DEMO" />}>
+          <Card title="경쟁 6개사 대비 언급 점유" sub={`${dateLabel(vis.date)} · 셀 단위 언급 수 기준 (RFP 경쟁사)`} actions={<SnapSrc />}>
             <ShareBar parts={[
               { label: BRAND, value: vis.overall.brandMentions, colorVar: '--accent' },
               ...vis.competitors.map((c) => ({ label: c.name, value: c.mentions, colorVar: COMPETITOR_COLOR[c.name] ?? COMPETITOR_COLOR_FALLBACK })),
@@ -232,18 +237,18 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
                 { key: 'a', label: '자사보다 먼저', align: 'right', sort: (c) => c.aheadOfBrand, render: (c) => <span className="num small">{c.aheadOfBrand}</span> },
               ]} />
           </Card>
-          <Card title="인용 출처" sub={`인용 ${vis.overall.citations}건 · 자사 채널 ${vis.overall.ownedCitations}건 (${fmt.pct(vis.overall.ownedShare * 100, 0)})`} actions={<Src kind="DEMO" />}>
+          <Card title="인용 출처" sub={`인용 ${vis.overall.citations}건 · 자사 채널 ${vis.overall.ownedCitations}건 (${fmt.pct(vis.overall.ownedShare * 100, 0)})`} actions={<SnapSrc />}>
             <HBarChart data={vis.citeSources.slice(0, 8).map((c) => ({ label: `${c.label}${c.owned ? ' · 자사' : ''}`, value: c.count, colorVar: c.owned ? '--accent' : '--series-1' }))} format={(v) => `${Math.round(v)}건`} />
           </Card>
         </div>
       </div>
 
       <div className="grid g-2">
-        <Card title="구매 의도별 언급률" sub="SA 캠페인 5종(p.35) 기준 질의 묶음" actions={<Src kind="DEMO" />}>
+        <Card title="구매 의도별 언급률" sub="SA 캠페인 5종(p.35) 기준 질의 묶음" actions={<SnapSrc />}>
           <HBarChart data={vis.byIntent.map((b) => ({ label: b.label, value: b.rate * 100, colorVar: '--series-1', note: `${b.mentioned}/${b.total}셀` }))} format={(v) => `${Math.round(v)}%`} max={100}
             refValue={GEO_RULES.engineRateGood * 100} refLabel={`확보 기준 ${GEO_RULES.engineRateGood * 100}%`} />
         </Card>
-        <Card title="반복 관측 패턴" sub={`최근 ${vis.stability.rounds}회 진단에서 같은 질의 · 엔진 셀의 언급 횟수`} actions={<Src kind="DEMO" />}>
+        <Card title="반복 관측 패턴" sub={`최근 ${vis.stability.rounds}회 진단에서 같은 질의 · 엔진 셀의 언급 횟수`} actions={<SnapSrc />}>
           <ShareBar format={(s) => `${Math.round(s * 100)}%`} parts={[
             { label: `안정 (≥${GEO_RULES.stableRounds}회) ${vis.stability.stable}셀`, value: vis.stability.stable, colorVar: '--series-3' },
             { label: `변동 (1~${GEO_RULES.stableRounds - 1}회) ${vis.stability.volatile}셀`, value: vis.stability.volatile, colorVar: '--series-4' },

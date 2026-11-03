@@ -169,7 +169,7 @@ function TestCardView({ card, m }: { card: TestCard; m: LabModel }) {
   const row = (label: string, c: string, v: string, diff?: string, p?: string) => <tr><td>{label}</td><td>{c}</td><td>{v}</td><td>{diff ?? ''}</td><td>{p ?? ''}</td></tr>;
   return (
     <Card title={<span className="row" style={{ gap: 6 }}><span className="lab-mono">{card.id}</span>{card.title}</span>} sub={`${card.variable} 테스트 · ${card.media}${card.intent ? ` · ${SA_CAMPAIGNS[card.intent].name}` : ''} · 지표 ${card.metricsLabel}`}
-      actions={card.source === 'demo' ? <Src kind="DEMO" /> : <Pill tone="outline">사용자 카드</Pill>}>
+      actions={card.source === 'demo' ? <Src kind="DEMO" fixture title="시연용 예시 테스트 카드 · 실제 테스트 결과 아님" /> : <Pill tone="outline">사용자 카드</Pill>}>
       <div className="lab-quote">{card.hypothesis}</div>
       <div className="lab-kv">
         <dt>기존안</dt><dd className="small">{card.control}</dd>
@@ -277,7 +277,7 @@ export function CardsTab({ m, draft, onMakeCard, onDraftUsed }: { m: LabModel; d
     { key: 'applied', label: '적용 범위', render: (p) => <span className="lab-basis">{p.applied}</span> },
     { key: 'cond', label: '전제 조건', render: (p) => <span className="lab-basis">{p.condition}</span> },
     { key: 'counter', label: '반례 · 한계', render: (p) => <span className="lab-basis">{p.counter}</span> },
-    { key: 'src', label: '', render: (p) => (p.source === 'demo' ? <Src kind="DEMO" title="가상 이력 · 실제 테스트 결과 아님" /> : <Pill tone="good">랩업 기록</Pill>) },
+    { key: 'src', label: '', render: (p) => (p.source === 'demo' ? <Src kind="DEMO" fixture title="가상 이력 · 실제 테스트 결과 아님" /> : <Pill tone="good">랩업 기록</Pill>) },
   ];
   const counts = Object.values(judgements).reduce<Record<string, number>>((a, j) => ({ ...a, [j.verdict]: (a[j.verdict] ?? 0) + 1 }), {});
   return (

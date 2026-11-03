@@ -4,6 +4,8 @@
  */
 import { useState } from 'react';
 import type { AppState } from '@/core/store';
+import { ROLE_LABEL } from '@/core/permissions';
+import { useSaas } from '@/saas/context';
 import { PageHeader, Segmented, Src, Tabs } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
 import { BoardTab } from './BoardTab';
@@ -21,7 +23,8 @@ export type FlowTab = 'board' | 'timeline' | 'promo' | 'report' | 'request' | 's
 
 export default function View() {
   const ctx = useFlow();
-  const { summary, checks, cases, state, clock, data, dispatch } = ctx;
+  const { summary, checks, cases, state, clock, data, dispatch, server } = ctx;
+  const saas = useSaas();
   const [tab, setTab] = useState<FlowTab>('board');
   const [openId, setOpenId] = useState<string | null>(null);
   const [draft, setDraft] = useState<RequestDraft>(EMPTY_DRAFT);
@@ -39,10 +42,17 @@ export default function View() {
         sub="요청 · 승인 · 반영 이력을 한 화면에서 처리하고, 프로모션은 오픈 전 자동 점검과 종료 후 자동 리포트로 묶어 브랜드 ↔ 대행사 확인 왕복을 줄입니다."
         sources={<><Src kind="PROPOSAL" page="p.31" /><Src kind="PROPOSAL" page="p.53" /><Src kind="PROPOSAL" page="p.15" /><Src kind="DEMO" /></>}
         actions={
-          <div className="flow-role" title="승인 · 반려 · 반영 · 롤백 권한은 요청의 승인 주체와 현재 역할을 대조합니다 (p.53)">
+          <div className="flow-role" title={server
+            ? '승인 · 반려 · 반영 · 롤백 권한은 로그인 계정의 멤버십 역할로 정해지고 서버가 최종 판정합니다 (p.53)'
+            : '승인 · 반려 · 반영 · 롤백 권한은 요청의 승인 주체와 현재 역할을 대조합니다 (p.53)'}>
             <span className="xs muted">현재 역할</span>
-            <Segmented<AppState['role']> label="현재 역할" value={state.role} onChange={(role) => dispatch({ type: 'role/set', role })}
-              options={[{ id: '담당 AE', label: '담당 AE' }, { id: 'PM', label: 'PM' }, { id: '수면밀도', label: '수면밀도' }]} />
+            {server ? (
+              // 서버 모드: 역할은 멤버십 기준(role/set은 서버 모드에서 버려진다) — 읽기 전용으로 표시하고 바꾸는 곳은 팀 · 권한
+              <strong className="small flow-role-fixed" aria-label="현재 역할 (멤버십)">{saas.role ? ROLE_LABEL[saas.role] : state.role}</strong>
+            ) : (
+              <Segmented<AppState['role']> label="현재 역할" value={state.role} onChange={(role) => dispatch({ type: 'role/set', role })}
+                options={[{ id: '담당 AE', label: '담당 AE' }, { id: 'PM', label: 'PM' }, { id: '수면밀도', label: '수면밀도' }]} />
+            )}
             <span className="xs ink2">승인 범위 {roleScopeLabel(state.role)} 건</span>
           </div>
         } />
@@ -79,7 +89,7 @@ export default function View() {
           <span className="flow-hero-foot">배정 대기 {sc.assign} · 조치 {sc.action} · 보고 {sc.report}</span>
         </button>
         <div className="flow-hero-meta xs">
-          <Src kind="DEMO" /> 데이터 기준 {fmtStamp(clock.nowMs)} · 시연 이력 {summary.seeds}건 포함
+          <Src kind="DEMO" /> 데이터 기준 {fmtStamp(clock.nowMs)}{server ? '' : ` · 시연 이력 ${summary.seeds}건 포함`}
         </div>
       </section>
 

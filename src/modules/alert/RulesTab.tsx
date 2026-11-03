@@ -11,6 +11,8 @@ import { canApprove, type AlertCtx } from './hooks';
 
 const ANOMALY_RULES = ['data_spike', 'anomaly_warn', 'tracking_break', 'keyword_spike', 'invalid_traffic'];
 /** p.44 행 ↔ p.45 추가 탐지 유형 묶음 (품절 페이지 · 가격 불일치는 소재 · 랜딩, 추적 단절 · 무효 트래픽은 데이터 급변 행에 함께 집계) */
+/** 소재 검수 · 랜딩 규칙 — 화면의 점검 대상은 시연용 예시 소재 목록(DEMO_CREATIVES)이다 */
+const CREATIVE_RULES = new Set(['creative_rejected', 'creative_pending', 'landing_error']);
 const TYPE_GROUP: Record<string, string[]> = { creative_landing: ['creative_landing', 'soldout_landing', 'price_mismatch'], data_spike: ['data_spike', 'tracking_break', 'invalid_traffic'], ad_off: ['ad_off', 'bulk_change'] };
 type Draft = Record<string, Threshold | number>;
 const draftOf = (cfg: AlertConfig): Draft => Object.fromEntries(CONFIG_FIELDS.map((f) => [f.key, f.kind === 'threshold' ? { ...cfg.thresholds[f.key as MetricKey] } : (cfg as unknown as Record<string, number>)[f.key]]));
@@ -167,7 +169,7 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
             { key: 's', label: '기본 등급', render: (r) => <Sev level={r.severity} /> },
             { key: 'b', label: '판정 기준', render: (r) => <span className="xs">{r.basis}</span> },
             { key: 'p', label: '출처', render: (r) => (r.page.startsWith('p.') ? <Src kind="PROPOSAL" page={r.page} /> : <span className="xs muted">{r.page}</span>) },
-            { key: 'sc', label: '점검 대상', render: (r) => <span className="xs">{scopeOf[r.id] ?? '—'}</span> },
+            { key: 'sc', label: '점검 대상', render: (r) => <span className="xs">{scopeOf[r.id] ?? '—'}{CREATIVE_RULES.has(r.id) ? <> <Src kind="DEMO" fixture title="시연용 예시 소재 목록 · 매체 소재 검수 연동 전 (실제 소재 아님)" /></> : null}</span> },
             { key: 'n', label: '열림', align: 'right', render: (r) => <span className="num">{r.count}</span>, sort: (r) => r.count },
           ]} />
       </Card>

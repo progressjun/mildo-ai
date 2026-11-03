@@ -2,9 +2,11 @@
  * 수집 파이프라인 — 커넥터 fetch → 정제 · 품질 검사 → 웨어하우스 멱등 upsert → ingest_runs 기록.
  * 커넥터는 DB에 쓰지 않는다(§3). 여기서만 wh_*에 쓴다.
  *
- *   daily     : 어제 포함 3일(어제 · 그제 · 사흘 전) 재수집 — 늦게 잡히는 전환 반영
+ *   daily     : 매체(media · 기타)는 어제 포함 3일(어제 · 그제 · 사흘 전) — 늦게 잡히는 전환 반영,
+ *               판매 채널(def.kind === 'sales')은 어제 포함 14일 — 늦게 들어오는 취소 · 반품을 결제일 매출에서 빼기 위해 (dailyRangeFor)
  *   intraday  : 오늘 시간대 + 캠페인 오늘 소진액 (capabilities.intraday인 커넥터만)
- *   backfill  : 지정 기간을 31일 단위로 나눠 수집 (capabilities.maxBackfillDays · 400일 상한)
+ *   backfill  : 지정 기간을 31일 단위로 나눠 수집 (capabilities.maxBackfillDays · 400일 상한).
+ *               묶음마다 · 끝의 intraday 전에 커넥션 행을 다시 읽는다 — 앞 묶음이 OAuth 토큰을 회전(ctx.saveCredentials)시켰으면 새 자격증명으로 이어 간다
  *   upload    : CSV 업로드 (출처 'csv:<업로드 id>')
  * 성공하면 alerts.scan을 enqueue(dedupe alerts.scan:<ws>)하고 'dataset' · 'connection' 이벤트를 발행한다.
  *
@@ -15,9 +17,9 @@
 import type { Db, Queryable } from '../db/pool';
 import { one } from '../db/pool';
 import type { AppConfig } from '../config';
-import type { ConnectorHttp, DateRange, NormalizedBatch } from '../connectors/types';
+import type { ConnectorDef, ConnectorHttp, DateRange, NormalizedBatch } from '../connectors/types';
 import { getConnector } from '../connectors/registry';
-import { buildConnectorContext, MAX_BACKFILL_DAYS, sourceKeyOf, type ConnectionRow } from '../connectors/service';
+import { buildConnectorContext, loadConnection, MAX_BACKFILL_DAYS, sourceKeyOf, type ConnectionRow } from '../connectors/service';
 import { scrubSecrets, type FetchLike } from '../connectors/http';
 import { blockingIssues, csvToBatch, normalizeCsv, type UploadTemplate } from '../connectors/csv';
 import { writeBatch } from '../warehouse/write';
@@ -70,8 +72,17 @@ export function chunkRange(range: DateRange, size = BACKFILL_CHUNK_DAYS): DateRa
   return out;
 }
 
-export function dailyRange(today: string): DateRange {
-  return { from: addDaysStr(today, -3), to: addDaysStr(today, -1) };
+/** 예약 · 수동 daily 재수집 일수: 매체 3일(늦은 전환), 판매 채널 14일(늦은 취소 · 반품) */
+export const DAILY_RECOLLECT_DAYS = { media: 3, sales: 14 } as const;
+
+/** 어제 포함 days일 (기본 3일) */
+export function dailyRange(today: string, days: number = DAILY_RECOLLECT_DAYS.media): DateRange {
+  return { from: addDaysStr(today, -Math.max(1, Math.round(days))), to: addDaysStr(today, -1) };
+}
+
+/** 커넥터 종류별 daily 기간 — 판매 채널 14일, 나머지 3일 */
+export function dailyRangeFor(def: Pick<ConnectorDef, 'kind'> | null | undefined, today: string): DateRange {
+  return dailyRange(today, def?.kind === 'sales' ? DAILY_RECOLLECT_DAYS.sales : DAILY_RECOLLECT_DAYS.media);
 }
 
 async function loadHistory(q: Queryable, wsId: string, source: string, range: DateRange): Promise<HistoryRow[]> {
@@ -151,14 +162,20 @@ export async function backfillConnection(db: Db, config: AppConfig, conn: Connec
   const def = getConnector(conn.provider);
   if (!def) throw new Error(`알 수 없는 공급자: ${conn.provider}`);
   const results: IngestRunResult[] = [];
+  // 묶음마다 커넥션 행을 다시 읽는다: 앞 묶음이 갱신 토큰을 회전시켜 저장했으면(카페24 · 네이버 등 OAuth) 옛 자격증명(폐기된 토큰)으로 이어 가지 않게
+  const fresh = () => loadConnection(db, conn.workspace_id, conn.id);
   for (const r of chunkRange(range)) {
-    const res = await ingestConnection(db, config, conn, { ...o, job: 'backfill', range: r, notify: false });
+    const cur = await fresh();
+    if (!cur) return results; // 삭제됨 — 나머지 묶음 · 후처리 생략
+    const res = await ingestConnection(db, config, cur, { ...o, job: 'backfill', range: r, notify: false });
     results.push(res);
     if (res.gone) return results; // 삭제됨 — 나머지 묶음 · 후처리 생략
   }
   const today = kstParts().date;
   if (def.capabilities.intraday && range.to >= addDaysStr(today, -1)) {
-    results.push(await ingestConnection(db, config, conn, { ...o, job: 'intraday', range: { from: today, to: today }, intradayDate: today, notify: false }));
+    const cur = await fresh();
+    if (!cur) return results;
+    results.push(await ingestConnection(db, config, cur, { ...o, job: 'intraday', range: { from: today, to: today }, intradayDate: today, notify: false }));
   }
   await afterIngest(db, conn.workspace_id, conn.id);
   return results;
@@ -211,10 +228,13 @@ export async function keywordIdByText(q: Queryable, wsId: string): Promise<Map<s
   return m;
 }
 
+/** 브랜드 키워드 판정어: 워크스페이스 brand_name + 설정 brand.name(비어 있지 않은 문자열) + 설정 brandKeywords */
 export async function brandTerms(q: Queryable, wsId: string): Promise<string[]> {
   const w = await one<{ brand_name: string; config: Record<string, unknown> }>(q, 'SELECT brand_name, config FROM workspaces WHERE id = $1', [wsId]);
   const terms = new Set<string>();
   if (w?.brand_name) terms.add(w.brand_name);
+  const name = (w?.config as { brand?: { name?: unknown } } | undefined)?.brand?.name;
+  if (typeof name === 'string' && name.trim()) terms.add(name.trim());
   const kw = (w?.config as { brandKeywords?: unknown } | undefined)?.brandKeywords;
   if (Array.isArray(kw)) for (const k of kw) if (typeof k === 'string' && k.trim()) terms.add(k.trim());
   return [...terms];

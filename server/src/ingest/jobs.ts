@@ -1,6 +1,6 @@
 /**
  * 수집 잡 · 스케줄 (docs/SAAS_SPEC.md §6 잡 타입 계약)
- *   ingest.daily     { connectionId?, trigger? }            어제 포함 3일 재수집 (connectionId 없으면 워크스페이스의 모든 대상 커넥션)
+ *   ingest.daily     { connectionId?, trigger? }            어제 포함 3일(판매 채널은 14일) 재수집 (connectionId 없으면 워크스페이스의 모든 대상 커넥션)
  *   ingest.intraday  { connectionId?, trigger? }            오늘 시간대 + 캠페인 오늘 소진 (intraday 지원 커넥터만)
  *   ingest.backfill  { connectionId, days? | from?, to? }   31일 묶음, maxBackfillDays · 400일 상한
  *   ingest.upload    { uploadId }                           CSV 업로드 가져오기
@@ -15,7 +15,7 @@ import { enqueue } from '../jobs/queue';
 import { getConnector } from '../connectors/registry';
 import { loadConnection, type ConnectionRow } from '../connectors/service';
 import { kstParts } from '../lib/time';
-import { backfillConnection, backfillRange, dailyRange, importUpload, ingestConnection, type IngestRunResult } from './pipeline';
+import { backfillConnection, backfillRange, dailyRangeFor, importUpload, ingestConnection, type IngestRunResult } from './pipeline';
 
 const SCHEDULED_STATUSES = ['active', 'error'];
 
@@ -68,7 +68,7 @@ async function forEachConn(db: Db, ctx: JobContext, kind: 'daily' | 'intraday', 
 export function registerIngestJobs(reg: JobRegistry): void {
   reg.job('ingest.daily', async (ctx) => {
     const today = kstParts().date;
-    return forEachConn(ctx.db, ctx, 'daily', async (c) => [await ingestConnection(ctx.db, ctx.config, c, { job: 'daily', range: dailyRange(today), trigger: String(ctx.payload.trigger ?? 'schedule'), log: ctx.log })]);
+    return forEachConn(ctx.db, ctx, 'daily', async (c) => [await ingestConnection(ctx.db, ctx.config, c, { job: 'daily', range: dailyRangeFor(getConnector(c.provider), today), trigger: String(ctx.payload.trigger ?? 'schedule'), log: ctx.log })]);
   });
 
   reg.job('ingest.intraday', async (ctx) => {

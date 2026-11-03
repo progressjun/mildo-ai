@@ -105,7 +105,7 @@ export function HolidayTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string
                     <div key={k} className="row small" style={{ gap: 8, flexWrap: 'nowrap', alignItems: 'flex-start', borderTop: '1px solid var(--line)', paddingTop: 6 }}>
                       <LevelPill level={i.level} />
                       <div className="stack-sm" style={{ gap: 1, minWidth: 0 }}>
-                        <strong className="small">{i.item}</strong>
+                        <strong className="small">{i.item}{i.fixture ? <> <Src kind="DEMO" fixture title="시연용 예시 소재 · 매체 소재 검수 연동 전 (실제 소재 아님)" /></> : null}</strong>
                         <span className="xs ink2">{i.detail}</span>
                         {i.action !== '—' ? <span className="xs muted">조치: {i.action}</span> : null}
                       </div>

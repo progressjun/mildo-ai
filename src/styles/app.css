@@ -374,7 +374,3 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
   .user-pop { right: auto; left: 0; }
 }
 .src.empty { background: var(--surface-2); color: var(--muted); border: 1px dashed var(--line-strong); }
-
-/* 서버 모드: 모듈 화면의 데모 3역할 전환은 숨긴다 — 역할은 로그인 계정의 멤버십 기준이고 상단 사용자 메뉴에 표시된다 (docs/SAAS_SPEC.md §2) */
-.shell[data-saas='server'] .flow-role > .seg[aria-label='현재 역할'] { display: none; }
-.shell[data-saas='server'] .row:has(> .seg[aria-label='작성 역할']) { display: none; }

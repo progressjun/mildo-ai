@@ -15,7 +15,7 @@ import { ExecBadge } from './ExecutionPanel';
 import { execCsvLabel, executionState, isExecuting } from './execution';
 
 export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: string) => void; onNew: () => void }) {
-  const { changes, state, clock, summary, act, bulk, data, incidents, missingSeeds, loadSeeds, bulkAlerts, apCfg } = ctx;
+  const { changes, state, clock, summary, act, bulk, data, incidents, missingSeeds, loadSeeds, bulkAlerts, apCfg, server } = ctx;
   const [filter, setFilter] = useState<ChangeFilter>({ scope: 'all', module: 'all', approver: 'all', kind: 'all', q: '' });
   const [view, setView] = useState<'board' | 'table'>('board');
   const list = useMemo(() => sortByCreatedDesc(filterChanges(changes, filter, state.role, clock), clock.toMs), [changes, filter, state.role, clock]);
@@ -91,7 +91,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
           {q.approve.length && approveGuard.level !== 'ok' ? <div className="xs muted">일괄 처리 점검: {approveGuard.reasons.join(' · ')}</div> : null}
           {q.blocked.length && q.total ? <div className="xs muted">권한 밖 승인 대기 {q.blocked.length}건: {q.blocked.map((c) => `${c.target} → ${APPROVER_LABEL[c.approver]}`).join(' · ')}</div> : null}
         </Card>
-        <Card className="flow-status-card" title="처리 현황" sub="요청 → 승인 → 반영 · 롤백 (이번 세션 + 시연 이력)" actions={<Src kind="DEMO" />}>
+        <Card className="flow-status-card" title="처리 현황" sub={server ? '요청 → 승인 → 반영 · 롤백 (워크스페이스 전체 이력)' : '요청 → 승인 → 반영 · 롤백 (이번 세션 + 시연 이력)'} actions={<Src kind="DEMO" />}>
           <div className="flow-mini-stats">
             {STATUS_ORDER.map((s) => (
               <div key={s} className={`flow-mini-stat st-${s}`}>
@@ -103,7 +103,8 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
           <div className="small ink2">
             결정까지 평균 <strong className="num">{fmtDuration(summary.avgDecisionMin)}</strong> · p.53 소요 기준 충족 <strong className="num">{Number.isFinite(summary.metRate) ? `${Math.round(summary.metRate * 100)}%` : '—'}</strong> ({summary.decided}건) · 기준 초과 대기 <strong className="num">{summary.overdue.length}</strong>건
           </div>
-          {missingSeeds.length ? (
+          {/* 서버 모드: 이력은 서버가 원본이고 시연 이력(seed_flow_*)은 적재하지 않는다 — 불러오기 안내를 띄우지 않는다 */}
+          {!server && missingSeeds.length ? (
             <Callout tone="info" title="시연용 이력이 비어 있습니다">
               <div className="stack-sm" style={{ gap: 6 }}>
                 <span>최근 3일 요청 · 승인 · 반영 · 롤백 사례 {missingSeeds.length}건을 테스트 데이터로 불러옵니다 (다른 모듈 계산에 영향 없음).</span>
@@ -149,7 +150,11 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
         <div className="flow-filters">
           <input className="input" aria-label="검색" placeholder="대상 · 사유 · 요청자 검색" value={filter.q ?? ''} onChange={(e) => setFilter((f) => ({ ...f, q: e.target.value }))} />
           <Segmented label="범위" value={filter.scope ?? 'all'} onChange={(v) => setFilter((f) => ({ ...f, scope: v }))}
-            options={[{ id: 'all', label: `전체 ${changes.length}` }, { id: 'mine', label: `내 차례 ${q.total}` }, { id: 'overdue', label: `기준 초과 ${summary.overdue.length}` }, { id: 'live', label: '이번 세션' }, { id: 'seed', label: '시연 이력' }]} />
+            options={[
+              { id: 'all', label: `전체 ${changes.length}` }, { id: 'mine', label: `내 차례 ${q.total}` }, { id: 'overdue', label: `기준 초과 ${summary.overdue.length}` },
+              // 서버 모드에는 시연 이력이 없어 '이번 세션'(= 시연 이력 제외)은 전체와 같다 — 두 범위 모두 데모 모드에서만
+              ...(server ? [] : [{ id: 'live' as const, label: '이번 세션' }, { id: 'seed' as const, label: '시연 이력' }]),
+            ]} />
           <select className="select" aria-label="모듈" value={filter.module} onChange={(e) => setFilter((f) => ({ ...f, module: e.target.value }))}>
             <option value="all">모듈 전체</option>
             {modules.map((m) => <option key={m} value={m}>{MODULE_LABEL[m] ?? m}</option>)}

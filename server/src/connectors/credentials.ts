@@ -2,8 +2,10 @@
  * 커넥션 자격증명 — DB에는 AES-256-GCM 암호문(connections.credentials_enc)만 저장하고,
  * API 응답 · 로그 · 감사에는 마스킹 값만 내보낸다 (docs/SAAS_SPEC.md §5).
  */
+import { z } from 'zod';
 import { decryptJson, encryptJson } from '../lib/crypto';
 import type { ConnectorDef } from './types';
+import { MALL_ID as CAFE24_MALL_ID } from './cafe24';
 
 export type Credentials = Record<string, unknown>;
 
@@ -64,4 +66,50 @@ export function mergeCredentials(prev: Credentials, patch: Credentials | undefin
 /** 빈 문자열 제거 (생성 시) */
 export function cleanCredentials(c: Credentials | undefined): Credentials {
   return mergeCredentials({}, c);
+}
+
+/* ---------- OAuth 인증 코드 흐름 공급자 (토큰 없이 앱 정보만 저장 → 화면의 인증 시작 버튼으로 승인) ---------- */
+
+export interface OAuthAppSpec {
+  /** 화면 버튼 · 안내 문구 */
+  startLabel: string;
+  /** 토큰 없이도 저장할 수 있는 앱 정보 (공급자 자격증명 스키마의 같은 필드와 같은 규칙) */
+  appSchema: z.ZodType<Credentials>;
+  /** 이 중 하나라도 있으면 '토큰 있음' — 그때는 공급자 스키마 전체를 그대로 적용한다 */
+  tokenKeys: string[];
+}
+
+export const OAUTH_APPS: Record<string, OAuthAppSpec> = {
+  cafe24: {
+    startLabel: '카페24 인증 시작',
+    // server/src/connectors/cafe24/index.ts credentialsSchema의 mallId · clientId · clientSecret · redirectUri와 같은 규칙
+    appSchema: z.object({
+      mallId: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.string().regex(CAFE24_MALL_ID, '쇼핑몰 ID(mall_id)는 영문 소문자 · 숫자(가운데 하이픈 허용) 2~49자입니다')),
+      clientId: z.string().trim().min(5, 'Client ID를 입력해 주세요'),
+      clientSecret: z.string().trim().min(5, 'Client Secret을 입력해 주세요'),
+      redirectUri: z.string().trim().url('Redirect URI는 앱에 등록한 URL 전체입니다').optional(),
+    }) as unknown as z.ZodType<Credentials>,
+    tokenKeys: ['refreshToken', 'authCode', 'accessToken'],
+  },
+};
+
+/**
+ * 공급자 자격증명 스키마가 '토큰 없음'만으로 거절한 입력을 OAuth 승인 대기 상태로 받아 줄지.
+ * 조건: OAuth 공급자 · 입력에 토큰 키가 하나도 없음 · 앱 정보 스키마 통과 · 거절 사유가 전부 사용자 정의 검사(refine)
+ * → 앱 정보만(정규화된 값) 돌려준다. 아니면 null (원래 오류를 그대로 보여 준다).
+ */
+export function oauthPendingCredentials(provider: string, input: Credentials, issues: readonly { code: string }[]): Credentials | null {
+  const spec = OAUTH_APPS[provider];
+  if (!spec) return null;
+  if (spec.tokenKeys.some((k) => input[k] !== undefined && input[k] !== null && input[k] !== '')) return null;
+  if (!issues.length || !issues.every((i) => i.code === 'custom')) return null;
+  const app = spec.appSchema.safeParse(input);
+  return app.success ? app.data : null;
+}
+
+/** 저장된 자격증명에 토큰이 없고 앱 정보만 있는 OAuth 커넥션인지 (연결 확인 · 수집 전에 승인이 필요) */
+export function needsOAuthApproval(provider: string, creds: Credentials): boolean {
+  const spec = OAUTH_APPS[provider];
+  if (!spec) return false;
+  return !spec.tokenKeys.some((k) => creds[k] !== undefined && creds[k] !== null && creds[k] !== '') && spec.appSchema.safeParse(creds).success;
 }

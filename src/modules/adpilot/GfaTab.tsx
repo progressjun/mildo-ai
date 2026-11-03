@@ -112,7 +112,7 @@ export function GfaTab({ ap }: { ap: AdPilotCtx }) {
 
       <div className="grid g-3">
         {views.map((v) => (
-          <Card key={v.account.id} title={v.account.name} sub={`소유 ${v.account.owner} · ${v.account.paymentMethod}`} actions={<>{v.demo ? <Src kind="DEMO" title="시연용 가정 계정 · 실제 계정 아님" /> : <Src kind="DEMO" />}</>}>
+          <Card key={v.account.id} title={v.account.name} sub={`소유 ${v.account.owner} · ${v.account.paymentMethod}`} actions={<>{v.demo ? <Src kind="DEMO" fixture title="시연용 가정 계정 · 실제 계정 아님" /> : <Src kind="DEMO" />}</>}>
             <div className="row" style={{ gap: 6 }}>
               <LevelPill level={v.level}>{v.level === 'critical' ? '즉시 조치' : v.level === 'warn' ? '주의' : '정상'}</LevelPill>
               <span className="xs muted">기준: 잔액 1일치 · 자동충전 · 계정 상태 · 실명 권한 (p.44 · p.50)</span>

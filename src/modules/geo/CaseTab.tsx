@@ -41,7 +41,7 @@ export function CaseTab({ value, onChange, snap }: { value: CaseInput; onChange:
   return (
     <div className="grid g-3">
       <Card className="span-2" title="적용 사례 · 실제 집행 수치" sub="제안서 p.29 공란을 채웁니다 · 실제 집행 브랜드 데이터로만 입력"
-        actions={<><Src kind="PROPOSAL" page="p.29" />{m.demo ? <Src kind="DEMO" /> : null}</>}>
+        actions={<><Src kind="PROPOSAL" page="p.29" />{m.demo ? <Src kind="DEMO" fixture title="데모 스냅샷으로 채운 값 · 실제 집행 수치 아님" /> : null}</>}>
         <div className="geo-quote">제안서 원문: <span className="geo-blank">{GEO_CASE_BLANK}</span> · {GEO_PRINCIPLE}</div>
         <div className="grid g-4">
           <Field label="브랜드" id="geo-case-brand"><input id="geo-case-brand" className="input" placeholder="[브랜드]" value={value.brand} onChange={(e) => set({ brand: e.target.value })} /></Field>
@@ -71,7 +71,7 @@ export function CaseTab({ value, onChange, snap }: { value: CaseInput; onChange:
         <div className="xs muted">입력값은 이 브라우저에만 저장됩니다. 언급률 = 진단 질의 × 엔진 셀 중 브랜드가 언급된 비율, 인용 수 = AI 답변 인용 출처 중 자사 채널(자사몰 · 브랜드스토어 · 공식 인스타그램) 건수로 정의합니다.</div>
       </Card>
 
-      <Card title="참고 · 정기 진단 기록 형식" sub="같은 정의로 회차마다 기록한 값 (데모 스냅샷)" actions={<Src kind="DEMO" />}>
+      <Card title="참고 · 정기 진단 기록 형식" sub="같은 정의로 회차마다 기록한 값 (데모 스냅샷)" actions={<Src kind="DEMO" fixture title="데모 진단 스냅샷 · 실제 엔진 응답 아님" />}>
         <DataTable rows={ref} rowKey={(r) => r.date}
           columns={[
             { key: 'd', label: '진단일', render: (r) => <span className="small">{dateLabel(r.date)}</span> },

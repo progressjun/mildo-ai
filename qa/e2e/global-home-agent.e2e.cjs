@@ -36,6 +36,19 @@ const closeToasts = async (p) => { for (const b of await p.$$('.toast .icon-btn'
 async function until(fn, ms = 4000, step = 100) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await fn()) return true; await new Promise((r) => setTimeout(r, step)); } return false; }
 const noErr = (h) => assert(h.errors.length === 0, `console errors: ${h.errors.join(' | ').slice(0, 200)}`);
 const topPill = (p) => p.locator('header.topbar .pill').first().textContent();
+/** 모듈 레지스트리(src/modules/registry.ts) 순서의 모듈 id — 메뉴 · 에이전트 도구 목록 수는 이 개수(현재 18 = 운영 12 + 관리 · 연동 6)와 같아야 한다 */
+const REGISTRY_IDS = [...require('fs').readFileSync(require('path').join(REPO, 'src/modules/registry.ts'), 'utf8').matchAll(/^\s*\{ id: '([a-z]+)',/gm)].map((m) => m[1]);
+/** 관리 · 연동(그룹 admin) 6개 — 데모 모드에서도 메뉴 · 에이전트 도구에 있어야 한다 (docs/SAAS_SPEC.md §3) */
+const ADMIN_MODULES = ['impact', 'connections', 'notify', 'team', 'audit', 'workspace'];
+/** 링크 목록의 href(#id)가 레지스트리 전체 · 관리 모듈 6개를 모두 담는지 */
+async function assertModuleLinks(locator, what) {
+  const ids = (await locator.evaluateAll((els) => els.map((e) => (e.getAttribute('href') || '').replace(/^#/, ''))));
+  assert(REGISTRY_IDS.length === 18, `registry ids ${REGISTRY_IDS.length}: ${REGISTRY_IDS.join(',')}`);
+  assert(ids.length === REGISTRY_IDS.length, `${what} ${ids.length} ≠ registry ${REGISTRY_IDS.length}`);
+  const missing = ADMIN_MODULES.filter((m) => !ids.includes(m));
+  assert(missing.length === 0, `${what}: admin modules missing ${missing.join(',')}`);
+  return ids;
+}
 const ROUTES = { home: '오늘의 운영', agent: 'MILDO Agent', board: 'MILDO Board', adpilot: 'AD Pilot · GFA Control v1', reports: '리포트 · 데이터 시간표', watch: 'MILDO Watch', lab: 'MILDO Lab', geo: 'SearchTuneOS · GEO', growth: '매출 성장 고도화', flow: 'MILDO Flow', alert: 'MILDO Alert', ops: '전담 TF · 온보딩 · 계약' };
 
 async function runScenario(p) {
@@ -544,7 +557,8 @@ async function runScenario(p) {
     const clip = await p.evaluate(() => navigator.clipboard.readText());
     assert(clip.startsWith('#### ') && clip.includes('### 확정 팩트'), `clip ${clip.slice(0, 50)}`);
     const links = p.locator('.agent-tools a');
-    assert((await links.count()) === 12, 'module links');
+    const ids = await assertModuleLinks(links, 'module links');
+    assert(ids[10] === 'alert', `11th tool module ${ids[10]}`);
     await links.nth(10).click(); await p.waitForTimeout(300);
     assert((await hash(p)) === '#alert', 'tool module link');
     noErr(h);
@@ -686,7 +700,8 @@ async function runScenario(p) {
     const box = p.locator('main section.card[role=alert]');
     await p.evaluate(() => { window.__boom = true; location.hash = 'board'; }); await p.waitForTimeout(600);
     assert((await box.count()) === 1 && (await box.textContent()).includes('MILDO Board 화면을 표시하지 못했습니다'), 'error card');
-    assert((await p.locator('.nav-item').count()) === 12 && (await p.locator('header.topbar').count()) === 1, 'shell intact');
+    await assertModuleLinks(p.locator('.nav-item'), 'shell intact · nav items');
+    assert((await p.locator('header.topbar').count()) === 1, 'shell intact');
     await p.evaluate(() => { window.__boom = false; });
     await box.getByRole('button', { name: '다시 시도' }).click(); await p.waitForTimeout(500);
     assert((await p.locator('main h1').first().textContent()) === 'MILDO Board', 'retry renders');

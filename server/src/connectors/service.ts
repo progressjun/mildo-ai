@@ -8,6 +8,9 @@
  * API (docs/SAAS_SPEC.md §6): GET/POST /api/w/:ws/connections · PATCH/DELETE …/:id · POST …/:id/test · POST …/:id/sync
  * 권한: 읽기 read, 생성 · 수정 · 삭제 · 연결 확인 configure, 수동 수집 operate, write_mode='live'로 켜기 live_write.
  *   live 커넥션의 자격증명 교체도 live_write — 반영 대상 계정을 바꾸는 일이라 live를 켜는 것과 같은 권한으로 본다.
+ * CSV 전용 공급자(수집 항목 reads가 비어 있는 API 공급자 — 예: 오늘의집): 커넥션을 만들지 않고 400 csv_only + CSV 경로 안내(csvOnlyGuide).
+ * OAuth 공급자(카페24): 토큰 없이 앱 정보(쇼핑몰 ID · Client ID · Client Secret)만으로 저장할 수 있다(상태 pending) —
+ *   커넥션 카드의 '카페24 인증 시작'(connectors/oauth.ts)으로 운영자 승인을 받으면 토큰이 저장된다(credentials.ts OAUTH_APPS).
  */
 import type { FastifyPluginAsync } from 'fastify';
 import type { Db, Queryable } from '../db/pool';
@@ -16,7 +19,8 @@ import type { AppConfig } from '../config';
 import type { ConnectorContext, ConnectorDef, ConnectorHttp } from './types';
 import { getConnector } from './registry';
 import { createConnectorHttp, scrubSecrets, type FetchLike } from './http';
-import { cleanCredentials, decryptCredentials, encryptCredentials, maskedCredentials, mergeCredentials, type Credentials } from './credentials';
+import { cleanCredentials, decryptCredentials, encryptCredentials, maskedCredentials, mergeCredentials, needsOAuthApproval, OAUTH_APPS, oauthPendingCredentials, type Credentials } from './credentials';
+import { csvGuide as ohouseCsvGuide } from './ohouse';
 import { z, parseBody } from '../lib/validate';
 import { badRequest, conflict, forbidden, notFound, HttpError } from '../lib/errors';
 import { audit } from '../audit/audit';
@@ -64,6 +68,31 @@ export function safeSettings(settings: Record<string, unknown> | null | undefine
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(settings ?? {})) out[k] = SECRET_SETTING.test(k) ? (v === undefined || v === null || v === '' ? null : '••••') : v;
   return out;
+}
+
+/* ---------- CSV 전용 공급자 ---------- */
+
+export interface CsvOnlyGuide {
+  /** 업로드 템플릿 id (src/modules/connections/csv.ts UPLOAD_TEMPLATES) */
+  template: 'sales_daily' | 'media_daily';
+  /** 템플릿의 채널 · 매체 값 */
+  channel: string | null;
+  /** 화면 · 오류 응답 안내 (한국어) */
+  message: string;
+}
+
+/** 공급자별 CSV 경로 안내 — 공급자 파일이 내보낸 안내를 쓴다 (없으면 종류별 기본 안내) */
+const CSV_ONLY_GUIDES: Record<string, CsvOnlyGuide> = {
+  ohouse: { template: ohouseCsvGuide.template, channel: ohouseCsvGuide.channel, message: ohouseCsvGuide.message },
+};
+
+/** API 수집 항목이 없는 공급자(csv · demo 제외)면 CSV 업로드 안내, 아니면 null */
+export function csvOnlyGuide(def: Pick<ConnectorDef, 'provider' | 'kind' | 'channel' | 'label' | 'capabilities'>): CsvOnlyGuide | null {
+  if (def.provider === 'csv' || def.provider === 'demo' || def.capabilities.reads.length > 0) return null;
+  const known = CSV_ONLY_GUIDES[def.provider];
+  if (known) return { ...known };
+  const template = def.kind === 'sales' ? 'sales_daily' : 'media_daily';
+  return { template, channel: def.channel, message: `${def.label}은(는) API 수집을 지원하지 않습니다 — ${template} CSV 템플릿${def.channel ? `(채널 · 매체 값 ${def.channel})` : ''}으로 데이터 연결 화면의 업로드에 올려 주세요` };
 }
 
 /* ---------- 컨텍스트 빌더 ---------- */
@@ -231,7 +260,10 @@ export async function runConnectionTest(db: Queryable, config: AppConfig, row: C
   try {
     const ctx = buildConnectorContext(db, config, row, { ...opts, dryRun: true });
     const parsed = def.credentialsSchema.safeParse(ctx.credentials);
-    if (!parsed.success) {
+    if (!parsed.success && needsOAuthApproval(def.provider, ctx.credentials)) {
+      const label = OAUTH_APPS[def.provider].startLabel;
+      result = { ok: false, message: `${def.label} 인증이 필요합니다 — 커넥션 카드의 '${label}'으로 쇼핑몰 운영자 승인을 받은 뒤 연결 확인을 눌러 주세요` };
+    } else if (!parsed.success) {
       result = { ok: false, message: `자격증명 항목을 확인해 주세요: ${parsed.error.issues.map((i) => i.path.join('.') || '(전체)').join(', ')}` };
     } else {
       let timer: NodeJS.Timeout | undefined;
@@ -284,6 +316,18 @@ function validateWith<T>(schema: z.ZodType<T>, input: unknown, what: string): T 
   return r.data;
 }
 
+/**
+ * 자격증명 검증 — 공급자 스키마 그대로. 단 OAuth 공급자는 토큰 없이 앱 정보만 넣은 경우를 승인 대기로 받아 준다
+ * (정규화된 앱 정보만 저장 · 상태 pending, 인증 시작 버튼으로 토큰을 받는다).
+ */
+function validateCredentials(def: ConnectorDef, input: Credentials): Credentials {
+  const r = def.credentialsSchema.safeParse(input);
+  if (r.success) return r.data as Credentials;
+  const pending = oauthPendingCredentials(def.provider, input, r.error.issues);
+  if (pending) return pending;
+  return validateWith(def.credentialsSchema, input, '자격증명') as Credentials;
+}
+
 function resolveChannel(def: ConnectorDef, requested: string | null | undefined): string | null {
   if (def.channel) return def.channel;
   if (requested === undefined || requested === null || requested === '') return null;
@@ -318,8 +362,10 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
     const body = parseBody(CreateBody, req.body);
     const def = getConnector(body.provider);
     if (!def) throw badRequest(`알 수 없는 공급자입니다: ${body.provider}`);
+    const csvOnly = csvOnlyGuide(def);
+    if (csvOnly) throw new HttpError(400, 'csv_only', csvOnly.message, { template: csvOnly.template, channel: csvOnly.channel });
     if (body.writeMode === 'live' && !can(c.role, 'live_write')) throw forbidden('실제 반영(live)은 관리자 · 소유자만 켤 수 있습니다');
-    const creds = validateWith(def.credentialsSchema, cleanCredentials(body.credentials), '자격증명') as Credentials;
+    const creds = validateCredentials(def, cleanCredentials(body.credentials));
     const settings = validateWith(def.settingsSchema, body.settings ?? {}, '설정') as Record<string, unknown>;
     const channel = resolveChannel(def, body.channel);
     const kindOfSource = sourceKindOf(def.provider);
@@ -381,7 +427,7 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
     if (body.credentials !== undefined || body.clearCredentials?.length) {
       const prev = decryptCredentials<Credentials>(row.credentials_enc, config.encryptionKey);
       const next = mergeCredentials(prev, body.credentials, body.clearCredentials);
-      validateWith(def.credentialsSchema, next, '자격증명');
+      validateCredentials(def, next);
       credsChanged = Object.keys({ ...prev, ...next }).filter((k) => JSON.stringify(prev[k]) !== JSON.stringify(next[k]));
       if (credsChanged.length && liveAfter && !can(c.role, 'live_write')) {
         throw forbidden('실제 반영(live) 중인 커넥션의 자격증명은 관리자 · 소유자만 바꿀 수 있습니다 — 먼저 쓰기 모드를 dry_run으로 내리세요');

@@ -1,6 +1,8 @@
 /* 리포트 4종 (p.17) — 문서형 · 메신저형 · AE 코멘트 · 코멘트 단위 피드백 · AI 해석 */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useActions, useStore, type AppState } from '@/core/store';
+import { ROLE_LABEL } from '@/core/permissions';
+import { useSaas } from '@/saas/context';
 import { useAi } from '@/ai/useAi';
 import { ANALYST_RULES, briefToMarkdown } from '@/ai/prompts';
 import { AI_ERROR_COPY, type AiError } from '@/ai/claude';
@@ -179,6 +181,7 @@ export function ReportsTab({ type, report, genMs, month, setMonth, issueId, setI
 function AePanel({ type, scope, report, count }: { type: ReportType; scope: string; report: Report; count: number }) {
   const { state, dispatch } = useStore();
   const { toast } = useActions();
+  const server = useSaas().mode === 'server';
   // 초안은 리포트 범위(종류 · 월 · 이슈)별로 따로 둔다 — 일간에서 만든 초안이 주간 리포트에 그대로 병합되지 않게
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const text = drafts[scope] ?? '';
@@ -200,7 +203,9 @@ function AePanel({ type, scope, report, count }: { type: ReportType; scope: stri
         <Button size="sm" icon="sparkle" disabled={!canWrite} onClick={() => setText(`해석: ${report.brief.interpretation[0] ?? '—'}\n다음 액션: ${report.brief.actions[0] ?? '—'}`)}>규칙 엔진 초안</Button>
       </div>
       <div className="xs muted">
-        {canWrite ? `작성자: ${state.role} · 초안은 규칙 엔진 문장이며 AE가 수정한 뒤 병합합니다.` : '현재 역할(수면밀도 담당자)은 AE 코멘트 작성 권한이 없습니다. 상단 역할을 담당 AE 또는 PM으로 바꾸면 작성할 수 있습니다.'}
+        {canWrite ? `작성자: ${state.role} · 초안은 규칙 엔진 문장이며 AE가 수정한 뒤 병합합니다.`
+          : server ? '현재 멤버십 역할(광고주 담당자)은 AE 코멘트 작성 권한이 없습니다. 역할은 팀 · 권한에서 관리자가 바꿉니다.'
+          : '현재 역할(수면밀도 담당자)은 AE 코멘트 작성 권한이 없습니다. 상단 역할을 담당 AE 또는 PM으로 바꾸면 작성할 수 있습니다.'}
       </div>
     </Card>
   );
@@ -208,6 +213,8 @@ function AePanel({ type, scope, report, count }: { type: ReportType; scope: stri
 
 function FeedbackPanel({ type, prefix, feedback, sectionTitle }: { type: ReportType; prefix: string; feedback: { id: string; target: string; author: string; text: string; at: string; resolved?: boolean }[]; sectionTitle: (t: string) => string }) {
   const { state, dispatch } = useStore();
+  const saas = useSaas();
+  const server = saas.mode === 'server';
   const client = feedback.filter((f) => f.author === '수면밀도');
   const open = client.filter((f) => !f.resolved);
   const go = (target: string) => {
@@ -217,11 +224,20 @@ function FeedbackPanel({ type, prefix, feedback, sectionTitle }: { type: ReportT
   const days = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
   return (
     <Card title="코멘트 단위 피드백" sub={`수면밀도 담당자 피드백 · 반영 대기 ${open.length} · 반영 완료 ${client.length - open.length}`} className="reports-noprint">
-      <div className="row" style={{ gap: 6 }}>
-        <span className="xs muted">작성 역할 (상단 역할과 공유)</span>
-        <Segmented<AppState['role']> label="작성 역할" value={state.role} onChange={(role) => dispatch({ type: 'role/set', role })}
-          options={[{ id: '담당 AE', label: '담당 AE' }, { id: 'PM', label: 'PM' }, { id: '수면밀도', label: '수면밀도 담당자' }]} />
-      </div>
+      {server ? (
+        // 서버 모드: 작성 역할 = 로그인 계정의 멤버십 역할 (role/set은 서버 모드에서 버려진다) — 읽기 전용
+        <div className="row" style={{ gap: 6 }}>
+          <span className="xs muted">작성 역할 (멤버십)</span>
+          <strong className="small" aria-label="작성 역할 (멤버십)">{saas.role ? ROLE_LABEL[saas.role] : state.role}</strong>
+          <span className="xs muted">역할은 팀 · 권한에서 관리자가 바꿉니다</span>
+        </div>
+      ) : (
+        <div className="row" style={{ gap: 6 }}>
+          <span className="xs muted">작성 역할 (상단 역할과 공유)</span>
+          <Segmented<AppState['role']> label="작성 역할" value={state.role} onChange={(role) => dispatch({ type: 'role/set', role })}
+            options={[{ id: '담당 AE', label: '담당 AE' }, { id: 'PM', label: 'PM' }, { id: '수면밀도', label: '수면밀도 담당자' }]} />
+        </div>
+      )}
       {feedback.length ? (
         <div className="stack-sm">
           {feedback.slice(-6).map((f) => (
@@ -235,11 +251,13 @@ function FeedbackPanel({ type, prefix, feedback, sectionTitle }: { type: ReportT
         </div>
       ) : (
         <div className="small muted">
-          {state.role === '수면밀도' ? '각 섹션 아래 "이 섹션에 피드백"으로 남기면 담당 AE에게 섹션 단위로 전달됩니다.' : '상단 역할을 "수면밀도 담당자"로 바꾸면 섹션 단위 피드백을 시연할 수 있습니다.'}
+          {state.role === '수면밀도' ? '각 섹션 아래 "이 섹션에 피드백"으로 남기면 담당 AE에게 섹션 단위로 전달됩니다.'
+            : server ? '광고주 담당자 계정이 각 섹션 아래 "이 섹션에 피드백"으로 남긴 의견이 여기에 모입니다.'
+            : '상단 역할을 "수면밀도 담당자"로 바꾸면 섹션 단위 피드백을 시연할 수 있습니다.'}
         </div>
       )}
       <div className="divider" />
-      <div className="row-between"><span className="xs muted">최근 피드백 반영 이력</span><Src kind="DEMO" /></div>
+      <div className="row-between"><span className="xs muted">최근 피드백 반영 이력</span><Src kind="DEMO" fixture title="시연용 예시 이력 · 실제 피드백 이력 아님" /></div>
       <div className="stack-sm">
         {FEEDBACK_HISTORY.map((h) => (
           <div key={h.date + h.section} className="xs">

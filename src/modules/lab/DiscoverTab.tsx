@@ -15,6 +15,8 @@ import {
 import { setLab } from './store';
 import { Dl, LandingPill, ScoreBar, TierPill, useClickGuard, type LabModel } from './parts';
 
+/** 연관 검색어 · AI 검색 질의 후보는 데모 스냅샷(RELATED_SEEDS · AI_QUERY_SEEDS)에서 나온다 — 실연동 데이터여도 TEST DATA */
+const SNAPSHOT_SOURCES: readonly CandidateSource[] = ['related', 'ai_query'];
 const SOURCE_BASIS: Record<CandidateSource, string> = {
   search_term: '미등록 · 전환 발생 (실측)',
   related: '연관 검색어 · 데모 스냅샷',
@@ -149,7 +151,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
             <span className="lab-source-n">{s === 'all' ? disc.all.length : counts[s]}</span>
             <span className="lab-sub">{s === 'all' ? `등록 구문 ${disc.excludedRegistered + disc.excludedExisting}개 제외 (파이프라인에서 판정)` : SOURCE_BASIS[s]}</span>
             <span className="row" style={{ gap: 4 }}>
-              {s === 'search_term' ? <Src kind="DEMO" /> : s === 'sku48' ? <Src kind="PROPOSAL" page="p.36" /> : s === 'ai_expand' ? <Src kind="AI" /> : s === 'all' ? <Src kind="PROPOSAL" page="p.26" /> : <Src kind="DEMO" title="데모 스냅샷 · 실제 검색량 아님" />}
+              {s === 'search_term' ? <Src kind="DEMO" /> : s === 'sku48' ? <Src kind="PROPOSAL" page="p.36" /> : s === 'ai_expand' ? <Src kind="AI" /> : s === 'all' ? <Src kind="PROPOSAL" page="p.26" /> : <Src kind="DEMO" fixture title="데모 스냅샷 · 실제 검색량 아님" />}
             </span>
           </button>
         ))}
@@ -191,7 +193,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
           </div>
         </Card>
 
-        <Card title="후보 상세" sub={picked ? `${SOURCE_LABEL[picked.source]} · ${picked.origin}` : '그리드나 표에서 후보를 선택하세요'} actions={picked?.source === 'ai_expand' ? <Src kind="AI" /> : <Src kind="DEMO" />}>
+        <Card title="후보 상세" sub={picked ? `${SOURCE_LABEL[picked.source]} · ${picked.origin}` : '그리드나 표에서 후보를 선택하세요'} actions={picked?.source === 'ai_expand' ? <Src kind="AI" /> : picked && SNAPSHOT_SOURCES.includes(picked.source) ? <Src kind="DEMO" fixture title="데모 스냅샷 · 실제 검색량 아님" /> : <Src kind="DEMO" />}>
           {picked ? (
             <div className="stack">
               <div className="row-between" style={{ alignItems: 'flex-start' }}>

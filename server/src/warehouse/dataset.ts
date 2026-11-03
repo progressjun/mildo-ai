@@ -18,6 +18,17 @@
  *  - searchTerms: 최근 28일(어제까지) 합계, registered = 등록 키워드와 같은 단어 조합(순서 무관)
  *  - campaigns: 오늘 갱신되지 않은 스냅샷은 spentToday 0 · hourOfData 0 (어제 소진액을 오늘 값으로 쓰지 않는다)
  *  - meta: { mode demo|live|mixed, builtAt, sources[{ channel, source, kind, latestDate, latestHour }] }
+ *
+ * 판매 채널 방문 지표 보충 (API 매출 + CSV 방문 · 상세 조회 · 장바구니):
+ *  - (날짜 × 채널)에 고른 행이 API 출처이고 그 커넥터가 방문 지표를 줄 수 없을 때 — 방문자 · 상세 조회 · 장바구니가 모두 0이고
+ *    (공급자가 네이버 커머스 · 쿠팡(API에 해당 지표 없음)이거나, 그 날짜를 담은 수집 실행이 funnel_unavailable · analytics_unavailable ·
+ *    funnel_disabled 경고를 남겼을 때) — 같은 날짜 · 채널의 CSV 출처 행 중 우선순위가 가장 높은 행(세 지표 중 하나라도 0보다 큰 행)에서
+ *    그 세 값만 가져온다. 주문 · 매출 · 광고 경유 매출은 API 값 그대로.
+ *  - 보충한 행이 있으면 meta.sources의 그 채널 항목 source를 '<커넥션 id>+csv'로 적는다(kind는 'api', 최신 날짜는 API 행 기준).
+ *
+ * 빈 웨어하우스: 출처가 하나도 없으면 meta는 { mode: 'live', sources: [] }이다. mode 타입('demo' | 'live' | 'mixed')을 넓히지 않기 위한 값이며
+ *   테스트 데이터가 아니라는 뜻일 뿐 실데이터가 있다는 뜻이 아니다 — 화면(src/saas/sync.ts dataSourceLabel · connections/model.ts sourceModeOf)은
+ *   sources가 비어 있으면 'LIVE'가 아니라 '데이터 없음'으로 표시하고, 이상 감지(alerts)는 데이터가 비어 있으면 건너뛴다.
  */
 import type { Queryable } from '../db/pool';
 import type {
@@ -36,7 +47,12 @@ export interface BuildDatasetOptions {
 }
 
 type SourceKind = 'api' | 'csv' | 'demo';
-interface SourceInfo { key: string; kind: SourceKind; priority: number; createdMs: number; channel: string | null }
+interface SourceInfo { key: string; kind: SourceKind; priority: number; createdMs: number; channel: string | null; provider: string | null }
+
+/** API에 방문 · 상세 조회 · 장바구니 지표가 없는 판매 채널 공급자 (공급자 파일의 funnelUnavailable 경고와 같은 근거) */
+const FUNNEL_LESS_PROVIDERS = new Set(['naver_commerce', 'coupang']);
+/** 수집 실행이 '방문 지표를 받지 못함'으로 남기는 경고 코드 (naver-commerce/sales-shared funnelUnavailable · cafe24 Analytics) */
+const FUNNEL_GAP_CODES = ['funnel_unavailable', 'analytics_unavailable', 'funnel_disabled'];
 
 const DEFAULT_PRIORITY: Record<SourceKind, number> = { api: 100, csv: 50, demo: 10 };
 const HOURLY_DAYS = 35;
@@ -65,16 +81,16 @@ async function loadSources(q: Queryable, wsId: string): Promise<Map<string, Sour
   const priorityOfConn = new Map<string, number>();
   for (const c of conns) {
     priorityOfConn.set(c.id, c.priority);
-    if (c.provider === 'demo') m.set('demo', { key: 'demo', kind: 'demo', priority: c.priority, createdMs: new Date(c.created_at).getTime(), channel: null });
-    else m.set(c.id, { key: c.id, kind: c.provider === 'csv' ? 'csv' : 'api', priority: c.priority, createdMs: new Date(c.created_at).getTime(), channel: c.channel });
+    if (c.provider === 'demo') m.set('demo', { key: 'demo', kind: 'demo', priority: c.priority, createdMs: new Date(c.created_at).getTime(), channel: null, provider: 'demo' });
+    else m.set(c.id, { key: c.id, kind: c.provider === 'csv' ? 'csv' : 'api', priority: c.priority, createdMs: new Date(c.created_at).getTime(), channel: c.channel, provider: c.provider });
   }
-  if (!m.has('demo')) m.set('demo', { key: 'demo', kind: 'demo', priority: DEFAULT_PRIORITY.demo, createdMs: 0, channel: null });
+  if (!m.has('demo')) m.set('demo', { key: 'demo', kind: 'demo', priority: DEFAULT_PRIORITY.demo, createdMs: 0, channel: null, provider: 'demo' });
   const ups = (await q.query<{ id: string; connection_id: string | null; channel: string | null; created_at: Date }>(
     `SELECT id, connection_id, channel, created_at FROM uploads WHERE workspace_id = $1 AND status = 'imported'`, [wsId],
   )).rows;
   for (const u of ups) {
     const p = u.connection_id ? priorityOfConn.get(u.connection_id) ?? DEFAULT_PRIORITY.csv : DEFAULT_PRIORITY.csv;
-    m.set(`csv:${u.id}`, { key: `csv:${u.id}`, kind: 'csv', priority: p, createdMs: new Date(u.created_at).getTime(), channel: u.channel });
+    m.set(`csv:${u.id}`, { key: `csv:${u.id}`, kind: 'csv', priority: p, createdMs: new Date(u.created_at).getTime(), channel: u.channel, provider: 'csv' });
   }
   return m;
 }
@@ -127,6 +143,21 @@ const statsOf = (r: { impressions: number; clicks: number; cost: number; convers
 
 /** 검색어 · 키워드 비교용 단어 집합 키 */
 const tokenKey = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean).sort().join(' ');
+
+/** API 출처별로 '방문 지표를 받지 못함' 경고를 남긴 수집 실행의 기간 (보충 판정용) */
+async function loadFunnelGaps(q: Queryable, wsId: string, sourceKeys: string[], from: string, to: string): Promise<Map<string, { from: string; to: string }[]>> {
+  const m = new Map<string, { from: string; to: string }[]>();
+  if (!sourceKeys.length) return m;
+  const rows = (await q.query<{ source: string; range_from: string; range_to: string }>(
+    `SELECT source, range_from, range_to FROM ingest_runs
+      WHERE workspace_id = $1 AND source = ANY($2::text[]) AND status IN ('succeeded', 'partial') AND range_from IS NOT NULL AND range_to IS NOT NULL
+        AND range_to >= $3 AND range_from <= $4
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(issues) = 'array' THEN issues ELSE '[]'::jsonb END) i WHERE i->>'code' = ANY($5::text[]))`,
+    [wsId, sourceKeys, from, to, FUNNEL_GAP_CODES],
+  )).rows;
+  for (const r of rows) (m.get(r.source) ?? m.set(r.source, []).get(r.source)!).push({ from: r.range_from, to: r.range_to });
+  return m;
+}
 
 export async function buildDataset(q: Queryable, workspaceId: string, opts: BuildDatasetOptions = {}): Promise<Dataset> {
   const now = kstParts();
@@ -230,10 +261,35 @@ export async function buildDataset(q: Queryable, workspaceId: string, opts: Buil
 
   /* ---------- 판매 채널 ---------- */
   const sd = pick(sdRows, (r) => r.channel, (r) => r.date);
+  // 방문 지표 보충: 같은 날짜 · 채널의 CSV 행 중 우선순위가 가장 높은 행(세 지표 중 하나라도 있는 행)
+  const hasFunnel = (r: { visitors: number; detail_views: number; carts: number }) => Number(r.visitors) > 0 || Number(r.detail_views) > 0 || Number(r.carts) > 0;
+  const csvFunnel = new Map<string, { r: (typeof sdRows)[number]; s: SourceInfo }>();
+  for (const r of sdRows) {
+    const s = sources.get(r.source);
+    if (!s || s.kind !== 'csv' || !hasFunnel(r)) continue;
+    const k = `${r.channel}|${r.date}`;
+    const cur = csvFunnel.get(k);
+    if (!cur || better(s, cur.s)) csvFunnel.set(k, { r, s });
+  }
+  const apiSdSources = [...new Set(sd.filter((r) => sources.get(r.source)?.kind === 'api' && !hasFunnel(r) && csvFunnel.has(`${r.channel}|${r.date}`)).map((r) => r.source))];
+  const gaps = await loadFunnelGaps(q, workspaceId, apiSdSources, from, today);
+  const inGap = (source: string, date: string) => (gaps.get(source) ?? []).some((g) => g.from <= date && date <= g.to);
+  const supplemented = new Set<string>(); // channel \0 API 출처
   const salesDaily: DailySalesRow[] = sd
-    .map((r) => ({ date: r.date, channel: r.channel as SalesChannelId, visitors: Number(r.visitors), detailViews: Number(r.detail_views), carts: Number(r.carts), orders: Number(r.orders), revenue: Number(r.revenue), adAttributedRevenue: Number(r.ad_attributed_revenue) }))
+    .map((r) => {
+      const row: DailySalesRow = { date: r.date, channel: r.channel as SalesChannelId, visitors: Number(r.visitors), detailViews: Number(r.detail_views), carts: Number(r.carts), orders: Number(r.orders), revenue: Number(r.revenue), adAttributedRevenue: Number(r.ad_attributed_revenue) };
+      const s = sources.get(r.source);
+      const fill = s?.kind === 'api' && !hasFunnel(r) && (FUNNEL_LESS_PROVIDERS.has(s.provider ?? '') || inGap(r.source, r.date)) ? csvFunnel.get(`${r.channel}|${r.date}`) : undefined;
+      if (fill) {
+        row.visitors = Number(fill.r.visitors);
+        row.detailViews = Number(fill.r.detail_views);
+        row.carts = Number(fill.r.carts);
+        supplemented.add(`${r.channel}\u0000${r.source}`);
+      }
+      return row;
+    })
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : SALES_ORDER.get(a.channel)! - SALES_ORDER.get(b.channel)!));
-  for (const r of sd) markUsed(r.channel, r.source, r.date);
+  for (const r of sd) markUsed(r.channel, supplemented.has(`${r.channel}\u0000${r.source}`) ? `${r.source}+csv` : r.source, r.date);
 
   /* ---------- 엔티티 ---------- */
   const entOf = (type: string) => pick(entRows.filter((e) => e.entity_type === type), entityGroup, (e) => e.external_id);
@@ -319,6 +375,7 @@ export async function buildDataset(q: Queryable, workspaceId: string, opts: Buil
     .map((u) => ({ channel: u.channel, source: u.source, kind: sources.get(u.source)?.kind ?? 'api', latestDate: u.latestDate, latestHour: u.latestDate === today ? u.latestHour : null }))
     .sort((a, b) => (CHANNEL_ORDER.get(a.channel) ?? 99) - (CHANNEL_ORDER.get(b.channel) ?? 99) || a.channel.localeCompare(b.channel) || a.source.localeCompare(b.source));
   const kinds = new Set(metaSources.map((s) => s.kind));
+  // 출처가 하나도 없으면 'live' + sources [] — 테스트 데이터가 아니라는 뜻(실데이터가 있다는 뜻이 아님). 화면은 sources가 비면 '데이터 없음'으로 표시한다(머리말)
   const mode: DatasetMeta['mode'] = kinds.size === 0 ? 'live' : kinds.has('demo') ? (kinds.size === 1 ? 'demo' : 'mixed') : 'live';
   const builtAt = new Date(nowMs()).toISOString();
   const isNow = today === now.date && hour === now.hour;

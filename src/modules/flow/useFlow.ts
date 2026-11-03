@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeRequest, Incident } from '@/core/types';
 import { useActions, useStore } from '@/core/store';
+import { useSaas } from '@/saas/context';
 import { makeClock } from './clock';
 import { STATUS_META } from './data';
 import {
@@ -14,9 +15,21 @@ import {
 /** 시연용 이력은 세션당 한 번만 적재 (초기화 후에는 버튼으로 다시 불러오기) */
 let seededThisSession = false;
 
+/**
+ * 화면을 처음 열 때 시연 이력 자동 적재 — 데모 모드에서 세션당 한 번. 서버 모드는 서버 이력이 원본이라 적재하지 않는다
+ * (브리지도 seed_flow_* 추가를 버리지만, 화면이 보내지 않는 것이 먼저다). 반환: 적재한 건수.
+ */
+export function autoLoadSeeds(server: boolean, load: () => number): number {
+  if (server || seededThisSession) return 0;
+  seededThisSession = true;
+  return load();
+}
+
 export function useFlow() {
   const { state, dispatch } = useStore();
   const actions = useActions();
+  /** 서버 모드 (MILDO OS Cloud) — 시연 이력 적재 · 역할 전환을 끄고, 반영 · 롤백 결과는 서버 판정으로 알린다 */
+  const server = useSaas().mode === 'server';
   const data = state.data;
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -35,9 +48,7 @@ export function useFlow() {
     return missing.length;
   }, [dispatch, seeds, state.changes]);
   useEffect(() => {
-    if (seededThisSession) return;
-    seededThisSession = true;
-    loadSeeds();
+    autoLoadSeeds(server, loadSeeds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -67,14 +78,17 @@ export function useFlow() {
         return false;
       }
       actions.updateChange(c.id, { status: 'applied' }, opts.bulk ? '일괄 반영' : '반영', [...ex.passes, ...ex.warnings].join(' · '));
-      say({ tone: 'good', title: '반영했습니다', body: `${c.target}: ${fmtValue(c, c.before)} → ${fmtValue(c, c.after)} · 롤백 가능` });
+      // 서버 모드: 서버가 실행 점검 · 매체 반영(dry_run · live)을 판정하고 결과는 플랫폼 브리지가 따로 알린다 — 여기서는 보냈다는 사실만
+      if (server) say({ tone: 'info', title: '반영 요청을 보냈습니다', body: `${c.target}: ${fmtValue(c, c.before)} → ${fmtValue(c, c.after)} · 서버 실행 점검 · 매체 반영 결과는 이어서 알립니다`, route: 'flow' });
+      else say({ tone: 'good', title: '반영했습니다', body: `${c.target}: ${fmtValue(c, c.before)} → ${fmtValue(c, c.after)} · 롤백 가능` });
       return true;
     }
     if (action === 'rollback') {
       const r = canRollback(changes, c);
       if (!r.ok) { say({ tone: 'warning', title: '롤백할 수 없습니다', body: r.reason }); return false; }
       actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', `직전 상태로 복원: ${fmtValue(c, c.after)} → ${fmtValue(c, c.before)}${note ? ` · ${note}` : ''}`);
-      say({ tone: 'info', title: '롤백했습니다', body: `${c.target}: ${fmtValue(c, c.before)}로 복원` });
+      if (server) say({ tone: 'info', title: '롤백 요청을 보냈습니다', body: `${c.target}: ${fmtValue(c, c.before)}로 복원 · 서버 매체 반영 결과는 이어서 알립니다`, route: 'flow' });
+      else say({ tone: 'info', title: '롤백했습니다', body: `${c.target}: ${fmtValue(c, c.before)}로 복원` });
       return true;
     }
     const allowedFrom: Record<FlowAction, ChangeRequest['status'][]> = {
@@ -85,16 +99,17 @@ export function useFlow() {
     actions.updateChange(c.id, { status: nextStatus(c, action) }, label, note.trim() || perm.reason);
     say({ tone: action === 'approve' ? 'good' : 'info', title: `${label}: ${c.target}`, body: action === 'approve' ? '반영 대기로 이동했습니다' : undefined });
     return true;
-  }, [actions, changes, data, incidents, state.role]);
+  }, [actions, changes, data, incidents, server, state.role]);
 
   const bulk = useCallback((list: ChangeRequest[], action: 'approve' | 'apply') => {
     const g = bulkGuard(list, action, apCfg);
     if (!g.ok) { actions.toast({ tone: 'warning', title: '일괄 처리 차단', body: g.reasons.join(' · ') }); return 0; }
     let ok = 0;
     for (const c of list) if (act(c, action, '', { silent: true, bulk: true })) ok++;
-    actions.toast({ tone: ok === list.length ? 'good' : 'warning', title: `일괄 ${action === 'approve' ? '승인' : '반영'} ${ok}/${list.length}건`, body: ok < list.length ? '나머지는 권한 · 실행 점검으로 보류되었습니다' : g.reasons.join(' · ') });
+    const verb = action === 'approve' ? '승인' : server ? '반영 요청' : '반영';
+    actions.toast({ tone: ok === list.length ? 'good' : 'warning', title: `일괄 ${verb} ${ok}/${list.length}건`, body: ok < list.length ? '나머지는 권한 · 실행 점검으로 보류되었습니다' : g.reasons.join(' · ') });
     return ok;
-  }, [act, actions, apCfg]);
+  }, [act, actions, apCfg, server]);
 
   const createRequest = useCallback((input: ChangeInput, silent = false) => {
     const c = actions.addChange({ ...input, requestedBy: state.role });
@@ -109,6 +124,6 @@ export function useFlow() {
     actions.toast({ tone: 'info', title: log, body: inc.title });
   }, [actions, clock.nowIso, state.role]);
 
-  return { state, data, dispatch, actions, clock, seeds, missingSeeds, loadSeeds, changes, incidents, summary, checks, cases, bulkAlerts, apCfg, act, bulk, createRequest, incidentStep };
+  return { server, state, data, dispatch, actions, clock, seeds, missingSeeds, loadSeeds, changes, incidents, summary, checks, cases, bulkAlerts, apCfg, act, bulk, createRequest, incidentStep };
 }
 export type FlowCtx = ReturnType<typeof useFlow>;
