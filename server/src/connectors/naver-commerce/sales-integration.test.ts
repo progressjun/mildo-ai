@@ -67,7 +67,9 @@ describe('커넥션 생성 → 연결 확인 → 초기 백필 → Dataset', () 
   it('생성: 형식 오류 400 · ae 403 · 비밀값 마스킹 · 감사(값 없음)', async () => {
     const bad = await u.pm.post(base(), { provider: 'naver_commerce', credentials: { ...NAVER_CREDS, clientSecret: 'not-bcrypt-salt' } });
     expect(bad.status).toBe(400);
-    expect(bad.json.error.message).toMatch(/clientSecret/);
+    // 내부 키 대신 입력 화면 라벨 · 스키마 사유 (어느 칸인지는 detail.path)
+    expect(bad.json.error.message).toContain('애플리케이션 시크릿: 애플리케이션 시크릿은 $2a$로 시작하는 29자 값입니다');
+    expect(bad.json.error.detail.map((d: { path: string }) => d.path)).toContain('clientSecret');
     expect((await u.ae.post(base(), { provider: 'coupang', credentials: COUPANG_CREDS })).status).toBe(403);
 
     for (const [provider, credentials] of [['naver_commerce', NAVER_CREDS], ['coupang', COUPANG_CREDS], ['cafe24', CAFE24_CREDS]] as const) {

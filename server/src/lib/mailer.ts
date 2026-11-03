@@ -15,12 +15,29 @@ export const clearTestOutbox = () => { outbox.length = 0; };
 let transporter: Transporter | null = null;
 let transporterKey = '';
 
+export const SMTP_NOT_CONFIGURED = 'SMTP가 설정되지 않았습니다 (SMTP_HOST)';
+
+/** 테스트(NODE_ENV=test) 전용: SMTP가 없는 서버를 흉내 낸다 — false면 mailConfigured · sendMail이 미설정처럼 동작한다 */
+let testMailConfigured = true;
+export function setTestMailConfigured(v: boolean): void {
+  testMailConfigured = v;
+}
+
+/**
+ * 이 서버가 메일을 보낼 수 있게 설정되어 있는지 — 서버 전역 설정 사실이라 화면에 알려도 계정 존재 여부가 드러나지 않는다.
+ * false면 '메일을 보냈다'고 안내하지 않는다(비밀번호 재설정 화면 · 팀 화면의 재설정 링크 발급).
+ */
+export function mailConfigured(config: AppConfig): boolean {
+  return config.env === 'test' ? testMailConfigured : !!config.smtp;
+}
+
 export async function sendMail(config: AppConfig, mail: Mail): Promise<MailResult> {
   if (config.env === 'test') {
+    if (!testMailConfigured) return { sent: false, reason: SMTP_NOT_CONFIGURED };
     outbox.push({ ...mail, at: new Date().toISOString() });
     return { sent: true, messageId: `test-${outbox.length}` };
   }
-  if (!config.smtp) return { sent: false, reason: 'SMTP가 설정되지 않았습니다 (SMTP_HOST)' };
+  if (!config.smtp) return { sent: false, reason: SMTP_NOT_CONFIGURED };
   const key = JSON.stringify(config.smtp);
   if (!transporter || key !== transporterKey) {
     transporter = nodemailer.createTransport({

@@ -29,7 +29,7 @@ async function wrap(node: ReactNode): Promise<string> {
 const NOW = Date.parse('2026-11-02T03:00:00Z');
 const noop = () => undefined;
 const HANDLERS: TeamHandlers = {
-  onRole: noop, onTitle: noop, onStatus: noop, onRemove: noop, onInvite: async () => false, onResend: noop, onRevoke: noop,
+  onRole: noop, onTitle: noop, onStatus: noop, onRemove: noop, onResetLink: noop, onInvite: async () => false, onResend: noop, onRevoke: noop,
   onRevokeSession: noop, onRevokeOthers: noop, onChangePassword: async () => false, onReload: noop,
 };
 
@@ -83,6 +83,30 @@ describe('팀 · 권한 화면', () => {
     expect(html).not.toContain('유효 세션');
     const inv = await screen('viewer', 'demo-viewer', 'invites');
     expect(inv).toContain('초대는 관리자 · 소유자만 할 수 있습니다');
+  });
+
+  it('비밀번호 재설정 링크: 관리자 · 소유자는 다른 구성원에 발급 버튼(소유자 계정은 소유자만 — 관리자에게는 꺼짐 + 이유), 열람자에게는 없음', async () => {
+    const admin = await screen('admin', 'demo-admin');
+    expect(admin).toContain('재설정 링크');
+    // 관리자 화면에서 소유자 행의 발급 버튼은 꺼져 있고 이유가 title로 보인다
+    expect(admin).toMatch(/<button[^>]*disabled=""[^>]*title="소유자 계정의 재설정 링크는 소유자만 발급할 수 있습니다"/);
+    const owner = await screen('owner', 'demo-owner');
+    expect(owner).not.toContain('소유자 계정의 재설정 링크는 소유자만 발급할 수 있습니다');
+    const viewer = await screen('viewer', 'demo-viewer');
+    expect(viewer).not.toContain('재설정 링크');
+  });
+
+  it('재설정 링크 결과: 메일을 못 보냈으면 복사할 링크 + 사유, 메일로 보냈으면 링크를 보이지 않는다', async () => {
+    const link = 'https://app.example.com/?reset=resetTOKEN_abc123xyz7890';
+    const notSent = await screen('admin', 'demo-admin', 'members', {
+      lastReset: { ok: true, name: '김PM (예시)', email: 'pm@example.com', expiresAt: '2026-11-02T04:00:00Z', mail: { sent: false, reason: 'SMTP가 설정되지 않았습니다 (SMTP_HOST) — 메일을 보내지 않았습니다' }, link },
+    });
+    for (const t of ['메일은 보내지 않았습니다', link, '재설정 링크 복사', 'SMTP가 설정되지 않았습니다', '본인에게만 전달하세요']) expect(notSent, t).toContain(t);
+    const sent = await screen('admin', 'demo-admin', 'members', {
+      lastReset: { ok: true, name: '김PM (예시)', email: 'pm@example.com', expiresAt: '2026-11-02T04:00:00Z', mail: { sent: true } },
+    });
+    expect(sent).toContain('재설정 링크 메일을 보냈습니다');
+    expect(sent).not.toContain('?reset=');
   });
 
   it('초대 탭: 초대 폼(소유자 역할 없음) · 대기 · 만료 · 메일 미발송 · 복사 가능한 링크', async () => {

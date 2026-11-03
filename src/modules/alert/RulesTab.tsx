@@ -19,7 +19,7 @@ const draftOf = (cfg: AlertConfig): Draft => Object.fromEntries(CONFIG_FIELDS.ma
 const enc = (v: Threshold | number, unit: string) => (typeof v === 'number' ? `${v}${unit}` : encodeThreshold(v));
 
 export function RulesTab({ ctx }: { ctx: AlertCtx }) {
-  const { incidents, data, cfg, state, actions, toMs } = ctx;
+  const { incidents, data, cfg, state, actions, toMs, perm } = ctx;
   const [draft, setDraft] = useState<Draft>(() => draftOf(cfg));
   const [reason, setReason] = useState('');
   const open = incidents.filter((i) => i.status !== 'resolved');
@@ -46,7 +46,7 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
   const openSame = (f: (typeof CONFIG_FIELDS)[number]) => ruleChanges.find((c) => c.targetId === `alert_rule:${f.key}` && (c.status === 'pending' || c.status === 'approved') && String(c.after) === enc(draft[f.key], f.unit));
   const dupes = changed.filter((f) => openSame(f));
   const toSubmit = changed.filter((f) => !openSame(f));
-  const canSubmit = toSubmit.length > 0 && invalid.length === 0 && reason.trim().length > 0;
+  const canSubmit = perm.request && toSubmit.length > 0 && invalid.length === 0 && reason.trim().length > 0;
   const nowCount = useMemo(() => detectIncidents(data, { config: cfg, creatives: DEMO_CREATIVES }).filter((i) => ANOMALY_RULES.includes(i.ruleId)).length, [data, cfg]);
   const draftCount = useMemo(() => (invalid.length ? NaN : detectIncidents(data, { config: draftCfg, creatives: DEMO_CREATIVES }).filter((i) => ANOMALY_RULES.includes(i.ruleId)).length), [data, draftCfg, invalid.length]);
 
@@ -219,7 +219,8 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
             <input id="cfg-reason" className="input" value={reason} onChange={(e) => setReason(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && canSubmit) submit(); }} placeholder="예: 광고비 주의 기준 오탐 40% · 집계 지연 반복" />
           </Field>
           <div className="row" style={{ alignItems: 'flex-end' }}>
-            <Button variant="primary" icon="send" disabled={!canSubmit} onClick={submit}>기준 변경 요청 {toSubmit.length}건 (승인 PM)</Button>
+            <Button variant="primary" icon="send" disabled={!canSubmit} title={perm.requestReason} onClick={submit}>기준 변경 요청 {toSubmit.length}건 (승인 PM)</Button>
+            {perm.requestReason ? <span className="xs muted">{perm.requestReason}</span> : null}
             <Button variant="ghost" onClick={() => setDraft(draftOf(cfg))}>현재값으로</Button>
           </div>
         </div>

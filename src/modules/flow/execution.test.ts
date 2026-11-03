@@ -127,3 +127,30 @@ describe('렌더 (SSR)', () => {
     expect(panel).toContain('반영 · 11/2 14:00 시작');
   });
 });
+
+describe('서버 가드에서 막힌 실행 (mode none · ok false) — QA: 최대 입찰가 · 대량 변경 보류가 "기록만"으로 보였다', () => {
+  const held = withEx({ mode: 'none', ok: false, at: '2026-11-03T08:31:00Z', error: '입찰가 2,500원 > 최대 입찰가 2,460원', checks: { blocks: ['입찰가 2,500원 > 최대 입찰가 2,460원'] } }, { status: 'held' });
+  it("배지는 '실행 보류' + 사유, '기록만 · 매체 API 대상 아님' 문구 없음", () => {
+    const s = executionState(held)!;
+    expect(s).toMatchObject({ kind: 'held', label: '실행 보류', tone: 'critical' });
+    expect(s.basis).toContain('입찰가 2,500원 > 최대 입찰가 2,460원');
+    expect(s.basis).not.toContain('매체 API로 반영하는 유형이 아니거나');
+    expect(execCsvLabel(held)).toBe('실행 보류');
+  });
+  it("상세 패널: 실행 방식 '실행 보류 (서버 점검에서 막혀 매체 미호출)' · 보류 사유", () => {
+    const html = renderToString(h(ExecutionPanel, { c: held })).replace(/<!-- -->/g, '');
+    expect(html).toContain('실행 보류 (서버 점검에서 막혀 매체 미호출)');
+    expect(html).not.toContain('기록만 (매체 API 대상 아님)');
+    expect(html).toContain('보류 사유');
+    expect(html).toContain('data-exec="held"');
+  });
+  it("대상이 아닌 성공 기록(mode none · ok true)은 그대로 '기록만'", () => {
+    expect(executionState(withEx({ mode: 'none', ok: true, at: 'x' }))).toMatchObject({ kind: 'none', label: '기록만' });
+  });
+  it('시도 기록 한 줄: 막힌 시도는 실행 보류 (critical)', () => {
+    const l = attemptLine({ id: 1, phase: 'apply', mode: 'none', ok: false, error: '대량 변경 실수 감지 (P1)', finishedAt: '2026-11-03T08:31:00Z' });
+    expect(l.text).toContain('실행 보류');
+    expect(l.text).not.toContain('기록만');
+    expect(l.tone).toBe('critical');
+  });
+});

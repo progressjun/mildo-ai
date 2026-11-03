@@ -2,7 +2,7 @@
  * 팀 · 권한 화면 — 순수 함수 · 타입 (서버 응답 형태는 server/src/team/*.ts와 같다).
  */
 import { ROLE_LABEL, type Role } from '@/core/permissions';
-import { grantableRoles, removalProblem, roleChangeProblem, statusChangeProblem, type MemberTarget, type RuleProblem } from './rules';
+import { grantableRoles, passwordResetIssueProblem, removalProblem, roleChangeProblem, statusChangeProblem, type MemberTarget, type RuleProblem } from './rules';
 
 export interface Member {
   user_id: string;
@@ -39,6 +39,8 @@ export interface Invite {
 
 export interface MailResult { sent: boolean; reason?: string }
 export interface InviteResult { invite: Invite; link: string; mail?: MailResult }
+/** POST /w/:ws/members/:userId/password-reset — 메일로 보냈으면 link 없음, 못 보냈으면(SMTP 미설정 · 실패) 직접 전달할 link */
+export interface ResetLinkResult { ok: true; email: string; expiresAt: string; mail: MailResult; link?: string }
 
 export interface SessionRow {
   id: string;
@@ -120,10 +122,12 @@ export function memberActions(me: Role | null, m: Member, members: Member[]): {
   roleBlocked: RuleProblem | null;
   remove: RuleProblem | null;
   disable: RuleProblem | null;
+  /** 비밀번호 재설정 링크 발급 */
+  resetLink: RuleProblem | null;
 } {
   if (!me) {
     const p: RuleProblem = { status: 403, code: 'forbidden', message: '로그인이 필요합니다' };
-    return { roleOptions: [], roleBlocked: p, remove: p, disable: p };
+    return { roleOptions: [], roleBlocked: p, remove: p, disable: p, resetLink: p };
   }
   const owners = activeOwners(members);
   const t = targetOf(m);
@@ -136,6 +140,7 @@ export function memberActions(me: Role | null, m: Member, members: Member[]): {
     remove: removalProblem(me, t, owners),
     // 다른 워크스페이스 소속 여부는 서버만 안다 (화면은 나머지 규칙으로 미리 막고, 서버가 최종 판정)
     disable: statusChangeProblem(me, t, m.status === 'active' ? 'disabled' : 'active', false, m.role === 'owner' && m.status === 'active' && owners <= 1 ? 1 : 0),
+    resetLink: passwordResetIssueProblem(me, t, false),
   };
 }
 

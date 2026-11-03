@@ -5,11 +5,11 @@ import { DECISION_MATRIX, GFA_DELEGATION, MEDIA, MEDIA_IDS } from '@/data/consta
 import { fmt } from '@/core/util';
 import { Button, Callout, Card, Field, NumberInput, Pill, Segmented, Src } from '@/ui/primitives';
 import { REQUEST_TYPES, type RequestType } from './data';
-import { APPROVER_LABEL, canAct, effectiveBid, effectiveBudget, fmtValue, paceCampaign, planRequest, type RequestDraft, fmtHour } from './engine';
+import { actorLabel, APPROVER_LABEL, canAct, effectiveBid, effectiveBudget, fmtValue, paceCampaign, planRequest, type RequestDraft, fmtHour } from './engine';
 import type { FlowCtx } from './useFlow';
 
 export function RequestTab({ ctx, draft, setDraft, onCreated }: { ctx: FlowCtx; draft: RequestDraft; setDraft: (d: RequestDraft) => void; onCreated: (id: string) => void }) {
-  const { data, changes, incidents, state, createRequest, apCfg } = ctx;
+  const { data, changes, incidents, state, createRequest, apCfg, actor, requestPerm } = ctx;
   const plan = useMemo(() => planRequest(data, changes, incidents, draft, state.role), [data, changes, incidents, draft, state.role]);
   const def = REQUEST_TYPES.find((t) => t.id === draft.type) ?? REQUEST_TYPES[0];
   const set = (patch: Partial<RequestDraft>) => setDraft({ ...draft, ...patch });
@@ -17,11 +17,12 @@ export function RequestTab({ ctx, draft, setDraft, onCreated }: { ctx: FlowCtx; 
   const keywords = data.keywords ?? [];
   const promo = draft.promoId ? data.promotions.find((p) => p.id === draft.promoId) : undefined;
   const inc = draft.incidentId ? incidents.find((i) => i.id === draft.incidentId) : undefined;
-  const perm = canAct(state.role, plan.route.approver);
+  const perm = canAct(actor, plan.route.approver);
+  const who = actorLabel(actor);
   const submit = () => {
     if (!plan.input) return;
     const c = createRequest(plan.input);
-    onCreated(c.id);
+    if (c) onCreated(c.id);
   };
 
   const targetPicker = () => {
@@ -123,17 +124,18 @@ export function RequestTab({ ctx, draft, setDraft, onCreated }: { ctx: FlowCtx; 
           <textarea id="flow-reason" className="textarea" value={draft.reason} placeholder="예: 기획전 기간 피크 시간대(21시) 전 소진 — 저녁 노출 확보" onChange={(e) => set({ reason: e.target.value })} />
         </Field>
         <div className="row">
-          <Button variant="primary" icon="send" disabled={!plan.ok} onClick={submit}>승인 요청 생성 (pending)</Button>
+          <Button variant="primary" icon="send" disabled={!plan.ok || !requestPerm.ok} title={!requestPerm.ok ? requestPerm.reason : undefined} onClick={submit}>승인 요청 생성 (pending)</Button>
           <Button variant="ghost" onClick={() => setDraft({ ...draft, targetId: '', targetText: '', beforeText: '', afterText: '', reason: '', promoId: undefined, incidentId: undefined })}>초기화</Button>
         </div>
-        <div className="xs muted">요청은 승인 대기(pending)로만 만들어지고, 반영은 승인 주체가 승인한 뒤 실행 점검을 통과해야 합니다. 요청자: {state.role}.</div>
+        {!requestPerm.ok ? <div className="xs muted">{requestPerm.reason}</div> : null}
+        <div className="xs muted">요청은 승인 대기(pending)로만 만들어지고, 반영은 승인 주체가 승인한 뒤 실행 점검을 통과해야 합니다. 요청자: {who}.</div>
       </Card>
 
       <div className="stack-lg">
         <Card tone="dark" title="승인 주체 자동 결정" sub="제출 전 미리보기 · 현재 값은 반영 이력 기준" actions={<Src kind="DEMO" />}>
           <div className="row" style={{ gap: 8 }}>
             <span className="flow-big-approver">{APPROVER_LABEL[plan.route.approver]}</span>
-            <Pill tone={perm.ok ? 'good' : 'neutral'} icon={perm.ok ? 'check' : 'x'}>{perm.ok ? `현재 역할(${state.role})이 직접 승인 가능` : `현재 역할(${state.role}) 승인 범위 밖`}</Pill>
+            <Pill tone={perm.ok ? 'good' : 'neutral'} icon={perm.ok ? 'check' : 'x'}>{perm.ok ? `현재 역할(${who})이 직접 승인 가능` : `현재 역할(${who}) 승인 범위 밖`}</Pill>
           </div>
           <ul className="flow-basis">
             {plan.route.basis.map((b, k) => <li key={k} className="small">{b}</li>)}

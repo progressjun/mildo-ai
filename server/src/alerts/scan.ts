@@ -6,11 +6,13 @@
  *  - 이미 있는 이슈의 운영자 처리 필드(상태 · 담당 · 메모 · SLA 기록 · 타임라인)는 절대 덮어쓰지 않는다.
  *  - 자동 해결하지 않는다: 같은 날 열려 있던 감지 이슈가 이번에 안 잡히면 doc.stillDetected=false + 타임라인 한 줄(한 번만).
  *  - 데이터가 없으면(빌더 예외 · 빈 Dataset) 오류 없이 끝내고 경고를 감지 실행 기록에 남긴다.
+ *  - 알림 문구는 실제 발송 요청 결과로 적는다(withDeliveryNote): 엔진의 '감지 · 메신저 알림 (…)' · '메신저 즉시 알림 발송 · …'은 화면 시연 문구라
+ *    채널이 없거나 등급 · 이벤트 필터로 안 보낸 경우에도 '보냈다'고 읽힌다. 실제 발송 결과의 원본은 발송 이력(notifications)이다.
  *  - 테스트 데이터(Dataset.meta.mode demo, 또는 mixed에서 그 매체의 출처가 전부 demo)로 감지한 이슈는 isTest=true —
  *    알림은 'test' 이벤트를 켠 채널로만 가고(TEST DATA 표기), 성과 증명 집계에서 빠진다. 엔진은 데이터 출처를 모르므로 서버가 정한다.
  */
 import type { ChangeRequest, Dataset, DatasetMeta } from '@/core/types';
-import { activeConfig, detectIncidents, msToKstIso, type AlertIncident } from '@/modules/alert/engine';
+import { activeConfig, detectIncidents, msToKstIso, withDeliveryNote, type AlertIncident } from '@/modules/alert/engine';
 import { DEMO_CREATIVES, type CreativeReview } from '@/modules/alert/data';
 import { withWorkspaceConfig } from '@/data/config';
 import type { Db, Queryable } from '../db/pool';
@@ -155,6 +157,8 @@ export async function scanWorkspace(db: Db, wsId: string, opts: { trigger?: stri
       for (const inc of toNotify) {
         const r = await fanOutIncident(q, wsId, { event: 'incident', incident: inc });
         result.notified += r.enqueued;
+        // 감지 타임라인 · 자동 조치의 알림 문구를 실제 발송 요청 결과로 (채널 0곳이면 '알림 미발송 · 사유')
+        await saveIncident(q, wsId, withDeliveryNote(inc, r));
       }
       if (result.created || result.cleared || result.redetected) {
         await audit(q, {

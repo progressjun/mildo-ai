@@ -588,6 +588,8 @@ export interface LoginLockState {
   accountFailures: number;
   knownIp: boolean;
   retryAfterSec: number;
+  /** 이 이메일의 가입 계정 id (없으면 null) — 잠금 감사 기록에 남긴다 */
+  userId: string | null;
 }
 
 /** 로그인에 성공한 IP를 '익숙한 IP'로 보는 기간 */
@@ -603,7 +605,7 @@ const KNOWN_IP_DAYS = 30;
  * ip는 이번 요청의 클라이언트 IP(clientIp, TRUST_PROXY_HOPS 기준). 감사 로그에 남은 ip(req.ip)와 같은 문자열일 때만 이어진다.
  */
 export async function loginLockState(db: Queryable, email: string, ip: string | null, opts: { windowMin: number; max: number }): Promise<LoginLockState> {
-  const r = await one<{ n: number; n_ip: number; known_ip: boolean; left_sec: number | null; left_ip_sec: number | null }>(
+  const r = await one<{ n: number; n_ip: number; known_ip: boolean; left_sec: number | null; left_ip_sec: number | null; user_id: string | null }>(
     db,
     `WITH u AS (SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1),
      since AS (
@@ -618,7 +620,8 @@ export async function loginLockState(db: Queryable, email: string, ip: string | 
         WHERE action = 'auth.login_failed' AND lower(actor) = lower($1) AND at > (SELECT t FROM since)
      ),
      fi AS (SELECT at FROM f WHERE ip IS NOT DISTINCT FROM $3::text)
-     SELECT (SELECT count(*) FROM f)::int AS n,
+     SELECT (SELECT id FROM u) AS user_id,
+            (SELECT count(*) FROM f)::int AS n,
             (SELECT count(*) FROM fi)::int AS n_ip,
             ($3::text IS NOT NULL AND EXISTS (
               SELECT 1 FROM audit_log WHERE action = 'auth.login' AND user_id = (SELECT id FROM u) AND ip = $3::text
@@ -641,6 +644,7 @@ export async function loginLockState(db: Queryable, email: string, ip: string | 
     accountFailures,
     knownIp,
     retryAfterSec: Math.max(1, left ?? opts.windowMin * 60),
+    userId: r?.user_id ?? null,
   };
 }
 
@@ -742,7 +746,8 @@ export const securityPlugin = fp(async (app: FastifyInstance) => {
       if (!lock.locked) return;
       const { failures, retryAfterSec } = lock;
       await audit(db, {
-        workspaceId: null, userId: null, actor: email.trim().slice(0, 200), action: 'auth.login_locked', ip: req.ip,
+        // 가입된 계정이면 user_id를 남긴다 — 워크스페이스 감사 로그(auth=1: 구성원의 계정 기록)에 로그인 실패와 함께 보인다
+        workspaceId: null, userId: lock.userId, actor: email.trim().slice(0, 200), action: 'auth.login_locked', ip: req.ip,
         detail: { failures, accountFailures: lock.accountFailures, scope: lock.scope, windowMin: opts.loginFailWindowMin, retryAfterSec },
       });
       reply.header('retry-after', String(retryAfterSec));

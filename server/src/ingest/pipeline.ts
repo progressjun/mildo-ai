@@ -19,12 +19,13 @@ import { one } from '../db/pool';
 import type { AppConfig } from '../config';
 import type { ConnectorDef, ConnectorHttp, DateRange, NormalizedBatch } from '../connectors/types';
 import { getConnector } from '../connectors/registry';
-import { buildConnectorContext, loadConnection, MAX_BACKFILL_DAYS, sourceKeyOf, type ConnectionRow } from '../connectors/service';
+import { buildConnectorContext, credentialIssueText, loadConnection, MAX_BACKFILL_DAYS, sourceKeyOf, type ConnectionRow } from '../connectors/service';
 import { scrubSecrets, type FetchLike } from '../connectors/http';
 import { needsOAuthApproval, oauthApprovalMessage } from '../connectors/credentials';
-import { blockingIssues, csvToBatch, normalizeCsv, type UploadTemplate } from '../connectors/csv';
+import { blockingIssues, csvToBatch, normalizeCsv, type NormalizeResult, type UploadTemplate } from '../connectors/csv';
+import type { CsvIssue } from '@/modules/connections/csv';
 import { writeBatch } from '../warehouse/write';
-import { checkBatch, hasErrors, historyRange, type HistoryRow, type QualityIssue } from './quality';
+import { checkBatch, hasErrors, historyRange, type CheckResult, type HistoryRow, type QualityIssue } from './quality';
 import { enqueue } from '../jobs/queue';
 import { publish } from '../events/hub';
 import { addDaysStr, kstParts, nowMs } from '../lib/time';
@@ -124,7 +125,7 @@ export async function ingestConnection(db: Db, config: AppConfig, conn: Connecti
     if (!parsedCreds.success) {
       // OAuth 승인 대기(앱 정보만 저장 — 카페24): 토큰 필드 오류 대신 인증 시작 버튼을 안내한다
       if (needsOAuthApproval(def.provider, ctx.credentials)) throw new Error(oauthApprovalMessage(def));
-      throw new Error(`자격증명 항목을 확인해 주세요: ${parsedCreds.error.issues.map((i) => i.path.join('.') || '(전체)').join(', ')}`);
+      throw new Error(credentialIssueText(def, parsedCreds.error.issues));
     }
     const raw: NormalizedBatch = await def.fetch({ ...ctx, credentials: parsedCreds.data }, o.range, o.intradayDate ? { intradayDate: o.intradayDate } : undefined);
     const history = o.job === 'intraday' ? [] : await loadHistory(db, wsId, source, o.range);
@@ -245,6 +246,61 @@ export async function brandTerms(q: Queryable, wsId: string): Promise<string[]> 
   return [...terms];
 }
 
+export interface UploadAnalysis {
+  norm: NormalizeResult;
+  /** 가져오기를 막는 오류 (필수 열 누락 · 가져올 행 없음 등) — 있으면 checked는 null */
+  blocking: CsvIssue[];
+  /** 수집 품질 검사(checkBatch)까지 마친 쓰기 배치 */
+  checked: CheckResult | null;
+  range: DateRange;
+  /** 정규화 이슈 + 품질 검사 이슈 (미리보기 · 가져오기 · 수집 실행 기록에 같은 목록) */
+  issues: QualityIssue[];
+}
+
+/** 쓸 수 있는 행 수 (웨어하우스 행 테이블 기준) */
+export function batchRowCount(b: NormalizedBatch): number {
+  return (['mediaDaily', 'mediaHourly', 'salesDaily', 'keywordDaily', 'searchTermDaily', 'brandSearchDaily'] as const)
+    .reduce((n, k) => n + ((b[k] as unknown[] | undefined)?.length ?? 0), 0);
+}
+
+/** 쓸 행들의 날짜 범위 (없으면 null) */
+export function batchDateRange(b: NormalizedBatch): { from: string; to: string } | null {
+  let from: string | null = null;
+  let to: string | null = null;
+  for (const k of ['mediaDaily', 'mediaHourly', 'salesDaily', 'keywordDaily', 'searchTermDaily', 'brandSearchDaily'] as const) {
+    for (const r of (b[k] as { date?: string }[] | undefined) ?? []) {
+      if (typeof r.date !== 'string') continue;
+      if (!from || r.date < from) from = r.date;
+      if (!to || r.date > to) to = r.date;
+    }
+  }
+  return from && to ? { from, to } : null;
+}
+
+/**
+ * 업로드 내용 분석 — 미리보기(dryRun) · 업로드 등록 · 워커 가져오기가 같은 함수를 쓴다:
+ * 정규화(형식 · 템플릿 예시 행 · 음수 지표 · 미래 날짜) → NormalizedBatch → 수집 품질 검사(checkBatch).
+ * 미리보기가 '통과'라고 한 파일을 워커가 0행으로 끝내지 않게 한다.
+ */
+export async function analyzeUpload(
+  q: Queryable, wsId: string,
+  u: { template: UploadTemplate; content: string; mapping?: Record<string, string | null | undefined> | null; channel?: string | null },
+  now: { date: string; hour: number } = kstParts(),
+): Promise<UploadAnalysis> {
+  const norm = normalizeCsv(u.template, u.content, { mapping: u.mapping ?? {}, channel: u.channel ?? null, today: now.date });
+  const range = { from: norm.summary.dateFrom ?? now.date, to: norm.summary.dateTo ?? now.date };
+  const blocking = blockingIssues(norm.issues);
+  if (blocking.length) return { norm, blocking, checked: null, range, issues: norm.issues };
+  const batch = csvToBatch(norm, { keywordIdByText: await keywordIdByText(q, wsId), brandTerms: await brandTerms(q, wsId) });
+  const checked = checkBatch(batch, { range, job: 'upload', today: now.date, hour: now.hour, provider: 'csv', channel: null });
+  const issues: QualityIssue[] = [...norm.issues, ...checked.issues];
+  if (!batchRowCount(checked.batch)) {
+    const none: QualityIssue = { code: 'no_valid_rows', severity: 'error', message: '가져올 수 있는 행이 없습니다 — 모든 행이 품질 검사에서 제외됩니다 (위 사유를 고친 뒤 다시 올려 주세요)' };
+    return { norm, blocking: [none], checked: null, range, issues: [...issues, none] };
+  }
+  return { norm, blocking: [], checked, range, issues };
+}
+
 /** 업로드 가져오기 (잡 ingest.upload). 원본은 가져온 뒤 비운다. */
 export async function importUpload(db: Db, uploadId: string, o: { trigger?: string; finalAttempt?: boolean } = {}): Promise<IngestRunResult> {
   const up = await one<UploadRow>(db, 'SELECT * FROM uploads WHERE id = $1', [uploadId]);
@@ -264,20 +320,18 @@ export async function importUpload(db: Db, uploadId: string, o: { trigger?: stri
   );
   const runId = run!.id;
   try {
-    const norm = normalizeCsv(up.template as UploadTemplate, up.content!, { mapping: up.mapping ?? {}, channel: up.channel });
-    const blocking = blockingIssues(norm.issues);
-    if (blocking.length) {
+    const a = await analyzeUpload(db, wsId, { template: up.template as UploadTemplate, content: up.content!, mapping: up.mapping ?? {}, channel: up.channel }, now);
+    const { norm, blocking, issues, range } = a;
+    if (blocking.length || !a.checked) {
+      const why = blocking[0]?.message ?? '가져올 수 있는 행이 없습니다';
       await db.tx(async (q) => {
-        await q.query(`UPDATE ingest_runs SET status = 'failed', rows_in = $2, issues = $3, error = $4, finished_at = clock_timestamp() WHERE id = $1`, [runId, norm.summary.rows, JSON.stringify(norm.issues), blocking[0].message]);
-        await q.query(`UPDATE uploads SET status = 'failed', summary = $2, content = NULL WHERE id = $1`, [up.id, JSON.stringify({ ...norm.summary, error: blocking[0].message })]);
+        await q.query(`UPDATE ingest_runs SET status = 'failed', rows_in = $2, issues = $3, error = $4, finished_at = clock_timestamp() WHERE id = $1`, [runId, norm.summary.rows, JSON.stringify(issues), why]);
+        await q.query(`UPDATE uploads SET status = 'failed', summary = $2, content = NULL WHERE id = $1`, [up.id, JSON.stringify({ ...norm.summary, error: why, runId })]);
         await publish(q, wsId, { type: 'connection', id: up.connection_id ?? undefined });
       });
-      return { runId, status: 'failed', rowsIn: norm.summary.rows, rowsWritten: 0, issues: norm.issues, error: blocking[0].message, range: { from: norm.summary.dateFrom ?? '', to: norm.summary.dateTo ?? '' } };
+      return { runId, status: 'failed', rowsIn: norm.summary.rows, rowsWritten: 0, issues, error: why, range: { from: norm.summary.dateFrom ?? '', to: norm.summary.dateTo ?? '' } };
     }
-    const batch = csvToBatch(norm, { keywordIdByText: await keywordIdByText(db, wsId), brandTerms: await brandTerms(db, wsId) });
-    const range = { from: norm.summary.dateFrom ?? now.date, to: norm.summary.dateTo ?? now.date };
-    const checked = checkBatch(batch, { range, job: 'upload', today: now.date, hour: now.hour, provider: 'csv', channel: null });
-    const issues = [...norm.issues, ...checked.issues];
+    const checked = a.checked;
     const result = await db.tx(async (q) => {
       const alive = await one(q, 'SELECT id FROM uploads WHERE id = $1 AND workspace_id = $2 FOR NO KEY UPDATE', [up.id, wsId]);
       if (!alive) throw new SourceGoneError('업로드');
@@ -287,7 +341,17 @@ export async function importUpload(db: Db, uploadId: string, o: { trigger?: stri
         `UPDATE ingest_runs SET status = $2, rows_in = $3, rows_written = $4, issues = $5, stats = $6, range_from = $7, range_to = $8, finished_at = clock_timestamp() WHERE id = $1`,
         [runId, status, norm.summary.rows, w.total, JSON.stringify(issues), JSON.stringify(w.byTable), range.from, range.to],
       );
-      await q.query(`UPDATE uploads SET status = 'imported', imported_at = now(), content = NULL, summary = $2 WHERE id = $1`, [up.id, JSON.stringify({ ...norm.summary, rowsWritten: w.total, byTable: w.byTable })]);
+      // 업로드 이력: 기간은 실제로 쓴 행 기준(파일 전체 기간은 fileDateFrom/To), 결과(outcome)는 수집 실행 상태와 같게 — 0행이면 'empty'
+      const written = batchDateRange(checked.batch);
+      const counts = { error: 0, warning: 0, info: 0 };
+      for (const i of issues) counts[i.severity]++;
+      const summary = {
+        ...norm.summary, fileDateFrom: norm.summary.dateFrom, fileDateTo: norm.summary.dateTo,
+        dateFrom: w.total ? written?.from ?? null : null, dateTo: w.total ? written?.to ?? null : null,
+        rowsWritten: w.total, byTable: w.byTable, outcome: !w.total ? 'empty' : status === 'partial' ? 'partial' : 'imported', issueCounts: counts, runId,
+        issueSummary: issues.filter((i) => i.severity === 'error').slice(0, 3).map((i) => i.message.slice(0, 200)),
+      };
+      await q.query(`UPDATE uploads SET status = 'imported', imported_at = now(), content = NULL, summary = $2 WHERE id = $1`, [up.id, JSON.stringify(summary)]);
       if (up.connection_id) await q.query(`UPDATE connections SET last_sync_at = $2, last_error = NULL, updated_at = now() WHERE id = $1`, [up.connection_id, new Date(nowMs()).toISOString()]);
       await afterIngest(q, wsId, up.connection_id);
       return { w, status: status as 'succeeded' | 'partial' };

@@ -5,11 +5,11 @@
  */
 import { useMemo, useState, type ChangeEvent } from 'react';
 import { Button, Callout, Card, DataTable, DownloadButton, Field, Pill, Segmented, type Column } from '@/ui/primitives';
-import { useActions } from '@/core/store';
+import { useActions, useStore } from '@/core/store';
 import { fmt } from '@/core/util';
 import { MEDIA, MEDIA_IDS, SALES_CHANNEL_IDS, SALES_CHANNELS } from '@/data/constants';
-import { blockingIssues, MAX_UPLOAD_BYTES, normalizeCsv, TEMPLATE_HELP, templateCsv, TEMPLATES, UPLOAD_TEMPLATES, type UploadTemplate } from './csv';
-import { channelLabel, decodeCsvBytes, fmtBytes, fmtStamp, type ConnectionView, type UploadView } from './model';
+import { blockingIssues, MAX_UPLOAD_BYTES, normalizeCsv, TEMPLATE_EXAMPLE_MARK, TEMPLATE_HELP, templateCsv, TEMPLATES, UPLOAD_TEMPLATES, type UploadTemplate } from './csv';
+import { channelLabel, csvCheckDay, decodeCsvBytes, fmtBytes, fmtStamp, uploadImportLock, uploadStatusMeta, type ConnectionView, type UploadView } from './model';
 import { connectionsApi, type UploadResult } from './client';
 import { IssueRow, ConfirmModal } from './parts';
 import { errorText } from './useConnections';
@@ -24,12 +24,16 @@ const SAMPLE: Record<UploadTemplate, string> = {
 
 type PreviewState = { result: UploadResult; local: boolean } | null;
 
-export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csvConnections, uploads, onImported, initialTemplate, initialChannel }: {
+export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csvConnections, uploads, onImported, initialTemplate, initialChannel, onShowRuns }: {
   server: boolean; workspaceId: string | null; canOperate: boolean; canConfigure: boolean; csvConnections: ConnectionView[]; uploads: UploadView[]; onImported: () => void;
   /** 처음 고를 템플릿 · 고정 채널 (CSV 전용 공급자 카드의 'CSV 업로드로 이동') */
   initialTemplate?: UploadTemplate; initialChannel?: string | null;
+  /** 업로드 이력의 '사유 보기' — 수집 현황 탭을 상태 필터와 함께 연다 */
+  onShowRuns?: (filter: 'partial' | 'failed') => void;
 }) {
   const { toast } = useActions();
+  // 미래 날짜 판정 기준일 (브라우저 미리보기) — 화면 Dataset 기준일과 실제 오늘(KST) 중 늦은 날. 서버 미리보기는 서버가 실제 오늘(KST)로 판정
+  const dataToday = useStore().state.data.today;
   const [template, setTemplate] = useState<UploadTemplate>(initialTemplate && UPLOAD_TEMPLATES.includes(initialTemplate) ? initialTemplate : 'media_daily');
   const [filename, setFilename] = useState('붙여넣기.csv');
   const [content, setContent] = useState('');
@@ -77,7 +81,7 @@ export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csv
     if (!content.trim()) { setErr('파일을 고르거나 내용을 붙여 넣으세요'); return; }
     if (tooBig) { setErr('20MB 이하만 올릴 수 있습니다'); return; }
     if (!server) {
-      const r = normalizeCsv(template, content, { mapping, channel: def.fixedChannel && channel ? channel : null });
+      const r = normalizeCsv(template, content, { mapping, channel: def.fixedChannel && channel ? channel : null, today: csvCheckDay(dataToday, Date.now()) });
       setPreview({ local: true, result: { upload: null, preview: r.preview as unknown as UploadResult['preview'], issues: r.issues, columns: { headers: r.summary.headers, mapping: r.mapping.fields, missing: r.mapping.missing, unmapped: r.mapping.unmapped }, summary: r.summary } });
       return;
     }
@@ -125,6 +129,9 @@ export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csv
 
   const res = preview?.result ?? null;
   const blocking = res ? blockingIssues(res.issues) : [];
+  // '예시 내용 채우기'로 넣은 시연용 내용(TEST DATA)은 서버에 실데이터로 가져오지 않는다 — 미리보기만
+  const isSample = content.trim() === SAMPLE[template].trim();
+  const importLock = uploadImportLock({ server, canOperate, isSample, serverPreview: !!res && !preview?.local, blocking: blocking.length });
   type PreviewRow = Record<string, unknown> & { _line: number };
   const previewCols: Column<PreviewRow>[] = useMemo(() => [
     { key: '_line', label: '행', align: 'right', render: (r: PreviewRow) => r._line } as Column<PreviewRow>,
@@ -147,6 +154,7 @@ export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csv
           <Segmented<UploadTemplate> label="템플릿" value={template} onChange={(t) => { setTemplate(t); setMapping({}); reset(); }} options={UPLOAD_TEMPLATES.map((t) => ({ id: t, label: TEMPLATES[t].label }))} />
           <div className="small ink2">{def.description}</div>
           <div className="xs muted">{TEMPLATE_HELP[template]}</div>
+          <div className="xs ink2">템플릿의 예시 행(일자 칸에 '{TEMPLATE_EXAMPLE_MARK} 행 — 지우고 쓰세요' 표시)은 실제 데이터가 아니므로 지우고 쓰세요. 남아 있어도 가져오지 않고 미리보기에 경고로 표시합니다.</div>
           <div className="row" style={{ gap: 6 }}>
             <DownloadButton filename={`mildo_${template}.csv`} data={() => templateCsv(template)} mime="text/csv;charset=utf-8" label="템플릿 받기 (UTF-8)" />
             <Button size="sm" icon="copy" onClick={() => { setContent(SAMPLE[template]); setFilename(`예시_${template}.csv`); setEncoding('예시 (TEST DATA)'); setMapping({}); reset(); }}>예시 내용 채우기</Button>
@@ -179,8 +187,7 @@ export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csv
           </Field>
           <div className="row">
             <Button variant="primary" icon="search" onClick={runPreview} disabled={!content.trim() || busy !== null || tooBig || (server && !canOperate)} title={server && !canOperate ? '담당 AE 이상' : undefined}>{busy === 'preview' ? '읽는 중…' : '미리보기'}</Button>
-            <Button variant="accent" icon="download" onClick={runImport} disabled={!server || !res || preview?.local || blocking.length > 0 || busy !== null || !canOperate}
-              title={!server ? '서버 연결 시 가져올 수 있습니다' : blocking.length ? '오류를 먼저 해결하세요' : undefined}>{busy === 'import' ? '등록 중…' : '가져오기'}</Button>
+            <Button variant="accent" icon="download" onClick={runImport} disabled={!!importLock || busy !== null} title={importLock ?? undefined}>{busy === 'import' ? '등록 중…' : '가져오기'}</Button>
             {!server ? <span className="xs muted">데모 모드: 미리보기는 이 브라우저 안에서만 읽고 어디에도 보내지 않습니다. 가져오기는 서버 연결 시 동작합니다</span> : null}
           </div>
           {err ? <Callout tone="critical">{err}</Callout> : null}
@@ -215,7 +222,11 @@ export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csv
               </table>
             </div>
             {Object.keys(mapping).length ? <span className="xs muted">열 매핑을 바꿨습니다 — 미리보기를 다시 눌러 확인하세요</span> : null}
-            {res.issues.length ? <ul className="conn-issues">{res.issues.map((i, k) => <IssueRow key={`${i.code}-${k}`} i={i} />)}</ul> : <Callout tone="good">형식 검사를 모두 통과했습니다. 가져온 뒤 품질 검사(누락 날짜 · 급변 등)는 수집 현황에 기록됩니다.</Callout>}
+            {res.issues.length ? <ul className="conn-issues">{res.issues.map((i, k) => <IssueRow key={`${i.code}-${k}`} i={i} />)}</ul> : (
+              <Callout tone="good">{preview?.local
+                ? '형식 · 값 검사(음수 지표 · 오늘 이후 날짜 · 템플릿 예시 행)를 모두 통과했습니다. 누락 날짜 등 수집 품질 검사는 서버에서 가져올 때 수집 현황에 기록됩니다.'
+                : '형식 · 값 검사와 수집 품질 검사(음수 지표 · 오늘 이후 날짜 · 누락 날짜 · 클릭 > 노출 등)를 모두 통과했습니다. 가져온 결과는 수집 현황에 기록됩니다.'}</Callout>
+            )}
             {blocking.length ? <Callout tone="critical" title="가져올 수 없습니다">{blocking.map((b) => b.message).join(' / ')}</Callout> : null}
             <DataTable rows={res.preview} rowKey={(r) => String(r._line)} columns={previewCols} empty="정상 행이 없습니다" maxHeight={360} />
             <span className="xs muted">앞 {res.preview.length}행 (정규화 결과 · 합산 전)</span>
@@ -231,7 +242,15 @@ export function UploadPanel({ server, workspaceId, canOperate, canConfigure, csv
             { key: 'template', label: '템플릿', render: (u) => TEMPLATES[u.template as UploadTemplate]?.label ?? u.template },
             { key: 'range', label: '기간', render: (u) => (u.summary.dateFrom ? `${u.summary.dateFrom} ~ ${u.summary.dateTo}` : '—') },
             { key: 'records', label: '건수', align: 'right', render: (u) => fmt.int(Number(u.summary.rowsWritten ?? u.summary.records ?? 0)) },
-            { key: 'status', label: '상태', render: (u) => <Pill tone={u.status === 'imported' ? 'good' : u.status === 'failed' ? 'critical' : 'neutral'}>{u.status === 'imported' ? '가져옴' : u.status === 'failed' ? `실패${u.summary.error ? ` · ${String(u.summary.error).slice(0, 40)}` : ''}` : '가져오는 중'}</Pill> },
+            { key: 'status', label: '상태', render: (u) => {
+              const st = uploadStatusMeta(u);
+              return (
+                <span className="row" style={{ gap: 4 }}>
+                  <Pill tone={st.tone} title={st.title}>{st.label}</Pill>
+                  {st.runFilter && onShowRuns ? <Button size="sm" variant="ghost" onClick={() => onShowRuns(st.runFilter!)} title="수집 현황에서 제외 · 실패 사유를 봅니다">사유 보기</Button> : null}
+                </span>
+              );
+            } },
             { key: 'act', label: '', render: (u) => <Button size="sm" variant="ghost" icon="x" disabled={!server || !canConfigure} onClick={() => setDel(u)} title={!server ? '서버 연결 시' : !canConfigure ? 'PM · 관리자 · 소유자만' : undefined}>지우기</Button> },
           ]} />
       </Card>

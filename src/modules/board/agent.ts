@@ -44,10 +44,10 @@ export const agentKit: ModuleAgentKit = {
         const rec = reconciliation(d, k.win);
         return {
           출처: SRC,
-          기간: { 이름: k.win.label, 범위: `${k.win.from}~${k.win.to}`, 직전: `${k.win.prevFrom}~${k.win.prevTo}`, 오늘부분일포함: k.win.includesToday },
+          기간: { 이름: k.win.label, 범위: `${k.win.from}~${k.win.to}`, 직전: `${k.win.prevFrom}~${k.win.prevTo}`, 오늘부분일포함: k.win.includesToday, ...(k.scope.note ? { 증감기준: k.scope.note } : {}) },
           KPI: {
             광고비: r0(k.cur.cost), 광고비증감pct: r1(k.deltas.cost), 광고매출: r0(k.cur.revenue), ROAS: r0(k.cur.roas), ROAS증감pct: r1(k.deltas.roas),
-            실매출: r0(k.sales), 실매출증감pct: r1(k.deltas.sales), MER배: r2(k.mer), 직전MER배: r2(k.prevMer), 광고경유비중pct: pct(k.adShareOfSales),
+            실매출: r0(k.sales), 실매출증감pct: r1(k.deltas.sales), MER배: r2(k.mer), 직전MER배: r2(k.scope.note ? k.cmp.prevMer : k.prevMer), 광고경유비중pct: pct(k.adShareOfSales),
             CPA: r0(k.cur.cpa), CPA증감pct: r1(k.deltas.cpa), CVRpct: r2(k.cur.cvr), CVR증감pct: r1(k.deltas.cvr), 신규CAC: r0(k.cur.cac), 신규고객: r0(k.cur.newCustomers),
           },
           매출대조: { 매체집계광고매출: r0(rec.mediaRevenue), 채널광고경유추정: r0(rec.channelAdRevenue), 차이pct: r1(rec.gapPct), 허용pct: BOARD_RULES.reconTolerancePct },

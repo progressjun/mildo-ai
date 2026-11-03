@@ -141,3 +141,5 @@
   .board-judge { grid-template-columns: auto minmax(0, 1fr); }
   .board-judge > :last-child { grid-column: 2; white-space: normal; }
 }
+/* 합계 증감 기준 (같은 기준 비교) */
+.board-kpi-note { flex-wrap: wrap; }

@@ -323,16 +323,33 @@ export type CsvRecord = MediaDailyRecord | MediaHourlyRecord | SalesDailyRecord 
 export interface NormalizeResult<R = CsvRecord> {
   template: UploadTemplate;
   mapping: ColumnMapping;
-  /** 키별 합산 후 레코드 */
+  /** 키별 합산 후 레코드 (음수 지표 · 미래 날짜 레코드는 뺀 뒤) */
   records: R[];
-  /** 앞 20행 (합산 전, 정규화 결과) */
+  /** 앞 20행 (합산 전, 정규화 결과 — 제외된 행은 넣지 않는다) */
   preview: (R & { _line: number })[];
   issues: CsvIssue[];
-  summary: { rows: number; validRows: number; invalidRows: number; records: number; dateFrom: string | null; dateTo: string | null; channels: string[]; delimiter: string; headers: string[] };
+  summary: {
+    rows: number; validRows: number;
+    /** 제외한 행 전체 (형식 오류 + 템플릿 예시 행 + 음수 지표 + 미래 날짜) */
+    invalidRows: number;
+    records: number; dateFrom: string | null; dateTo: string | null; channels: string[]; delimiter: string; headers: string[];
+    /** 제외 사유별 행 수 */
+    excluded?: { format: number; example: number; negative: number; future: number };
+  };
 }
 
 const METRIC_KEYS = ['impressions', 'clicks', 'cost', 'conversions', 'revenue', 'newCustomers', 'visitors', 'detailViews', 'carts', 'orders', 'adAttributedRevenue'];
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * 행 단위 오류 — 그 행(레코드)만 빼고 가져온다(가져오기를 막지 않는다). 서버 품질 검사(server/src/ingest/quality.ts)와 같은 코드:
+ * invalid_rows(형식) · negative_values(음수 지표) · future_dates(오늘 이후 날짜)
+ */
+export const ROW_LEVEL_ERROR_CODES = ['invalid_rows', 'negative_values', 'future_dates'] as const;
+
+/** 템플릿 예시 행 표시 — 템플릿 파일의 예시 행 일자 칸에 붙는다. 일자 칸에 이 글자가 있는 행은 실제 데이터로 가져오지 않는다 */
+export const TEMPLATE_EXAMPLE_MARK = '예시';
+export const TEMPLATE_EXAMPLE_NOTE = `(${TEMPLATE_EXAMPLE_MARK} 행 — 지우고 쓰세요)`;
 
 export interface NormalizeOptions {
   mapping?: Record<string, string | null | undefined>;
@@ -340,7 +357,34 @@ export interface NormalizeOptions {
   channel?: string | null;
   delimiter?: ',' | ';' | '\t';
   previewRows?: number;
+  /**
+   * 기준일 (KST YYYY-MM-DD). 주면 이 날 이후 날짜 레코드를 future_dates로 뺀다 — 서버 수집 품질 검사와 같은 기준(오늘까지 허용).
+   * 음수 지표(negative_values)는 기준일과 상관없이 항상 뺀다.
+   */
+  today?: string | null;
 }
+
+/** 템플릿 파일에 들어가는 필드 (키워드 일별의 키워드 ID는 템플릿에 없다) */
+function templateFields(template: UploadTemplate): TemplateField[] {
+  return TEMPLATES[template].fields.filter((f) => !(template === 'keyword_daily' && f.key === 'keywordId'));
+}
+
+/** 템플릿 예시 값을 행 값과 같은 방식으로 해석 (예시 행 판정용) */
+function parsedExample(f: TemplateField): unknown {
+  switch (f.type) {
+    case 'date': return parseDate(f.example);
+    case 'hour': return parseHour(f.example);
+    case 'media': return parseMedia(f.example);
+    case 'channel': return parseChannel(f.example);
+    case 'int': return Math.round(parseNumber(f.example));
+    case 'money': return Math.round(parseNumber(f.example) * 100) / 100;
+    case 'decimal': return round2(parseNumber(f.example));
+    default: return f.example.trim() || null;
+  }
+}
+
+const numKo = (n: number) => (Number.isFinite(n) ? n.toLocaleString('ko-KR') : String(n));
+const linesText = (lines: number[], max = 3) => `${lines.slice(0, max).join('·')}${lines.length > max ? '…' : ''}행`;
 
 export function normalizeCsv(template: UploadTemplate, content: string, opts: NormalizeOptions = {}): NormalizeResult {
   const def = TEMPLATES[template];
@@ -364,16 +408,25 @@ export function normalizeCsv(template: UploadTemplate, content: string, opts: No
 
   const rowErrors: { line: number; message: string }[] = [];
   let invalid = 0;
-  const preview: (CsvRecord & { _line: number })[] = [];
+  /** 미리보기 후보 (합산 전 · 앞쪽 행만) — 음수 · 미래 날짜로 빠지는 키는 합산 뒤에 걸러 낸다 */
+  const PREVIEW_CANDIDATES = 5000;
+  const candidates: { key: string; rec: CsvRecord & { _line: number } }[] = [];
   const agg = new Map<string, CsvRecord>();
+  const keyLines = new Map<string, number[]>();
   let dupRows = 0;
   const previewN = opts.previewRows ?? 20;
   const fatal = mapping.missing.length > 0 || issues.some((i) => i.code === 'unknown_channel');
+  // 템플릿 예시 행: 일자 칸에 '예시' 표시가 있거나, 템플릿 필드가 모두 매핑돼 있고 값이 예시와 전부 같은 행 (표시 없는 예전 템플릿)
+  const exFields = templateFields(template);
+  const exValues = Object.fromEntries(exFields.map((f) => [f.key, parsedExample(f)]));
+  const exComparable = exFields.every((f) => colIdx[f.key] >= 0 || (!!fixed && (f.type === 'media' || f.type === 'channel')));
+  const exampleLines: number[] = [];
 
   if (!fatal) {
     parsed.rows.forEach((cells, i) => {
       const line = i + 2;
       const get = (k: string) => (colIdx[k] >= 0 ? cells[colIdx[k]] ?? '' : '');
+      if (colIdx.date >= 0 && get('date').includes(TEMPLATE_EXAMPLE_MARK)) { exampleLines.push(line); return; }
       const errs: string[] = [];
       const rec: Record<string, unknown> = {};
       for (const f of def.fields) {
@@ -434,9 +487,12 @@ export function normalizeCsv(template: UploadTemplate, content: string, opts: No
         if (rowErrors.length < 50) rowErrors.push({ line, message: errs.join(' · ') });
         return;
       }
+      if (exComparable && exFields.every((f) => colIdx[f.key] < 0 || rec[f.key] === exValues[f.key])) { exampleLines.push(line); return; }
       const r = rec as unknown as CsvRecord;
-      if (preview.length < previewN) preview.push({ ...(r as object), _line: line } as CsvRecord & { _line: number });
       const key = def.keyFields.map((k) => String(rec[k])).join('|');
+      if (candidates.length < PREVIEW_CANDIDATES) candidates.push({ key, rec: { ...(r as object), _line: line } as CsvRecord & { _line: number } });
+      const ls = keyLines.get(key);
+      if (ls) ls.push(line); else keyLines.set(key, [line]);
       const prev = agg.get(key) as Record<string, unknown> | undefined;
       if (!prev) {
         agg.set(key, { ...(r as object) } as CsvRecord);
@@ -455,23 +511,77 @@ export function normalizeCsv(template: UploadTemplate, content: string, opts: No
   if (rowErrors.length) {
     issues.push({ code: 'invalid_rows', severity: 'error', message: `형식 오류로 제외한 행 ${invalid}개 — 예: ${rowErrors.slice(0, 3).map((e) => `${e.line}행 ${e.message}`).join(' / ')}`, detail: { rows: rowErrors } });
   }
+  if (exampleLines.length) {
+    issues.push({
+      code: 'template_example_row', severity: 'warning',
+      message: `템플릿 예시 행 ${exampleLines.length}개(${linesText(exampleLines)})는 실제 데이터가 아니라 가져오지 않습니다 — 템플릿을 쓸 때 예시 행은 지우고 실제 값을 넣으세요`,
+      detail: { lines: exampleLines.slice(0, 50) },
+    });
+  }
   if (dupRows) {
     issues.push({ code: 'duplicate_keys', severity: 'warning', message: `같은 ${def.keyFields.filter((k) => k !== 'keywordKey').map((k) => def.fields.find((f) => f.key === k)?.label ?? k).join(' · ')}${template === 'keyword_daily' ? ' · 키워드' : ''} 행 ${dupRows}개를 합산했습니다 (캠페인 · 광고그룹별 행이면 정상, 같은 내용을 두 번 붙여 넣었다면 확인 필요)`, detail: { mergedRows: dupRows } });
   }
+
+  /* ---------- 값 검사 (합산 뒤 레코드 기준 — 서버 수집 품질 검사 checkBatch와 같은 규칙 · 순서: 음수 → 미래 날짜) ---------- */
+  const labelOf = (k: string) => def.fields.find((f) => f.key === k)?.label ?? k;
+  const negative: { key: string; lines: number[]; field: string; value: number }[] = [];
+  const future: { key: string; lines: number[]; date: string }[] = [];
+  const excludedKeys = new Set<string>();
+  const today = opts.today && /^\d{4}-\d{2}-\d{2}$/.test(opts.today) ? opts.today : null;
+  for (const [key, r] of agg) {
+    const rec = r as unknown as Record<string, unknown>;
+    const neg = METRIC_KEYS.find((k) => typeof rec[k] === 'number' && (rec[k] as number) < 0);
+    if (neg) { negative.push({ key, lines: keyLines.get(key) ?? [], field: neg, value: rec[neg] as number }); excludedKeys.add(key); continue; }
+    if (today && r.date > today) { future.push({ key, lines: keyLines.get(key) ?? [], date: r.date }); excludedKeys.add(key); }
+  }
+  for (const k of excludedKeys) agg.delete(k);
+  const lineCount = (xs: { lines: number[] }[]) => xs.reduce((a, x) => a + x.lines.length, 0);
+  const negativeRows = lineCount(negative);
+  const futureRows = lineCount(future);
+  if (negative.length) {
+    issues.push({
+      code: 'negative_values', severity: 'error',
+      message: `음수 지표가 있는 ${negativeRows}행을 제외했습니다 — 예: ${negative.slice(0, 3).map((n) => `${linesText(n.lines, 2)} ${labelOf(n.field)} ${numKo(n.value)}`).join(', ')} (광고비 · 노출 · 전환 · 매출은 0 이상이어야 합니다. 같은 ${def.keyFields.filter((k) => k !== 'keywordKey').map(labelOf).join(' · ')} 행은 합산한 값 기준)`,
+      detail: { count: negativeRows, examples: negative.slice(0, 8).map((n) => ({ lines: n.lines.slice(0, 5), field: n.field, value: n.value })) },
+    });
+  }
+  if (future.length) {
+    issues.push({
+      code: 'future_dates', severity: 'error',
+      message: `오늘(${today}) 이후 날짜 ${futureRows}행을 제외했습니다 — 예: ${future.slice(0, 3).map((f) => `${linesText(f.lines, 2)} ${f.date}`).join(', ')}`,
+      detail: { count: futureRows, today, examples: future.slice(0, 8).map((f) => ({ lines: f.lines.slice(0, 5), date: f.date })) },
+    });
+  }
+  const preview = candidates.filter((c) => !excludedKeys.has(c.key)).slice(0, previewN).map((c) => c.rec);
+
   const records = [...agg.values()];
   const dates = records.map((r) => r.date).sort();
   const channels = [...new Set(records.map((r) => ('media' in r ? r.media : 'channel' in r ? r.channel : template === 'keyword_daily' || template === 'search_term_daily' ? 'naver_sa' : '')).filter(Boolean))].sort();
-  if (!fatal && !records.length && parsed.rows.length) issues.push({ code: 'no_valid_rows', severity: 'error', message: '가져올 수 있는 행이 없습니다' });
+  if (!fatal && !records.length && parsed.rows.length) {
+    issues.push({
+      code: 'no_valid_rows', severity: 'error',
+      message: exampleLines.length === parsed.rows.length
+        ? '템플릿 예시 행만 있습니다 — 예시 행을 지우고 실제 데이터를 넣으세요'
+        : invalid + exampleLines.length + negativeRows + futureRows > 0
+          ? '가져올 수 있는 행이 없습니다 — 모든 행이 제외됩니다 (위 사유를 고친 뒤 다시 올려 주세요)'
+          : '가져올 수 있는 행이 없습니다',
+    });
+  }
   if (!fatal && !parsed.rows.length) issues.push({ code: 'no_rows', severity: 'error', message: '머리글 아래 데이터 행이 없습니다' });
+  const excludedRows = fatal ? parsed.rows.length : invalid + exampleLines.length + negativeRows + futureRows;
   return {
     template, mapping, records, preview, issues,
-    summary: { rows: parsed.rows.length, validRows: parsed.rows.length - invalid - (fatal ? parsed.rows.length : 0), invalidRows: fatal ? parsed.rows.length : invalid, records: records.length, dateFrom: dates[0] ?? null, dateTo: dates[dates.length - 1] ?? null, channels, ...summaryBase },
+    summary: {
+      rows: parsed.rows.length, validRows: parsed.rows.length - excludedRows, invalidRows: excludedRows, records: records.length,
+      dateFrom: dates[0] ?? null, dateTo: dates[dates.length - 1] ?? null, channels, ...summaryBase,
+      excluded: { format: fatal ? parsed.rows.length : invalid, example: exampleLines.length, negative: negativeRows, future: futureRows },
+    },
   };
 }
 
-/** 오류(error) 등급 이슈가 있어 가져올 수 없는지 — 행 단위 오류는 해당 행만 빼고 가져온다 */
+/** 오류(error) 등급 이슈가 있어 가져올 수 없는지 — 행 단위 오류(형식 · 음수 · 미래 날짜)는 해당 행만 빼고 가져온다 */
 export function blockingIssues(issues: CsvIssue[]): CsvIssue[] {
-  return issues.filter((i) => i.severity === 'error' && i.code !== 'invalid_rows');
+  return issues.filter((i) => i.severity === 'error' && !(ROW_LEVEL_ERROR_CODES as readonly string[]).includes(i.code));
 }
 
 /* ---------- 템플릿 파일 ---------- */
@@ -480,12 +590,14 @@ function csvCell(v: string): string {
   return /[",\r\n;\t]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 }
 
-/** 템플릿 CSV (UTF-8 BOM · 한글 머리글 · 예시 1행 — 예시 행은 지우고 쓰세요) */
+/**
+ * 템플릿 CSV (UTF-8 BOM · 한글 머리글 · 예시 1행). 예시 행 일자 칸에 '(예시 행 — 지우고 쓰세요)'를 붙인다 —
+ * 지우지 않고 올려도 정규화가 예시 행으로 알아보고 가져오지 않는다(template_example_row 경고). 표시 없는 예전 템플릿의 예시 행은 값이 예시와 전부 같은지로 알아본다.
+ */
 export function templateCsv(template: UploadTemplate): string {
-  const def = TEMPLATES[template];
-  const fields = def.fields.filter((f) => !(template === 'keyword_daily' && f.key === 'keywordId'));
+  const fields = templateFields(template);
   const head = fields.map((f) => csvCell(f.label)).join(',');
-  const ex = fields.map((f) => csvCell(f.example)).join(',');
+  const ex = fields.map((f) => csvCell(f.type === 'date' ? `${f.example} ${TEMPLATE_EXAMPLE_NOTE}` : f.example)).join(',');
   return `﻿${head}\r\n${ex}\r\n`;
 }
 

@@ -79,7 +79,7 @@ export default function View() {
         sub="목표 KPI에 맞춘 규칙으로 입찰과 예산을 조정하고, 모든 변경은 승인 · 기록 · 롤백이 가능합니다. 입찰 조정안 생성부터 GFA 변경 승인까지 한 화면에서 처리합니다."
         sources={<>
           <Src kind="PROPOSAL" page="p.14–16" /><Src kind="DEMO" />
-          <span className="xs muted">데이터 기준 {fmtDate(ap.data.today)} {String(ap.data.currentHour).padStart(2, '0')}:30 · 현재 역할 {ap.state.role} · 공식 기준 목표 ROAS {fmt.roas(ap.official.targetRoas)}{ap.dirty.length ? ` (화면은 미승인 기준 ${ap.dirty.length}건 시뮬레이션 중)` : ''}</span>
+          <span className="xs muted">데이터 기준 {fmtDate(ap.data.today)} {String(ap.data.currentHour).padStart(2, '0')}:30 · 현재 역할 {ap.roleLabel} · 공식 기준 목표 ROAS {fmt.roas(ap.official.targetRoas)}{ap.dirty.length ? ` (화면은 미승인 기준 ${ap.dirty.length}건 시뮬레이션 중)` : ''}</span>
         </>}
       />
 
@@ -94,7 +94,7 @@ export default function View() {
         </Card>
         <Card>
           <Stat label="승인 대기 (AD Pilot · GFA)" value={`${pending.length}건`}
-            foot={<span className="xs">{ap.state.role} 승인 가능 {mine.length}건 · 나머지는 상위 승인</span>} />
+            foot={<span className="xs">{ap.server && !ap.requestPerm.ok ? `${ap.roleLabel} · 읽기 전용 (승인 권한 없음)` : `${ap.roleLabel} 승인 가능 ${mine.length}건 · 나머지는 상위 승인`}</span>} />
         </Card>
         <Card>
           <Stat label="반영 중 변경" value={`${applied.length}건`} foot={<span className="xs">롤백 {rolled.length}건 · 모든 반영은 즉시 롤백 가능</span>} />

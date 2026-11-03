@@ -8,7 +8,7 @@
 import type { ChangeRequest, Dataset, Incident, Toast } from '@/core/types';
 import type { Action, AppState, Comment } from '@/core/store';
 import { ApiError, wsPath, type ApiOptions } from './api';
-import { apiErrorMessage, FLOW_SEED_PREFIX, fromServerComment, mergeWithPending, type RefetchTarget, type ServerComment } from './sync';
+import { apiErrorMessage, FLOW_SEED_PREFIX, fromServerComment, mergeWithPending, withObjectParticle, type RefetchTarget, type ServerComment } from './sync';
 
 export type ApiFn = <T = unknown>(path: string, o?: ApiOptions) => Promise<T>;
 
@@ -131,7 +131,7 @@ export function createServerBridge(d: BridgeDeps): ServerBridge {
             return;
           }
           if (before) d.dispatch({ type: 'change/upsert', change: before });
-          fail(`${log?.action ?? '변경'}을(를) 서버에 반영하지 못해 되돌렸습니다`, e);
+          fail(`${withObjectParticle(log?.action ?? '변경')} 서버에 반영하지 못해 되돌렸습니다`, e);
         });
     },
 
@@ -168,7 +168,7 @@ export function createServerBridge(d: BridgeDeps): ServerBridge {
         .catch((e) => {
           release('incidents', id);
           if (before) d.dispatch({ type: 'incident/upsert', incident: before });
-          fail(`이슈 ${log?.action ?? '처리'}을(를) 서버에 반영하지 못해 되돌렸습니다`, e);
+          fail(`이슈 ${withObjectParticle(log?.action ?? '처리')} 서버에 반영하지 못해 되돌렸습니다`, e);
         });
     },
 

@@ -9,6 +9,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import type { AiSettings } from '@/core/types';
+import { ApiError, reportApiFailure } from '@/saas/api';
 import { readSse } from './sse';
 
 export type Backend = 'artifact' | 'anthropic' | 'server' | 'none';
@@ -84,21 +85,30 @@ function markSampleDenied() {
  * 백엔드 결정.
  *  - offline → none
  *  - server → 서버 워크스페이스가 정해졌고 서버 AI를 쓸 수 있으면 server, 아니면 none
- *  - anthropic → API 키가 있으면 anthropic
+ *  - anthropic → API 키가 있으면 anthropic. 서버 모드에서는 서버 CSP가 api.anthropic.com 직접 연결을 허용할 때만
+ *    (GET /ai/usage browserDirect — 기본 CSP connect-src 'self'는 브라우저가 모든 호출을 막는다)
  *  - artifact → claude.ai 런타임이 있으면 artifact
  *  - auto → 서버 모드(configureServerAi로 워크스페이스가 정해짐)면 server, 아니면 artifact → anthropic → none 순서.
- *    서버 키 미설정 · AI 꺼짐 · 호출 권한 없음(viewer)이면 서버 대신 그다음 순서로 넘어간다.
+ *    서버 키 미설정 · AI 꺼짐 · 호출 권한 없음(viewer) · 월 한도 도달이면 서버 대신 그다음 순서로 넘어간다.
+ * 'none'인 이유는 aiStatusNote(settings, backend)가 알려 준다(서버 모드).
  */
 export async function resolveBackend(settings: AiSettings): Promise<Backend> {
   if (settings.mode === 'offline') return 'none';
   if (settings.mode === 'server') return (await serverAvailable()) ? 'server' : 'none';
-  if (settings.mode === 'anthropic') return settings.apiKey ? 'anthropic' : 'none';
+  if (settings.mode === 'anthropic') return settings.apiKey && (await browserDirectAllowed()) ? 'anthropic' : 'none';
   if (settings.mode === 'auto' && serverWsId && (await serverAvailable())) return 'server';
   const sample = sampleDenied ? null : await getSample();
   if (settings.mode === 'artifact') return sample ? 'artifact' : 'none';
   if (sample) return 'artifact';
-  if (settings.apiKey) return 'anthropic';
+  if (settings.apiKey && (await browserDirectAllowed())) return 'anthropic';
   return 'none';
+}
+
+/** 브라우저에서 api.anthropic.com을 직접 부를 수 있는지 — 데모 · 정적 배포는 그대로 허용, 서버 모드는 서버 CSP 기준 */
+async function browserDirectAllowed(): Promise<boolean> {
+  if (!serverWsId) return true;
+  await serverAvailable();
+  return serverStatus?.browserDirect === true;
 }
 
 export const BACKEND_LABEL: Record<Backend, string> = {
@@ -108,14 +118,83 @@ export const BACKEND_LABEL: Record<Backend, string> = {
   none: '규칙 엔진 (AI 미연결)',
 };
 
+/** AI가 연결되지 않은(규칙 엔진) 이유 — 서버 모드에서만 채운다. short는 상단 바 · 배지, long은 안내 문구 */
+export interface AiStatusNote { code: string; short: string; long: string }
+
+/** 서버 AI를 못 쓰는 사유 (server/src/ai/index.ts aiUnavailableReason과 같은 코드) */
+export type ServerAiReason = 'ai_not_configured' | 'ai_disabled' | 'workspace_locked' | 'forbidden' | 'budget_exceeded';
+const SERVER_REASONS: readonly string[] = ['ai_not_configured', 'ai_disabled', 'workspace_locked', 'forbidden', 'budget_exceeded'];
+
+const RULE_TAIL = '그동안 각 화면은 규칙 엔진으로 동작합니다.';
+export const SERVER_AI_NOTE: Record<ServerAiReason, { short: string; long: string }> = {
+  ai_not_configured: {
+    short: '서버 AI 미설정',
+    long: `서버 AI 미설정 (ANTHROPIC_API_KEY) — 서버 환경변수에 Anthropic API 키가 없어 AI를 쓸 수 없습니다. 운영 담당 · 관리자에게 설정을 요청하세요. ${RULE_TAIL}`,
+  },
+  ai_disabled: { short: 'AI 꺼짐', long: `이 워크스페이스는 AI 사용이 꺼져 있습니다 (워크스페이스 설정 › AI). 관리자가 켜면 새로고침 없이 바로 쓸 수 있습니다. ${RULE_TAIL}` },
+  workspace_locked: { short: '읽기 전용', long: `이 워크스페이스는 읽기 전용 상태라 AI를 호출할 수 없습니다. ${RULE_TAIL}` },
+  forbidden: { short: '열람자 · AI 호출 불가', long: '열람자 역할은 AI를 호출할 수 없습니다. 필요하면 관리자에게 역할 변경을 요청하세요. 규칙 엔진 결과는 그대로 볼 수 있습니다.' },
+  budget_exceeded: {
+    short: '월 한도 도달',
+    long: `이번 달 워크스페이스 AI 사용 한도에 도달했습니다. 관리자가 워크스페이스 설정에서 한도를 올리거나 다음 달 1일(KST)부터 다시 쓸 수 있습니다. ${RULE_TAIL}`,
+  },
+};
+/** 서버 모드에서 'API 키'(브라우저 직접 호출)를 못 쓰는 이유 — 화면이 설정 선택지를 끌 때도 쓴다 */
+export const BROWSER_BLOCKED_NOTE: AiStatusNote = {
+  code: 'browser_blocked',
+  short: 'API 키 방식 차단',
+  long: "이 서버의 보안 정책(CSP connect-src)이 브라우저에서 api.anthropic.com으로 직접 연결하는 것을 막아 개인 API 키 방식은 쓸 수 없습니다. 설정에서 AI 연결 방식을 'MILDO 서버 (조직 키)'로 고르세요. 운영자가 CSP_CONNECT_SRC_EXTRA에 https://api.anthropic.com을 넣으면 쓸 수 있습니다.",
+};
+
+/**
+ * 지금 규칙 엔진으로 동작하는 이유 (서버 모드만 — 데모 · claude.ai 아티팩트에서는 null이고 화면은 기존 안내를 쓴다).
+ * 마지막 서버 확인(GET /ai/usage)과 설정을 기준으로 바로 계산한다.
+ */
+export function aiStatusNote(settings: AiSettings, backend: Backend | 'checking'): AiStatusNote | null {
+  if (!serverWsId || backend !== 'none') return null;
+  if (settings.mode === 'offline') {
+    return { code: 'offline', short: '규칙 엔진만 선택', long: "설정 › AI 연결 방식이 '규칙 엔진만'입니다. AI를 쓰려면 '자동' 또는 'MILDO 서버 (조직 키)'로 바꾸세요." };
+  }
+  if (settings.mode === 'anthropic') {
+    if (serverStatus && !serverStatus.browserDirect) return BROWSER_BLOCKED_NOTE;
+    if (!settings.apiKey) return { code: 'no_key', short: 'API 키 없음', long: "설정에 Anthropic API 키가 없습니다. 키를 넣거나 AI 연결 방식을 'MILDO 서버 (조직 키)'로 고르세요." };
+    return null;
+  }
+  if (settings.mode === 'artifact') {
+    return { code: 'no_artifact', short: 'claude.ai 밖', long: "'claude.ai' 방식은 claude.ai 아티팩트 안에서만 동작합니다. 설정에서 'MILDO 서버 (조직 키)'를 고르세요." };
+  }
+  const reason = serverStatus?.reason;
+  if (reason && (SERVER_REASONS as string[]).includes(reason)) {
+    const base = SERVER_AI_NOTE[reason as ServerAiReason];
+    return { code: reason, short: base.short, long: serverStatus?.message ?? base.long };
+  }
+  return null;
+}
+
+/** 상단 바 · 화면 배지 문구 — 규칙 엔진이면 이유를 괄호에 (서버 모드) */
+export function backendLabel(backend: Backend | 'checking', note: AiStatusNote | null): string {
+  if (backend === 'checking') return 'AI 연결 확인 중';
+  if (backend === 'none' && note) return `규칙 엔진 (${note.short})`;
+  return BACKEND_LABEL[backend];
+}
+
 /* ---------------- 서버 모드 설정 ---------------- */
 
+interface ServerStatus {
+  available: boolean;
+  reason: string | null;
+  /** 화면에 보일 구체적인 사유 (예: 한도 도달 시 서버가 준 '사용 · 한도' 수치 문구) */
+  message: string | null;
+  /** 서버 CSP가 브라우저의 api.anthropic.com 직접 연결을 허용하는지 */
+  browserDirect: boolean;
+}
+
 let serverWsId: string | null = null;
-/** 서버가 이 워크스페이스에서 AI를 쓸 수 없다고 답한 뒤(키 없음 · AI 꺼짐 · 권한 없음) — 다시 configureServerAi할 때까지 */
+/** 서버가 이 워크스페이스에서 AI를 쓸 수 없다고 답한 뒤(키 없음 · AI 꺼짐 · 권한 없음 · 한도) — 다시 configureServerAi할 때까지 */
 let serverDenied = false;
 let serverProbe: Promise<boolean> | null = null;
-/** 마지막 확인 결과 (확인 전 null) — 같은 워크스페이스로 다시 configureServerAi할 때 '쓸 수 없음'이었으면 다시 확인한다 */
-let serverProbeResult: boolean | null = null;
+/** 마지막 확인 결과 (확인 전 null) */
+let serverStatus: ServerStatus | null = null;
 
 function notifyBackendChange() {
   backendListeners.forEach((fn) => {
@@ -123,34 +202,77 @@ function notifyBackendChange() {
   });
 }
 
+const statusKey = (st: ServerStatus | null) => (st ? `${st.available}|${st.reason ?? ''}|${st.message ?? ''}|${st.browserDirect}` : 'none');
+
 /**
  * 서버 모드 연결 (platform이 워크스페이스가 정해질 때 · 바뀔 때 · 설정이 바뀌어 다시 읽을 때 호출, 로그아웃 시 null).
  * 'auto' 모드는 이 값이 있으면 서버 백엔드를 고른다. 바뀌면 화면의 연결 상태를 다시 계산하게 알린다.
- * 같은 워크스페이스로 다시 불려도, 직전 확인이 '쓸 수 없음'(관리자가 AI를 꺼 둠 등)이었으면 다시 확인한다 —
- * 관리자가 설정에서 AI를 켠 뒤 새로고침 없이 서버 백엔드로 돌아오게 하기 위해서다.
+ * 같은 워크스페이스로 다시 불리면(설정 변경 이벤트 — 다른 세션에서 AI를 끄거나 켬 · 월 한도 변경) 서버에 다시 확인하고,
+ * 결과가 달라졌을 때만 알린다 — 상단 바 · 화면이 다음 호출이 실패하기 전에 실제 상태를 보여 주게.
  */
 export function configureServerAi(o: { workspaceId: string | null }): void {
   const next = o.workspaceId || null;
-  if (next === serverWsId && !serverDenied && serverProbeResult !== false) return;
+  if (next !== null && next === serverWsId) {
+    void reprobeServer();
+    return;
+  }
+  if (next === serverWsId) return;
   serverWsId = next;
   serverDenied = false;
   serverProbe = null;
-  serverProbeResult = null;
+  serverStatus = null;
   notifyBackendChange();
+}
+
+/** 같은 워크스페이스의 서버 AI 상태를 다시 확인한다 (진행 중인 첫 확인이 있으면 그 결과를 쓴다) */
+async function reprobeServer(): Promise<void> {
+  const ws = serverWsId;
+  if (!ws) return;
+  if (serverProbe && serverStatus === null) return; // 첫 확인이 아직 진행 중
+  const prev = serverStatus;
+  serverDenied = false;
+  serverProbe = null;
+  await serverAvailable();
+  if (serverWsId !== ws) return;
+  if (prev !== null && statusKey(prev) !== statusKey(serverStatus)) notifyBackendChange();
 }
 
 /** 현재 서버 모드 워크스페이스 id (없으면 null) */
 export const serverAiWorkspace = (): string | null => serverWsId;
 
-function markServerDenied() {
-  if (serverDenied) return;
-  serverDenied = true;
-  serverProbe = Promise.resolve(false);
-  serverProbeResult = false;
-  notifyBackendChange();
+/**
+ * 브라우저가 api.anthropic.com을 직접 부를 수 있는지 (설정의 'API 키' 방식) — 서버 모드가 아니면 true(데모 · 정적 배포는 그대로),
+ * 서버 모드는 마지막 서버 확인의 browserDirect(CSP), 확인 전이면 null.
+ */
+export function browserDirectStatus(): boolean | null {
+  if (!serverWsId) return true;
+  return serverStatus ? serverStatus.browserDirect : null;
 }
 
-/** 서버 AI 사용 가능 여부 — GET /ai/usage의 available(키 설정 · AI 켜짐 · request 권한 · 잠기지 않은 워크스페이스). 확인 실패 시 사용 가능으로 보고 호출 오류로 알린다 */
+function markServerDenied(reason: string, message: string | null) {
+  const next: ServerStatus = { available: false, reason, message, browserDirect: serverStatus?.browserDirect ?? false };
+  const changed = !serverDenied || statusKey(serverStatus) !== statusKey(next);
+  serverDenied = true;
+  serverProbe = Promise.resolve(false);
+  serverStatus = next;
+  if (changed) notifyBackendChange();
+}
+
+/** 사용량 응답 → 상태. 한도 도달이면 수치를 넣은 문구 */
+function statusFromUsage(u: ServerAiUsage | null): ServerStatus {
+  // 확인 실패(네트워크 · 프록시 오류) 시 사용 가능으로 보고 호출 오류로 알린다
+  if (!u) return { available: true, reason: null, message: null, browserDirect: false };
+  const available = u.available !== false;
+  let reason: string | null = available ? null : u.unavailableReason ?? null;
+  if (!available && !reason) reason = u.configured === false ? 'ai_not_configured' : u.enabled === false ? 'ai_disabled' : u.canUse === false ? 'forbidden' : u.budgetExceeded ? 'budget_exceeded' : null;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v).toLocaleString('ko-KR') : null);
+  const message = reason === 'budget_exceeded' && n(u.totalTokens) && n(u.limit)
+    ? `이번 달 워크스페이스 AI 사용 한도에 도달했습니다 (사용 ${n(u.totalTokens)} / 한도 ${n(u.limit)} 토큰). 관리자가 워크스페이스 설정에서 한도를 올리거나 다음 달 1일(KST)부터 다시 쓸 수 있습니다. ${RULE_TAIL}`
+    : null;
+  return { available, reason, message, browserDirect: u.browserDirect === true };
+}
+
+/** 서버 AI 사용 가능 여부 — GET /ai/usage의 available(키 설정 · AI 켜짐 · request 권한 · 잠기지 않은 워크스페이스 · 이번 달 한도 안) */
 function serverAvailable(): Promise<boolean> {
   if (!serverWsId) return Promise.resolve(false);
   if (serverDenied) return Promise.resolve(false);
@@ -158,16 +280,15 @@ function serverAvailable(): Promise<boolean> {
   const ws = serverWsId;
   const holder: { p: Promise<boolean> | null } = { p: null };
   holder.p = (async () => {
-    let ok = true;
+    let st: ServerStatus;
     try {
-      const u = await fetchServerAiUsage();
-      ok = u ? u.available !== false : true;
+      st = statusFromUsage(await fetchServerAiUsage());
     } catch {
-      ok = true;
+      st = statusFromUsage(null);
     }
     // 확인하는 사이 워크스페이스가 바뀌었거나 다시 configure되었으면 이 결과를 기록하지 않는다
-    if (serverWsId === ws && serverProbe === holder.p) serverProbeResult = ok;
-    return ok;
+    if (serverWsId === ws && serverProbe === holder.p) serverStatus = st;
+    return st.available;
   })();
   serverProbe = holder.p;
   return holder.p;
@@ -195,6 +316,10 @@ export interface ServerAiUsage {
   enabled: boolean;
   canUse: boolean;
   available: boolean;
+  /** 못 쓰는 첫 사유 (server/src/ai/index.ts) — 이전 서버는 보내지 않는다 */
+  unavailableReason?: ServerAiReason | null;
+  /** 서버 CSP가 브라우저의 api.anthropic.com 직접 연결을 허용하는지 */
+  browserDirect?: boolean;
   basis: string;
 }
 
@@ -202,7 +327,9 @@ export interface ServerAiUsage {
 export async function fetchServerAiUsage(month?: string, signal?: AbortSignal): Promise<ServerAiUsage | null> {
   if (!serverWsId || typeof fetch !== 'function') return null;
   const q = month ? `?month=${encodeURIComponent(month)}` : '';
-  const res = await fetch(`/api/w/${serverWsId}/ai/usage${q}`, { headers: { accept: 'application/json' }, credentials: 'same-origin', signal });
+  const path = `/api/w/${serverWsId}/ai/usage${q}`;
+  const res = await fetch(path, { headers: { accept: 'application/json' }, credentials: 'same-origin', signal });
+  if (res.status === 401) reportUnauthorized(path, 'GET');
   if (!res.ok) return null;
   try {
     const j = (await res.json()) as ServerAiUsage | null;
@@ -270,6 +397,29 @@ function toAiError(e: unknown): AiError {
   return new AiError('upstream_error', (e as Error)?.message ?? 'AI 호출 실패');
 }
 
+const HANGUL = /[\uAC00-\uD7A3]/;
+/**
+ * 화면에 보일 오류 사유 — 서버가 보낸 구체적인 한국어 문구(예: 한도 도달 '사용 5,489 / 한도 1,000 토큰')가 있으면 그것을,
+ * 없으면(영문 SDK 문구 등) 공통 문구(AI_ERROR_COPY).
+ */
+export function aiErrorReason(err: { code: string; message?: string }): string {
+  const msg = typeof err.message === 'string' ? err.message.trim() : '';
+  if (msg && HANGUL.test(msg)) return msg;
+  return AI_ERROR_COPY[err.code] ?? (msg || 'AI 호출 실패');
+}
+
+/**
+ * 오류 사유 + '규칙 엔진 결과를 표시했습니다' 한 문장. 사유 끝에 이미 규칙 엔진 안내 문장('그동안 … 규칙 엔진 …')이 있으면
+ * 그 문장을 바꿔 끼운다(같은 말을 두 번 하지 않게).
+ */
+export function ruleFallbackLine(reason: string): string {
+  const sentences = reason.trim().split(/(?<=[.!?])\s+/).filter(Boolean);
+  while (sentences.length > 1 && /규칙 엔진/.test(sentences[sentences.length - 1])) sentences.pop();
+  if (sentences.length === 1 && /규칙 엔진/.test(sentences[0])) return sentences[0];
+  const body = sentences.join(' ').replace(/[.!?]?$/, '.');
+  return `${body} 규칙 엔진 결과를 표시했습니다.`;
+}
+
 export const AI_ERROR_COPY: Record<string, string> = {
   not_granted: 'Claude 사용이 허용되지 않았습니다. 규칙 엔진으로 계속합니다.',
   sampling_disabled: '이 계정에서는 Claude를 쓸 수 없습니다. 규칙 엔진으로 계속합니다.',
@@ -295,6 +445,7 @@ export const AI_ERROR_COPY: Record<string, string> = {
   ai_billing: 'Anthropic 계정 결제 문제로 호출이 거절되었습니다. 관리자에게 확인을 요청하세요.',
   model_unavailable: '서버에 설정된 Claude 모델을 쓸 수 없습니다. 관리자에게 확인을 요청하세요.',
   network: '서버에 연결할 수 없습니다. 네트워크를 확인하세요.',
+  direct_unreachable: '브라우저가 api.anthropic.com에 연결하지 못했습니다. 이 페이지의 보안 정책(CSP)이나 네트워크 · 프록시가 직접 호출을 막고 있을 수 있습니다. 서버 모드라면 AI 연결 방식을 \'MILDO 서버 (조직 키)\'로 고르세요.',
   workspace_locked: '이 워크스페이스는 읽기 전용 상태라 AI를 호출할 수 없습니다. 규칙 엔진 결과를 표시합니다.',
 };
 
@@ -410,8 +561,20 @@ export function fitToolResult(r: unknown, maxBytes: number): string {
   return RESULT_OMITTED;
 }
 
-/** 서버 오류 응답(JSON) → AiError. 키 없음 · AI 꺼짐 · 권한 없음이면 서버 백엔드를 끈다(규칙 엔진으로) */
-async function serverHttpError(res: Response): Promise<AiError> {
+/**
+ * 세션 만료(401)를 플랫폼 공통 처리(src/saas/api.ts onApiError → context.tsx: 로그인 화면 + '세션이 만료되었거나…' 안내)에 넘긴다.
+ * AI 경로는 스트리밍 때문에 api()가 아닌 fetch를 직접 쓰므로 여기서 알려야 한다.
+ */
+function reportUnauthorized(path: string, method: string): void {
+  try {
+    reportApiFailure({ error: new ApiError(401, 'unauthorized', '로그인이 필요합니다'), path, method, silent: true });
+  } catch {
+    /* 플랫폼 구독자 오류 무시 */
+  }
+}
+
+/** 서버 오류 응답(JSON) → AiError. 키 없음 · AI 꺼짐 · 권한 없음 · 월 한도면 서버 백엔드를 끈다(규칙 엔진으로, 사유 표시) · 401은 로그인 화면으로 */
+async function serverHttpError(res: Response, path: string): Promise<AiError> {
   let code = '';
   let message = '';
   try {
@@ -423,7 +586,10 @@ async function serverHttpError(res: Response): Promise<AiError> {
   }
   if (!code) code = res.status >= 500 ? 'upstream_error' : res.status === 401 ? 'unauthorized' : `http_${res.status}`;
   if (code === 'bad_request') code = 'invalid_request';
-  if (code === 'ai_not_configured' || code === 'ai_disabled' || code === 'workspace_locked' || (res.status === 403 && code === 'forbidden')) markServerDenied();
+  if (res.status === 401) reportUnauthorized(path, 'POST');
+  if (code === 'ai_not_configured' || code === 'ai_disabled' || code === 'workspace_locked' || (res.status === 403 && code === 'forbidden')) markServerDenied(code, null);
+  // 한도 도달: 이번 달에는 계속 429이므로 상단 바도 '월 한도 도달'로 (관리자가 한도를 올리면 설정 이벤트 → 다시 확인)
+  if (code === 'budget_exceeded') markServerDenied(code, message || null);
   return new AiError(code, message || AI_ERROR_COPY[code] || `AI 호출 실패 (${res.status})`);
 }
 
@@ -433,13 +599,14 @@ async function serverRound(ws: string, body: Record<string, unknown>, signal: Ab
   const csrf = readCookie('mildo_csrf');
   if (csrf) headers['x-csrf-token'] = csrf;
   let res: Response;
+  const path = `/api/w/${ws}/ai/messages`;
   try {
-    res = await fetch(`/api/w/${ws}/ai/messages`, { method: 'POST', headers, body: JSON.stringify(body), credentials: 'same-origin', signal });
+    res = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body), credentials: 'same-origin', signal });
   } catch (e) {
     if (signal?.aborted || isAbort(e)) throw e;
     throw new AiError('network', AI_ERROR_COPY.network);
   }
-  if (!res.ok) throw await serverHttpError(res);
+  if (!res.ok) throw await serverHttpError(res, path);
   if (!res.body) throw new AiError('upstream_error', AI_ERROR_COPY.upstream_error);
   let text = '';
   let done: { stopReason: string | null; content: ServerBlock[] } | null = null;
@@ -598,6 +765,8 @@ async function askAnthropic(settings: AiSettings, input: string | Turn[], opts: 
       const status = (e as { status?: number }).status;
       if (status === 401) throw new AiError('auth', 'API 키가 올바르지 않습니다. 설정에서 확인하세요.');
       if (status === 429) throw new AiError('rate_limited', AI_ERROR_COPY.rate_limited, out);
+      // 연결 자체가 안 됨(브라우저 보안 정책 CSP · 네트워크 · 프록시) — '일시적인 오류'로 보이지 않게 따로 알린다
+      if (e instanceof Anthropic.APIConnectionError) throw new AiError('direct_unreachable', AI_ERROR_COPY.direct_unreachable, out);
       throw new AiError('upstream_error', (e as Error).message ?? AI_ERROR_COPY.upstream_error, out);
     }
     if (msg.stop_reason === 'refusal') throw new AiError('refused', AI_ERROR_COPY.refused);

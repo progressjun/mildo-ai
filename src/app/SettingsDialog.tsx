@@ -1,15 +1,28 @@
 import { useState } from 'react';
 import { broadcastReset, useStore } from '@/core/store';
-import { Button, Callout, Field, Modal, Segmented } from '@/ui/primitives';
+import { Button, Callout, Field, Modal } from '@/ui/primitives';
 import { useAi } from '@/ai/useAi';
-import { BACKEND_LABEL } from '@/ai/claude';
+import { BROWSER_BLOCKED_NOTE, browserDirectStatus } from '@/ai/claude';
 import type { AiSettings } from '@/core/types';
 import { useSaas } from '@/saas/context';
 import { dataSourceLabel, describeSources } from '@/saas/sync';
 
-const DEMO_AI_OPTIONS: { id: AiSettings['mode']; label: string }[] = [{ id: 'auto', label: '자동' }, { id: 'artifact', label: 'claude.ai' }, { id: 'anthropic', label: 'API 키' }, { id: 'offline', label: '규칙 엔진만' }];
+type AiOption = { id: AiSettings['mode']; label: string; disabled?: boolean; title?: string };
+const DEMO_AI_OPTIONS: AiOption[] = [{ id: 'auto', label: '자동' }, { id: 'artifact', label: 'claude.ai' }, { id: 'anthropic', label: 'API 키' }, { id: 'offline', label: '규칙 엔진만' }];
 /** 서버 모드: 조직 키(서버 환경변수의 Anthropic 키)로 서버가 호출 — 'auto'도 서버 백엔드를 고른다 */
-const SERVER_AI_OPTIONS: { id: AiSettings['mode']; label: string }[] = [{ id: 'auto', label: '자동' }, { id: 'server', label: 'MILDO 서버 (조직 키)' }, { id: 'anthropic', label: 'API 키' }, { id: 'offline', label: '규칙 엔진만' }];
+const SERVER_AI_OPTIONS: AiOption[] = [{ id: 'auto', label: '자동' }, { id: 'server', label: 'MILDO 서버 (조직 키)' }, { id: 'anthropic', label: 'API 키' }, { id: 'offline', label: '규칙 엔진만' }];
+
+/** 선택지마다 끌 수 있는 세그먼트 (꺼진 선택지는 이유를 title로 — 아래에 같은 이유를 글로도 보인다) */
+function ModeSegmented({ options, value, onChange }: { options: AiOption[]; value: AiSettings['mode']; onChange: (v: AiSettings['mode']) => void }) {
+  return (
+    <div className="seg" role="group" aria-label="AI 연결 방식">
+      {options.map((o) => (
+        <button key={o.id} type="button" aria-pressed={value === o.id} disabled={o.disabled} title={o.title}
+          style={o.disabled ? { opacity: 0.45, cursor: 'not-allowed' } : undefined} onClick={() => onChange(o.id)}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const { state, dispatch, sync } = useStore();
@@ -21,16 +34,26 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [key, setKey] = useState(state.ai.apiKey);
   const [confirmReset, setConfirmReset] = useState(false);
   const inArtifact = typeof window !== 'undefined' && 'claude' in window;
+  // 서버 모드 + 서버 CSP가 api.anthropic.com 직접 연결을 막으면 'API 키' 방식은 브라우저가 모든 호출을 막는다 → 선택지를 끄고 이유를 보인다
+  const directBlocked = serverMode && browserDirectStatus() === false;
+  const options = serverMode
+    ? SERVER_AI_OPTIONS.map((o) => (o.id === 'anthropic' && directBlocked ? { ...o, disabled: state.ai.mode !== 'anthropic', title: BROWSER_BLOCKED_NOTE.long } : o))
+    : DEMO_AI_OPTIONS;
   return (
     <Modal title="설정" onClose={onClose} footer={<Button variant="primary" onClick={() => { dispatch({ type: 'ai/set', patch: { apiKey: key.trim() } }); onClose(); }}>저장</Button>}>
       <div className="stack-lg">
         <Field label="AI 연결 방식" id="ai-mode">
-          <Segmented<AiSettings['mode']> label="AI 연결 방식" value={state.ai.mode} onChange={(mode) => dispatch({ type: 'ai/set', patch: { mode } })}
-            options={serverMode ? SERVER_AI_OPTIONS : DEMO_AI_OPTIONS} />
+          <ModeSegmented value={state.ai.mode} onChange={(mode) => dispatch({ type: 'ai/set', patch: { mode } })} options={options} />
         </Field>
-        <div className="small ink2">현재 상태: <strong>{ai.backend === 'checking' ? '확인 중' : (BACKEND_LABEL as Record<string, string>)[ai.backend] ?? ai.backend}</strong>{inArtifact ? (ai.backend === 'artifact' ? ' · claude.ai 아티팩트에서 실행 중 (API 키 없이 보는 사람의 Claude 계정으로 동작)' : ' · claude.ai 아티팩트에서 실행 중') : ''}</div>
-        <Field label="Anthropic API 키 (로컬 · 사내 배포용)" id="api-key" hint="이 브라우저의 localStorage에만 저장되며 api.anthropic.com으로만 전송됩니다. 공용 PC에서는 입력하지 마세요.">
-          <input id="api-key" className="input" type="password" autoComplete="off" placeholder="sk-ant-..." value={key} onChange={(e) => setKey(e.target.value)} />
+        {directBlocked ? <div className="xs muted">API 키 방식을 쓸 수 없습니다 — {BROWSER_BLOCKED_NOTE.long}</div> : null}
+        <div className="small ink2">현재 상태: <strong>{ai.backend === 'checking' ? '확인 중' : ai.label}</strong>{inArtifact ? (ai.backend === 'artifact' ? ' · claude.ai 아티팩트에서 실행 중 (API 키 없이 보는 사람의 Claude 계정으로 동작)' : ' · claude.ai 아티팩트에서 실행 중') : ''}</div>
+        {ai.note && !(directBlocked && ai.note.code === BROWSER_BLOCKED_NOTE.code) ? <div className="xs muted">{ai.note.long}</div> : null}
+        <Field label="Anthropic API 키 (로컬 · 사내 배포용)" id="api-key"
+          hint={directBlocked
+            ? '이 서버에서는 브라우저가 api.anthropic.com에 직접 연결할 수 없어(보안 정책 CSP) 키를 넣어도 호출되지 않습니다.'
+            : '이 브라우저의 localStorage에만 저장되며 api.anthropic.com으로만 전송됩니다. 공용 PC에서는 입력하지 마세요.'}>
+          <input id="api-key" className="input" type="password" autoComplete="off" placeholder="sk-ant-..." value={key} disabled={directBlocked && !key}
+            title={directBlocked ? BROWSER_BLOCKED_NOTE.long : undefined} onChange={(e) => setKey(e.target.value)} />
         </Field>
         <Field label="모델" id="ai-model">
           <select id="ai-model" className="select" value={state.ai.model} onChange={(e) => dispatch({ type: 'ai/set', patch: { model: e.target.value } })}>

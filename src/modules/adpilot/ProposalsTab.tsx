@@ -32,20 +32,29 @@ export function ChangeButtons({ ap, c }: { ap: AdPilotCtx; c: ChangeRequest }) {
       </>
     );
   }
-  // 승인 이후 단계(반영 · 실행 · 롤백 · 재실행 · 실행 취소)도 승인 주체 범위 안의 역할만 (MILDO Flow 와 같은 규칙)
-  const op = ap.canOperate(c);
-  const noPerm = !op.ok ? <span className="xs muted" title={op.reason}>권한 없음 · {c.approver === 'CLIENT' ? '수면밀도' : c.approver === 'PM' ? 'PM' : '담당 AE'} 승인 건</span> : null;
-  if (c.status === 'approved') return <><Button size="sm" variant="primary" icon="zap" disabled={!op.ok} title={op.ok ? undefined : op.reason} style={st} onClick={guard(() => ap.apply(c))}>{c.module === 'gfa' ? '실행' : '반영'}</Button>{noPerm}</>;
+  // 승인 이후 단계(반영 · 실행 · 롤백 · 재실행 · 실행 취소): 데모는 승인 주체 범위 안의 역할만 (MILDO Flow 와 같은 규칙),
+  // 서버는 단계별 서버 판정 — 반영 · 실행 · 재실행 · 롤백은 운영 권한도 필요(광고주 담당자는 승인 · 반려 · 실행 취소까지)
+  const lvl = c.approver === 'CLIENT' ? '수면밀도' : c.approver === 'PM' ? 'PM' : '담당 AE';
+  const noPermOf = (op: { ok: boolean; reason: string }) => (!op.ok
+    ? <span className="xs muted" title={op.reason}>권한 없음 · {ap.server && ap.canApprove(c).ok ? '반영 · 롤백은 운영 역할' : `${lvl} 승인 건`}</span>
+    : null);
+  if (c.status === 'approved') {
+    const op = ap.perm(c, 'apply');
+    return <><Button size="sm" variant="primary" icon="zap" disabled={!op.ok} title={op.ok ? undefined : op.reason} style={st} onClick={guard(() => ap.apply(c))}>{c.module === 'gfa' ? '실행' : '반영'}</Button>{noPermOf(op)}</>;
+  }
   if (c.status === 'applied') {
+    const op = ap.perm(c, 'rollback');
     const r = ap.canRollback(c);
-    return <><Button size="sm" icon="rollback" disabled={!r.ok || !op.ok} title={!op.ok ? op.reason : r.reason} style={st} onClick={guard(() => ap.rollback(c))}>롤백</Button>{noPerm}</>;
+    return <><Button size="sm" icon="rollback" disabled={!r.ok || !op.ok} title={!op.ok ? op.reason : r.reason} style={st} onClick={guard(() => ap.rollback(c))}>롤백</Button>{noPermOf(op)}</>;
   }
   if (c.status === 'held') {
+    const re = ap.perm(c, 'retry');
+    const ca = ap.perm(c, 'cancel');
     return (
       <>
-        <Button size="sm" icon="refresh" disabled={!op.ok} title={!op.ok ? op.reason : c.module === 'gfa' ? '충전 확인 후 재실행' : '보류 해제 확인 후 재실행'} style={st} onClick={guard(() => ap.retry(c))}>재실행</Button>
-        <Button size="sm" icon="x" disabled={!op.ok} title={op.ok ? undefined : op.reason} style={st} onClick={guard(() => ap.cancel(c))}>실행 취소</Button>
-        {noPerm}
+        <Button size="sm" icon="refresh" disabled={!re.ok} title={!re.ok ? re.reason : c.module === 'gfa' ? '충전 확인 후 재실행' : '보류 해제 확인 후 재실행'} style={st} onClick={guard(() => ap.retry(c))}>재실행</Button>
+        <Button size="sm" icon="x" disabled={!ca.ok} title={ca.ok ? undefined : ca.reason} style={st} onClick={guard(() => ap.cancel(c))}>실행 취소</Button>
+        {noPermOf(!re.ok ? re : ca)}
       </>
     );
   }
@@ -60,10 +69,11 @@ export function ProposalActions({ ap, p }: { ap: AdPilotCtx; p: AdPilotProposal 
   return (
     <span className="adpilot-row-actions" onClick={(e) => e.stopPropagation()}>
       {p.action === 'hold' && inc ? <a className="btn sm" href="#alert" title={`${inc.severity} · ${inc.title} (${inc.id})`}>Alert 이슈 {inc.severity}</a> : null}
-      {!inc && canNotify(p) ? <Button size="sm" icon="bell" onClick={() => ap.notify(p)}>알림 발송</Button> : null}
+      {!inc && canNotify(p) ? <Button size="sm" icon="bell" disabled={!ap.incidentPerm.ok} title={ap.incidentPerm.ok ? undefined : ap.incidentPerm.reason} onClick={() => ap.notify(p)}>알림 발송</Button> : null}
       {!inc && p.action === 'hold' && !canNotify(p) ? <span className="xs muted" title={p.approverReason}>{p.approver === 'CLIENT' ? '수면밀도 협의 안건' : 'PM 검토 안건'}</span> : null}
       {ap.requestable(p) ? (
-        <Button size="sm" variant="primary" icon={p.holdKind === 'soldout' ? 'pause' : 'send'} style={settling ? SETTLE_STYLE : undefined} onClick={settledClick(() => { if (!settling) ap.request(p); })}>
+        <Button size="sm" variant="primary" icon={p.holdKind === 'soldout' ? 'pause' : 'send'} disabled={!ap.requestPerm.ok} title={ap.requestPerm.ok ? undefined : ap.requestPerm.reason}
+          style={settling ? SETTLE_STYLE : undefined} onClick={settledClick(() => { if (!settling) ap.request(p); })}>
           {p.holdKind === 'soldout' ? '일시 중지 요청' : c ? '재요청' : '승인 요청'}
         </Button>
       ) : null}
@@ -85,7 +95,7 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
   const sel = rows.filter((p) => selected.has(p.id));
   const forAction = (a: BulkAction, ps: AdPilotProposal[]) => ps.filter((p) => {
     const c = ap.changeOf(p);
-    if (a === 'request') return ap.requestable(p);
+    if (a === 'request') return ap.requestPerm.ok && ap.requestable(p);
     if (a === 'approve') return c?.status === 'pending' && ap.canApprove(c).ok;
     return c?.status === 'approved' && ap.canOperate(c).ok;
   });
@@ -103,9 +113,9 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
     const short = ps.length - n;
     ap.actions.toast({
       tone: short ? 'warning' : 'good',
-      title: short ? `일괄 ${BULK_LABEL[a]} ${n}/${ps.length}건` : `일괄 ${BULK_LABEL[a]} ${n}건`,
+      title: `일괄 ${a === 'apply' && ap.server ? '반영 요청' : BULK_LABEL[a]} ${short ? `${n}/${ps.length}` : n}건`,
       body: [
-        a === 'request' ? '승인 대기로 MILDO Flow에 기록했습니다' : a === 'apply' ? '반영된 건은 개별 롤백 가능합니다' : '',
+        a === 'request' ? '승인 대기로 MILDO Flow에 기록했습니다' : a === 'apply' ? (ap.server ? '서버 실행 점검 · 매체 반영 결과(dry_run · live)는 건별로 이어서 알립니다' : '반영된 건은 개별 롤백 가능합니다') : '',
         short ? `${short}건은 ${a === 'apply' ? '실행 점검에서 보류' : '처리되지 않음'} — 건별 상태를 확인하세요` : '',
       ].filter(Boolean).join(' · ') || undefined,
       route: 'flow',
@@ -211,7 +221,9 @@ export function ProposalsTab({ ap, filter, setFilter, onHistory }: { ap: AdPilot
           empty="해당 조건의 조정 후보가 없습니다" />
         <div className="xs muted">
           대량 변경 기준: 한 번에 {ap.cfg.bulkWarnCount}건 이상 2단계 확인, {ap.cfg.bulkBlockCount}건 이상 차단, 입찰은 일 조정 폭 상한 {ap.cfg.dailyChangeCapPct}% 초과 차단.
-          반영은 데모 환경에서 로컬 상태로 기록되며 실제 연동 시 매체 API로 실행합니다.
+          {ap.server
+            ? '반영은 서버가 실행 점검을 다시 한 뒤 연결된 매체 커넥터로 실행합니다 — 커넥션 쓰기 모드가 dry_run이면 보낼 요청만 기록하고 매체에는 보내지 않습니다 (결과는 MILDO Flow 실행 기록).'
+            : '반영은 데모 환경에서 로컬 상태로 기록되며 실제 연동 시 매체 API로 실행합니다.'}
         </div>
       </Card>
       <SafetyPanel ap={ap} onHistory={onHistory} />

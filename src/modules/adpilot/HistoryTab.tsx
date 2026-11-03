@@ -7,7 +7,7 @@ import type { AdPilotCtx } from './useAdPilot';
 import { ApproverPill, StatusPill } from './parts';
 import { ChangeButtons } from './ProposalsTab';
 
-interface Row { key: string; at: string; by: string; action: string; note?: string; change: ChangeRequest }
+export interface Row { key: string; at: string; by: string; action: string; note?: string; change: ChangeRequest }
 
 /** 화면 표기용 값 — 예산은 만 단위, 입찰은 원 단위, 그 외 숫자는 천 단위 구분 (CSV · 마크다운은 원값 유지) */
 function showValue(kind: ChangeRequest['kind'], v: ChangeRequest['before']): string {
@@ -18,6 +18,24 @@ function showValue(kind: ChangeRequest['kind'], v: ChangeRequest['before']): str
 }
 
 const KIND_LABEL: Record<string, string> = { bid: '입찰', budget: '예산', status: '상태', keyword_add: '키워드 등록', setting: '기준', gfa: '신규 캠페인', keyword_exclude: '제외', alert_rule: '알림 기준', test: '테스트' };
+
+/**
+ * 마크다운 복사본 — 시각은 KST(hhmm). 꼬리말: 데모는 '시연용 테스트 데이터 · 데모 로컬 상태',
+ * 서버 모드는 서버 변경 이력 기준이며 매체 반영 여부는 건별 실행 기록(dry_run · live)으로 확인한다는 문구 (데모 상태라고 쓰지 않는다).
+ */
+export function historyMarkdown(rows: readonly Row[], today: string, server: boolean): string {
+  return [
+    `# AD Pilot · GFA Control 변경 이력 (${today})`,
+    '',
+    '| 시각 | 누가 | 무엇 | 변경 | 왜 | 상태 |',
+    '|---|---|---|---|---|---|',
+    ...rows.map((r) => `| ${hhmm(r.at)} | ${r.by} | ${r.action} · ${r.change.target} | ${r.change.before} → ${r.change.after} | ${(r.note ?? r.change.reason).replace(/\|/g, '/')} | ${r.change.status} |`),
+    '',
+    server
+      ? '_MILDO OS Cloud 서버 변경 이력 기준 · 매체 반영 여부는 건별 서버 실행 기록(dry_run = 매체 미호출 · live = 매체 API 호출)으로 확인_'
+      : '_시연용 테스트 데이터 기준 · 반영은 데모 로컬 상태_',
+  ].join('\n');
+}
 
 export function HistoryTab({ ap }: { ap: AdPilotCtx }) {
   const [scope, setScope] = useState<'all' | 'adpilot' | 'gfa'>('all');
@@ -36,15 +54,7 @@ export function HistoryTab({ ap }: { ap: AdPilotCtx }) {
     { key: 'act', label: '', align: 'right', render: (r) => (r.key === `${r.change.id}:${r.change.history.length - 1}` ? <span className="adpilot-row-actions"><ChangeButtons ap={ap} c={r.change} /></span> : null) },
   ];
 
-  const md = () => [
-    `# AD Pilot · GFA Control 변경 이력 (${ap.data.today})`,
-    '',
-    '| 시각 | 누가 | 무엇 | 변경 | 왜 | 상태 |',
-    '|---|---|---|---|---|---|',
-    ...rows.map((r) => `| ${hhmm(r.at)} | ${r.by} | ${r.action} · ${r.change.target} | ${r.change.before} → ${r.change.after} | ${(r.note ?? r.change.reason).replace(/\|/g, '/')} | ${r.change.status} |`),
-    '',
-    '_시연용 테스트 데이터 기준 · 반영은 데모 로컬 상태_',
-  ].join('\n');
+  const md = () => historyMarkdown(rows, ap.data.today, ap.server);
   const csv = () => toCsv(rows.map((r) => ({ at: r.at, by: r.by, action: r.action, target: r.change.target, before: r.change.before, after: r.change.after, why: r.note ?? r.change.reason, approver: r.change.approver, status: r.change.status })));
 
   return (

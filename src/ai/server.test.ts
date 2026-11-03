@@ -128,13 +128,55 @@ describe('resolveBackend — server', () => {
     expect(await m.resolveBackend({ ...settings, mode: 'offline' })).toBe('none');
   });
 
-  it('서버가 쓸 수 없다고 답하면(키 없음 · 권한 없음) 다음 순서로, 확인 요청은 한 번만', async () => {
-    const { fake } = installFetch([], { available: false, configured: false });
+  it('서버가 쓸 수 없다고 답하면(키 없음 · 권한 없음) 다음 순서로, 확인 요청은 한 번만 — API 키는 서버 CSP가 허용할 때만', async () => {
+    const { fake } = installFetch([], { available: false, configured: false, browserDirect: true });
     const m = await load();
     expect(await m.resolveBackend(settings)).toBe('none');
     expect(await m.resolveBackend({ ...settings, apiKey: 'sk-x' })).toBe('anthropic');
     expect(await m.resolveBackend({ ...settings, mode: 'server' })).toBe('none');
     expect(fake.mock.calls.filter(([u]) => String(u).includes('/ai/usage'))).toHaveLength(1);
+  });
+
+  it("서버 모드의 'API 키' 방식: 기본 CSP(browserDirect 없음 · false)면 브라우저가 막으므로 none + 이유, 허용하면 anthropic", async () => {
+    installFetch([], { available: true, browserDirect: false });
+    const m = await load();
+    const key = { ...settings, mode: 'anthropic' as const, apiKey: 'sk-x' };
+    expect(await m.resolveBackend(key)).toBe('none');
+    expect(m.aiStatusNote(key, 'none')).toMatchObject({ code: 'browser_blocked' });
+    expect(m.backendLabel('none', m.aiStatusNote(key, 'none'))).toBe('규칙 엔진 (API 키 방식 차단)');
+    expect(m.browserDirectStatus()).toBe(false);
+    // auto에서 서버를 못 쓸 때도 막힌 API 키로 넘어가지 않는다
+    expect(await m.resolveBackend({ ...settings, apiKey: 'sk-x' })).toBe('server');
+    installFetch([], { available: true, browserDirect: true });
+    const m2 = await load();
+    expect(await m2.resolveBackend(key)).toBe('anthropic');
+    expect(m2.aiStatusNote(key, 'anthropic')).toBeNull();
+    // 데모(서버 워크스페이스 없음)는 그대로 — 키가 있으면 anthropic, 상태 안내 없음
+    const m3 = await load({ ws: null });
+    expect(await m3.resolveBackend(key)).toBe('anthropic');
+    expect(m3.browserDirectStatus()).toBe(true);
+    expect(m3.aiStatusNote({ ...settings, mode: 'offline' }, 'none')).toBeNull();
+  });
+
+  it('규칙 엔진인 이유: 서버 키 미설정 · 열람자 · AI 꺼짐 · 월 한도(수치 포함)를 그대로 보인다', async () => {
+    const cases: Array<[unknown, string, RegExp]> = [
+      [{ available: false, configured: false, unavailableReason: 'ai_not_configured' }, '규칙 엔진 (서버 AI 미설정)', /ANTHROPIC_API_KEY/],
+      [{ available: false, canUse: false, unavailableReason: 'forbidden' }, '규칙 엔진 (열람자 · AI 호출 불가)', /열람자 역할은 AI를 호출할 수 없습니다/],
+      [{ available: false, enabled: false, unavailableReason: 'ai_disabled' }, '규칙 엔진 (AI 꺼짐)', /AI 사용이 꺼져/],
+      [{ available: false, budgetExceeded: true, unavailableReason: 'budget_exceeded', totalTokens: 5489, limit: 1000 }, '규칙 엔진 (월 한도 도달)', /사용 5,489 \/ 한도 1,000 토큰/],
+      // 이전 서버(unavailableReason 없음)도 필드로 사유를 고른다
+      [{ available: false, configured: false }, '규칙 엔진 (서버 AI 미설정)', /ANTHROPIC_API_KEY/],
+    ];
+    for (const [usage, label, long] of cases) {
+      installFetch([], usage);
+      const m = await load();
+      const b = await m.resolveBackend(settings);
+      expect(b).toBe('none');
+      const note = m.aiStatusNote(settings, b);
+      expect(m.backendLabel(b, note)).toBe(label);
+      expect(note?.long).toMatch(long);
+      expect(note?.long).not.toMatch(/claude\.ai에서 열|API 키를 입력/);
+    }
   });
 
   it('확인 요청이 실패하면 server로 두고 호출 오류로 알린다', async () => {
@@ -143,24 +185,39 @@ describe('resolveBackend — server', () => {
     expect(await m.resolveBackend(settings)).toBe('server');
   });
 
-  it('같은 워크스페이스로 다시 configureServerAi하면, 직전 확인이 "쓸 수 없음"일 때만 다시 확인한다 (관리자가 AI를 켠 뒤 새로고침 없이 복귀)', async () => {
-    const usage = { available: false, enabled: false };
+  it('같은 워크스페이스로 다시 configureServerAi하면(설정 변경 이벤트) 서버에 다시 확인하고, 결과가 바뀔 때만 알린다 — 켬 · 끔 · 한도 모두', async () => {
+    const usage: Record<string, unknown> = { available: false, enabled: false, unavailableReason: 'ai_disabled' };
     const { fake } = installFetch([]);
     fake.mockImplementation(async (url: string) => json(200, String(url).includes('/ai/usage') ? usage : {}));
     const m = await load();
     expect(await m.resolveBackend(settings)).toBe('none');
     const fn = vi.fn();
     m.onBackendChange(fn);
-    usage.available = true;
-    usage.enabled = true;
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    // 관리자가 AI를 켬 → 새로고침 없이 서버 백엔드로
+    Object.assign(usage, { available: true, enabled: true, unavailableReason: null });
     m.configureServerAi({ workspaceId: WS });
+    await flush();
     expect(fn).toHaveBeenCalledTimes(1);
     expect(await m.resolveBackend(settings)).toBe('server');
-    // 쓸 수 있는 상태에서 같은 값으로 다시 부르면 알리지 않고 다시 확인하지도 않는다
+    // 바뀐 게 없으면 다시 확인은 하지만 알리지 않는다
     m.configureServerAi({ workspaceId: WS });
+    await flush();
     expect(fn).toHaveBeenCalledTimes(1);
-    await m.resolveBackend(settings);
-    expect(fake.mock.calls.filter(([u]) => String(u).includes('/ai/usage'))).toHaveLength(2);
+    // 다른 세션에서 AI를 끔 → 다음 호출이 실패하기 전에 상단 바가 바뀐다
+    Object.assign(usage, { available: false, enabled: false, unavailableReason: 'ai_disabled' });
+    m.configureServerAi({ workspaceId: WS });
+    await flush();
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(await m.resolveBackend(settings)).toBe('none');
+    expect(m.backendLabel('none', m.aiStatusNote(settings, 'none'))).toBe('규칙 엔진 (AI 꺼짐)');
+    // 월 한도를 사용량보다 낮춤 → '월 한도 도달'
+    Object.assign(usage, { available: false, enabled: true, unavailableReason: 'budget_exceeded', budgetExceeded: true, totalTokens: 5489, limit: 1000 });
+    m.configureServerAi({ workspaceId: WS });
+    await flush();
+    expect(fn).toHaveBeenCalledTimes(3);
+    expect(m.backendLabel('none', m.aiStatusNote(settings, 'none'))).toBe('규칙 엔진 (월 한도 도달)');
+    expect(fake.mock.calls.filter(([u]) => String(u).includes('/ai/usage'))).toHaveLength(5);
   });
 
   it('configureServerAi는 구독자에게 알리고, 같은 값이면 알리지 않는다', async () => {
@@ -310,12 +367,60 @@ describe('ask — 서버 오류 매핑 · 중지', () => {
     expect(m.AI_ERROR_COPY.ai_not_configured).toMatch(/ANTHROPIC_API_KEY/);
   });
 
-  it('429 budget_exceeded → AiError(budget_exceeded), 백엔드는 유지, 한국어 안내 문구', async () => {
-    installFetch([json(429, { error: { code: 'budget_exceeded', message: '이번 달 AI 사용 한도에 도달했습니다 (사용 1,010 / 한도 1,000 토큰)' } })]);
+  it('429 budget_exceeded → AiError(서버 수치 문구), 이번 달에는 계속 429이므로 백엔드를 규칙 엔진(월 한도 도달)으로 · 한도를 올리면 복귀', async () => {
+    const msg = '이번 달 AI 사용 한도에 도달했습니다 (사용 1,010 / 한도 1,000 토큰, KST 2026-11 기준). 관리자가 워크스페이스 설정에서 월 한도를 올리거나, 다음 달 1일 00:00(KST)부터 다시 쓸 수 있습니다. 그동안 각 화면은 규칙 엔진으로 동작합니다.';
+    const { fake } = installFetch([json(429, { error: { code: 'budget_exceeded', message: msg } })]);
     const m = await load();
-    await expect(m.ask(settings, 'q')).rejects.toMatchObject({ code: 'budget_exceeded' });
+    const fn = vi.fn();
+    m.onBackendChange(fn);
+    await expect(m.ask(settings, 'q')).rejects.toMatchObject({ code: 'budget_exceeded', message: msg });
     expect(m.AI_ERROR_COPY.budget_exceeded).toMatch(/한도/);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(await m.resolveBackend(settings)).toBe('none');
+    const note = m.aiStatusNote(settings, 'none');
+    expect(m.backendLabel('none', note)).toBe('규칙 엔진 (월 한도 도달)');
+    expect(note?.long).toContain('사용 1,010 / 한도 1,000 토큰');
+    // 관리자가 한도를 올림 → 설정 이벤트 → 다시 확인
+    fake.mockImplementation(async (url: string) => json(200, String(url).includes('/ai/usage') ? { available: true } : {}));
+    m.configureServerAi({ workspaceId: WS });
+    await new Promise((r) => setTimeout(r, 0));
     expect(await m.resolveBackend(settings)).toBe('server');
+  });
+
+  it('401(세션 만료) → 플랫폼 공통 처리(onApiError)에 알려 로그인 화면으로 — AI 호출 · 사용량 확인 모두', async () => {
+    installFetch([json(401, { error: { code: 'unauthorized', message: '로그인이 필요합니다' } })], 401);
+    const m = await load();
+    const api = await import('@/saas/api');
+    const seen: Array<{ status: number; path: string; method: string }> = [];
+    const off = api.onApiError((e) => seen.push({ status: e.error.status, path: e.path, method: e.method }));
+    await m.resolveBackend(settings); // GET /ai/usage 401
+    await expect(m.ask(settings, 'q')).rejects.toMatchObject({ code: 'unauthorized' });
+    off();
+    expect(seen).toEqual([
+      { status: 401, path: `/api/w/${WS}/ai/usage`, method: 'GET' },
+      { status: 401, path: `/api/w/${WS}/ai/messages`, method: 'POST' },
+    ]);
+  });
+
+  it('오류 안내 한 문장: 서버의 구체적 사유(수치)를 쓰고, 끝의 규칙 엔진 문장을 두 번 말하지 않는다', async () => {
+    const m = await load({ ws: null });
+    const budget = '이번 달 AI 사용 한도에 도달했습니다 (사용 5,489 / 한도 1,000 토큰, KST 2026-11 기준). 관리자가 워크스페이스 설정에서 월 한도를 올리거나, 다음 달 1일 00:00(KST)부터 다시 쓸 수 있습니다. 그동안 각 화면은 규칙 엔진으로 동작합니다.';
+    const reason = m.aiErrorReason(new m.AiError('budget_exceeded', budget));
+    expect(reason).toBe(budget);
+    const line = m.ruleFallbackLine(reason);
+    expect(line).toContain('사용 5,489 / 한도 1,000 토큰');
+    expect(line.match(/규칙 엔진/g)).toHaveLength(1);
+    expect(line.endsWith('규칙 엔진 결과를 표시했습니다.')).toBe(true);
+    // 공통 문구(끝에 '그동안 규칙 엔진 결과를 표시합니다.')도 한 번만
+    const copy = m.ruleFallbackLine(m.AI_ERROR_COPY.budget_exceeded);
+    expect(copy.match(/규칙 엔진/g)).toHaveLength(1);
+    // 영문 SDK 문구는 공통 한국어 문구로
+    expect(m.aiErrorReason(new m.AiError('upstream_error', 'Connection error.'))).toBe(m.AI_ERROR_COPY.upstream_error);
+    expect(m.ruleFallbackLine(m.AI_ERROR_COPY.upstream_error)).toBe('일시적인 연결 오류입니다. 다시 시도하세요. 규칙 엔진 결과를 표시했습니다.');
+    // 문장 전체가 규칙 엔진 안내면 그대로
+    expect(m.ruleFallbackLine(m.AI_ERROR_COPY.no_backend)).toBe(m.AI_ERROR_COPY.no_backend);
+    // 데모(claude.ai) 거부 문구도 중복 없이
+    expect(m.ruleFallbackLine(m.AI_ERROR_COPY.not_granted)).toBe('Claude 사용이 허용되지 않았습니다. 규칙 엔진 결과를 표시했습니다.');
   });
 
   it('400 bad_request → invalid_request, 403 forbidden(열람자) → 서버 백엔드 끔, JSON 아닌 502 → upstream_error', async () => {

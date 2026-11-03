@@ -23,3 +23,5 @@
   /* 한 줄에 한 단계씩 쌓이므로 빈 높이를 두지 않는다 */
   .home-scn-step { min-height: 0; }
 }
+/* KPI 아래 기준 · 데이터 없음 안내 */
+.home-kpi-note { margin-top: -6px; }

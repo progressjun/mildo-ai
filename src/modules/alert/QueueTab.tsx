@@ -4,7 +4,7 @@ import { MEDIA } from '@/data/constants';
 import { fmt, sum } from '@/core/util';
 import { AiInsight } from '@/ui/AiInsight';
 import { Card, DataTable, Pill, Segmented, Src, Stat, Toggle, type Column } from '@/ui/primitives';
-import { fmtRemain, fmtStamp, heldMedia, nextAction, releasedIncidentIds, primaryEvidence, sevCounts, slaState, typeOf, type AlertIncident } from './engine';
+import { dataAsOf, fmtRemain, fmtStamp, heldMedia, nextAction, releasedIncidentIds, primaryEvidence, sevCounts, slaState, typeOf, type AlertIncident } from './engine';
 import { TYPE_LABEL } from './data';
 import { issuesBrief } from './briefs';
 import { krwOrDash, MediaTag, SevLabel, SlaTimer, StatusPill } from './parts';
@@ -14,7 +14,7 @@ type SortId = 'priority' | 'impact' | 'recent';
 const SEV_RANK: Record<Severity, number> = { P1: 0, P2: 1, P3: 2 };
 
 export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) => void }) {
-  const { incidents, nowMs, toMs, state, data, nameOf, regime } = ctx;
+  const { incidents, nowMs, toMs, state, data, nameOf, regime, slaOff } = ctx;
   const [status, setStatus] = useState<'open' | 'all' | 'resolved'>('open');
   const [sev, setSev] = useState<'all' | Severity>('all');
   const [testOnly, setTestOnly] = useState(false);
@@ -24,7 +24,7 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
   const counts = sevCounts(incidents);
   const held = heldMedia(incidents, state.changes);
   const released = useMemo(() => releasedIncidentIds(state.changes), [state.changes]);
-  const withSla = useMemo(() => incidents.map((i) => ({ i, st: slaState(i, nowMs, toMs, state.offHoursMode) })), [incidents, nowMs, toMs, state.offHoursMode]);
+  const withSla = useMemo(() => incidents.map((i) => ({ i, st: slaState(i, nowMs, toMs, slaOff) })), [incidents, nowMs, toMs, slaOff]);
   const urgent = withSla.filter(({ i, st }) => i.status !== 'resolved' && (st.overdue || (st.remainingMin !== null && st.remainingMin <= 10)));
   const overdue = urgent.filter(({ st }) => st.overdue);
   const revenue = sum(open, (i) => i.impact?.revenueLossEst ?? 0);
@@ -131,14 +131,14 @@ export function QueueTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) 
               id: i.id, severity: i.severity, title: i.title, type: TYPE_LABEL[typeOf(i)] ?? i.ruleId, media: i.media,
               evidence: (i.evidence ?? []).slice(0, 6).map((e) => ({ label: e.label, observed: Number.isFinite(e.observed) ? Math.round(e.observed * 10) / 10 : null, baseline: e.baseline !== undefined && Number.isFinite(e.baseline) ? Math.round(e.baseline * 10) / 10 : null, deltaPct: e.deltaPct !== undefined && Number.isFinite(e.deltaPct) ? Math.round(e.deltaPct) : null, threshold: e.threshold, note: e.note })),
               basis: i.basis, causes: (i.causes ?? []).slice(0, 3), impact: i.impact, impactNote: i.impactNote, autoActions: i.autoActions, recurrence: i.recurrence,
-              sla: slaState(i, nowMs, toMs, state.offHoursMode).stageLabel,
+              sla: slaState(i, nowMs, toMs, slaOff).stageLabel,
             }));
             return `과제: MILDO Alert에서 열린 이슈의 처리 우선순위와 원인 가설을 정리한다. 각 이슈의 감지 근거 수치 · 판정 기준 · 원인 후보 순위(근거 강도는 확률이 아님)를 근거로 쓰고, 같은 매체에서 동시에 열린 이슈가 하나의 원인에서 이어진 것인지 판단한다. CAC 회수 구조와 퍼널 역할(유입 · 전환 · 재방문) 관점에서 손실이 큰 순서를 제시하고, 실제 손실과 측정 손실(추적 단절)을 구분한다.
-기준 시각: ${data.today} ${data.currentHour}:30 (${regime.off ? `${regime.label} · 당번 ${regime.duty?.role} 30분 내 확인 · P1은 PM 에스컬레이션` : '평일'}). SLA: P1 인지 15분 · 1차 조치 30분 · 결과 보고 2시간, P2 1시간 · 4시간 · 당일 (제안서 p.49).
+기준 시각: ${dataAsOf(data).date} ${dataAsOf(data).clock} (${regime.off ? `${regime.label} · 당번 ${regime.duty?.role} 30분 내 확인 · P1은 PM 에스컬레이션` : '평일'}). SLA: P1 인지 15분 · 1차 조치 30분 · 결과 보고 2시간, P2 1시간 · 4시간 · 당일 (제안서 p.49).
 데이터(JSON, 시연용 TEST DATA):
 ${JSON.stringify(list)}`;
           }}
-          fallback={() => issuesBrief(data, incidents, nowMs, toMs, state.offHoursMode, state.changes)}
+          fallback={() => issuesBrief(data, incidents, nowMs, toMs, state.offHoursMode, state.changes, slaOff)}
         />
       </div>
     </div>

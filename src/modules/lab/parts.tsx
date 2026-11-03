@@ -2,10 +2,12 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { ApprovalLevel, ChangeRequest } from '@/core/types';
 import { useActions, useStore } from '@/core/store';
+import { actorLabel, approvalScopeText, isMemberActor, type Actor, type ChangeAction } from '@/core/permissions';
+import { useSaas } from '@/saas/context';
 import { Button, Pill } from '@/ui/primitives';
 import { demoTestCards, PATTERN_SEEDS, SCORE_WEIGHTS } from './data';
 import {
-  APPROVER_LABEL, buildPipeline, canApprove, CARD_VERDICT_META, collectCopies, discoverCandidates, judgeTestCard, KW_VERDICT_META, LANDING_LEVEL_META,
+  APPROVER_LABEL, buildPipeline, canApprove, CARD_VERDICT_META, labCanRequest, labPermission, collectCopies, discoverCandidates, judgeTestCard, KW_VERDICT_META, LANDING_LEVEL_META,
   reconcileLab, resolveCriteria, REVIEW_LEVEL_META, reviewAll, skuEntries, TIER_META, type Candidate, type CardJudgement, type CardVerdict, type KwJudgement, type LandingMatch, type ReviewLevel,
 } from './engine';
 import { resetLab, useLab } from './store';
@@ -23,8 +25,29 @@ export function useClickGuard(ms = 500) {
   };
 }
 
+/**
+ * 권한 판정 주체 · 요청 권한 — 데모: 데모 3역할(역할 선택, 기존 규칙), 서버: 멤버십 역할(서버와 같은 권한표 · 전이별 판정).
+ * 서버 모드에서 역할을 모르면(워크스페이스 정보 전) 열람자로 본다 — 서버가 거절할 버튼을 켜지 않게.
+ */
+export function useLabPerms() {
+  const { state } = useStore();
+  const saas = useSaas();
+  const server = saas.mode === 'server';
+  const member = saas.role;
+  const actor = useMemo<Actor>(() => (server ? { member: member ?? 'viewer' } : state.role), [server, member, state.role]);
+  const request = useMemo(() => labCanRequest(actor), [actor]);
+  return {
+    actor, server, roleLabel: actorLabel(actor), request,
+    /** 서버 모드 승인 범위 문구 ('담당 AE · PM' · '없음') — 데모는 빈 문자열 */
+    scope: isMemberActor(actor) ? approvalScopeText(actor.member) : '',
+    check: (approver: ApprovalLevel, action: ChangeAction) => labPermission(actor, approver, action),
+  };
+}
+export type LabPerms = ReturnType<typeof useLabPerms>;
+
 /** Lab 화면 전체가 공유하는 계산 결과 */
 export function useLabModel() {
+  const perms = useLabPerms();
   const { state } = useStore();
   const actions = useActions();
   const raw = useLab();
@@ -43,7 +66,7 @@ export function useLabModel() {
   const copies = useMemo(() => collectCopies(d, cards, lab.aiCopies), [d, cards, lab.aiCopies]);
   const review = useMemo(() => reviewAll(d, copies), [d, copies]);
   const patterns = useMemo(() => [...lab.library, ...PATTERN_SEEDS], [lab.library]);
-  return { state, actions, lab, d, crit, cards, judgements, pipeline, disc, sku, copies, review, patterns };
+  return { state, actions, lab, d, crit, cards, judgements, pipeline, disc, sku, copies, review, patterns, perms };
 }
 export type LabModel = ReturnType<typeof useLabModel>;
 
@@ -88,9 +111,10 @@ export function ApproverPill({ level }: { level: ApprovalLevel }) {
 
 /** 승인 · 반려 · 반영 — 역할 권한(approver vs state.role) 확인, 권한 없으면 비활성 + 이유 */
 export function ChangeActions({ c, compact }: { c: ChangeRequest; compact?: boolean }) {
-  const { state } = useStore();
   const { updateChange, toast } = useActions();
-  const perm = canApprove(state.role, c.approver);
+  const perms = useLabPerms();
+  // 데모: 승인 범위 하나로 승인 · 반려 · 반영. 서버: 반영은 운영 권한도 필요 (광고주 담당자는 승인 · 반려까지)
+  const perm = c.status === 'approved' ? perms.check(c.approver, 'apply') : canApprove(perms.actor, c.approver);
   const reason = perm.ok ? undefined : perm.reason;
   // 승인 직후 같은 자리에 '반영' 버튼이 나타난다 — 더블클릭이 승인 + 반영으로 이어지지 않게
   const guard = useClickGuard();
@@ -108,7 +132,12 @@ export function ChangeActions({ c, compact }: { c: ChangeRequest; compact?: bool
         ) : null}
         {c.status === 'approved' ? (
           <Button size="sm" variant="accent" icon="check" disabled={!perm.ok} title={reason}
-            onClick={guard(() => { updateChange(c.id, { status: 'applied' }, '반영'); toast({ tone: 'good', title: `반영: ${c.target}`, body: String(c.after) }); })}>반영</Button>
+            onClick={guard(() => {
+              updateChange(c.id, { status: 'applied' }, '반영');
+              // 서버 모드: 서버가 실행 점검 후 반영(dry_run · live)하거나 보류한다 — 보냈다는 사실만 알린다
+              if (perms.server) toast({ tone: 'info', title: `반영 요청을 보냈습니다: ${c.target}`, body: `${String(c.after)} · 서버 실행 점검 · 매체 반영 결과는 MILDO Flow에서 이어서 알립니다`, route: 'flow' });
+              else toast({ tone: 'good', title: `반영: ${c.target}`, body: String(c.after) });
+            })}>반영</Button>
         ) : null}
       </div>
       {!perm.ok && (c.status === 'pending' || c.status === 'approved') ? <span className="lab-sub">{perm.reason}</span> : null}

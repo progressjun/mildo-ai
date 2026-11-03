@@ -83,6 +83,27 @@ describe('로그인 전 화면', () => {
     expect(authErrorMessage(new ApiError(410, 'gone', 'x'), 'reset')).toMatch(/재설정 링크가 만료/);
     expect(authErrorMessage(new ApiError(0, 'network', 'x'), 'forgot')).toMatch(/연결할 수 없습니다/);
   });
+  it('재설정 메일 요청 결과: SMTP 미설정이면 "보냈다"고 하지 않고 관리자의 링크 발급을 안내, 설정돼 있으면 요청 접수(발송 결과를 단정하지 않음)', async () => {
+    const { forgotOutcome, FORGOT_NOTICE, FORGOT_BUTTON } = await import('./AuthScreens');
+    expect(forgotOutcome({ mail: { configured: false } })).toBe('no_mail');
+    expect(forgotOutcome({ mail: { configured: true } })).toBe('requested');
+    expect(forgotOutcome({})).toBe('requested'); // 이전 서버(mail 없음)
+    expect(FORGOT_NOTICE.no_mail).toMatch(/SMTP/);
+    expect(FORGOT_NOTICE.no_mail).toMatch(/메일은 보내지 않았습니다/);
+    expect(FORGOT_NOTICE.no_mail).toMatch(/재설정 링크 발급/);
+    expect(FORGOT_BUTTON.no_mail).not.toMatch(/보냈습니다/);
+    for (const k of ['requested', 'no_mail'] as const) expect(FORGOT_NOTICE[k]).not.toMatch(/메일로 보냈습니다/);
+    expect(FORGOT_BUTTON.requested).not.toMatch(/메일을 보냈습니다/);
+  });
+
+  it('로그인 429: 서버 문구(대기 시간 · 잠금 안내)를 그대로 보인다', async () => {
+    const { authErrorMessage } = await import('./AuthScreens');
+    const { ApiError } = await import('./api');
+    expect(authErrorMessage(new ApiError(429, 'rate_limited', '로그인 시도가 너무 많습니다. 42초 후 다시 시도해 주세요'), 'login')).toBe('로그인 시도가 너무 많습니다. 42초 후 다시 시도해 주세요');
+    const lock = '로그인 실패가 15분 안에 10회에 이르러 이 계정의 로그인을 잠시 막았습니다. 약 14분 뒤 다시 시도하거나 비밀번호 재설정을 이용해 주세요';
+    expect(authErrorMessage(new ApiError(429, 'login_locked', lock, { retryAfterSec: 801 }), 'login')).toBe(lock);
+  });
+
   it('초대 수락 · 재설정 오류: 서버의 한국어 사유를 그대로 (잠금 · 비활성 · 워크스페이스 잠김 · 보안 토큰 · 링크 사용됨/만료)', async () => {
     const { authErrorMessage } = await import('./AuthScreens');
     const { ApiError } = await import('./api');

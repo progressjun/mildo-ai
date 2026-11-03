@@ -46,7 +46,9 @@ function heat(score: number) {
 }
 
 export function DiscoverTab({ m }: { m: LabModel }) {
-  const { d, disc, sku, state, actions, lab, crit } = m;
+  const { d, disc, sku, state, actions, lab, crit, perms } = m;
+  /** 서버 모드 열람자는 요청 권한이 없다 — 등록 요청 버튼은 비활성 + 이유 */
+  const req = perms.request;
   const ai = useAi();
   const [source, setSource] = useState<CandidateSource | 'all'>('all');
   const [intent, setIntent] = useState<IntentId | 'all'>('all');
@@ -75,6 +77,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
   // 등록 직후 행이 목록에서 빠지면 다음 후보 버튼이 같은 자리로 올라온다 — 더블클릭이 다른 후보를 등록하지 않도록 연속 호출은 무시
   const register = guard((cs: Candidate[], force = false) => {
     if (!cs.length) return false;
+    if (!req.ok) { actions.toast({ tone: 'warning', title: '변경 요청 권한이 없습니다', body: req.reason }); return false; }
     const b = bulkCheck(cs.length);
     if (b.level === 'block') { actions.toast({ tone: 'warning', title: '대량 등록 차단', body: b.reason }); return false; }
     if (b.level === 'warn' && !force) { setConfirm(cs); return false; }
@@ -138,7 +141,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
     {
       key: 'act', label: '상태', align: 'right',
       render: (c) => c.status === 'new' || c.status === 'rejected'
-        ? <Button size="sm" icon="plus" disabled={!c.purchase} title={c.purchase ? '테스트 전용 그룹 등록 요청 (pending)' : '구매 의도 낮음 — 등록 대상 아님'} onClick={() => register([c])}>등록 요청</Button>
+        ? <Button size="sm" icon="plus" disabled={!c.purchase || !req.ok} title={!req.ok ? req.reason : c.purchase ? '테스트 전용 그룹 등록 요청 (pending)' : '구매 의도 낮음 — 등록 대상 아님'} onClick={() => register([c])}>등록 요청</Button>
         : <Pill tone={c.status === 'testing' ? 'accent' : 'warning'}>{CANDIDATE_STATUS_LABEL[c.status]}</Pill>,
     },
   ];
@@ -230,7 +233,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
               </div>
               {picked.flags.length ? <Callout tone="warning">{picked.flags.join(' · ')}</Callout> : null}
               {picked.status === 'new' || picked.status === 'rejected'
-                ? <Button variant="primary" icon="plus" disabled={!picked.purchase} onClick={() => register([picked])}>테스트 그룹 등록 요청</Button>
+                ? <Button variant="primary" icon="plus" disabled={!picked.purchase || !req.ok} title={req.ok ? undefined : req.reason} onClick={() => register([picked])}>테스트 그룹 등록 요청</Button>
                 : <Pill tone="accent">{CANDIDATE_STATUS_LABEL[picked.status]} · {picked.statusNote}</Pill>}
             </div>
           ) : null}
@@ -242,7 +245,7 @@ export function DiscoverTab({ m }: { m: LabModel }) {
           <Src kind="DEMO" />
           <DownloadButton filename={`mildo-lab-candidates-${d.today}.csv`} mime="text/csv;charset=utf-8" label="CSV"
             data={() => toCsv(rows.map((c) => ({ phrase: c.phrase, source: SOURCE_LABEL[c.source], intent: INTENT_NAME(c.intent), volume: c.volume, volumeNote: c.volumeNote, roas: c.evidence ? Math.round(c.evidence.roas) : '', landing: `${c.landing.label} ${LANDING_LEVEL_META[c.landing.level].label}`, score: c.score, flags: c.flags.join(' / '), status: CANDIDATE_STATUS_LABEL[c.status] })), CSV_COLUMNS)} />
-          <Button size="sm" variant="primary" icon="send" disabled={!selRows.length || check.level === 'block'} title={check.reason} onClick={() => register(selRows)}>선택 {selRows.length}건 등록 요청</Button>
+          <Button size="sm" variant="primary" icon="send" disabled={!selRows.length || check.level === 'block' || !req.ok} title={req.ok ? check.reason : req.reason} onClick={() => register(selRows)}>선택 {selRows.length}건 등록 요청</Button>
         </>}>
         <div className="row" style={{ gap: 12, alignItems: 'flex-end' }}>
           <Field label="구매 의도" id="lab-intent">

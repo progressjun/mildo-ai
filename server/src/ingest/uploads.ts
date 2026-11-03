@@ -2,6 +2,7 @@
  * CSV · TSV 업로드 API (docs/SAAS_SPEC.md §6 data)
  *   POST   /api/w/:ws/uploads { template, filename, content, mapping?, dryRun?, channel?, connectionId? }  (operate) → { upload, preview, issues, columns, summary }
  *          dryRun=true: 저장 없이 앞 20행 정규화 결과 · 열 매핑 · 이슈만. false: 업로드 저장 + ingest.upload 잡 예약(워커가 가져온다)
+ *          이슈는 워커와 같은 검사(analyzeUpload — 형식 · 템플릿 예시 행 · 음수 지표 · 미래 날짜 · 수집 품질 검사)다. 쓸 행이 없으면 400 invalid_upload
  *   GET    /api/w/:ws/uploads (read) → { uploads }
  *   DELETE /api/w/:ws/uploads/:id (configure) → 그 업로드로 들어온 웨어하우스 데이터를 지운다
  *   GET    /api/uploads/templates (로그인) → { templates }
@@ -16,9 +17,9 @@ import { publish } from '../events/hub';
 import { enqueue } from '../jobs/queue';
 import { purgeSource } from '../warehouse/write';
 import { loadConnection } from '../connectors/service';
-import { blockingIssues, normalizeCsv, templateCsv, TEMPLATES, UPLOAD_TEMPLATES, type UploadTemplate } from '../connectors/csv';
+import { templateCsv, TEMPLATES, UPLOAD_TEMPLATES, type UploadTemplate } from '../connectors/csv';
 import { MAX_UPLOAD_BYTES, TEMPLATE_HELP } from '@/modules/connections/csv';
-import type { UploadRow } from './pipeline';
+import { analyzeUpload, type UploadRow } from './pipeline';
 
 const UploadBody = z.object({
   template: z.enum(UPLOAD_TEMPLATES as [UploadTemplate, ...UploadTemplate[]]),
@@ -54,13 +55,14 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
       if (!conn) throw notFound('커넥션을 찾을 수 없습니다');
       if (conn.provider !== 'csv') throw badRequest('업로드는 CSV 커넥션에만 연결할 수 있습니다');
     }
-    const norm = normalizeCsv(body.template, body.content, { mapping: body.mapping, channel: body.channel ?? undefined });
+    // 미리보기 · 등록 · 워커 가져오기가 같은 검사(형식 · 템플릿 예시 행 · 음수 지표 · 미래 날짜 · 수집 품질 검사)를 쓴다
+    const analysis = await analyzeUpload(db, ws, { template: body.template, content: body.content, mapping: body.mapping, channel: body.channel ?? null });
+    const { norm, issues, blocking } = analysis;
     const columns = { headers: norm.summary.headers, mapping: norm.mapping.fields, missing: norm.mapping.missing, unmapped: norm.mapping.unmapped };
     const preview = norm.preview;
-    if (body.dryRun) return { upload: null, preview, issues: norm.issues, columns, summary: norm.summary };
-    const blocking = blockingIssues(norm.issues);
+    if (body.dryRun) return { upload: null, preview, issues, columns, summary: norm.summary };
     if (blocking.length) {
-      throw new HttpError(400, 'invalid_upload', `가져올 수 없습니다: ${blocking[0].message}`, { issues: norm.issues, preview, columns, summary: norm.summary });
+      throw new HttpError(400, 'invalid_upload', `가져올 수 없습니다: ${blocking[0].message}`, { issues, preview, columns, summary: norm.summary });
     }
     const mapping = Object.fromEntries(Object.entries(norm.mapping.fields).filter(([, v]) => v)) as Record<string, string>;
     const { upload, jobId } = await db.tx(async (q) => {
@@ -78,7 +80,7 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
       await publish(q, ws, { type: 'connection', id: body.connectionId ?? undefined });
       return { upload: u!, jobId: jid };
     });
-    return { upload: uploadView(upload), preview, issues: norm.issues, columns, summary: norm.summary, jobId };
+    return { upload: uploadView(upload), preview, issues, columns, summary: norm.summary, jobId };
   });
 
   app.get('/w/:ws/uploads', async (req) => {

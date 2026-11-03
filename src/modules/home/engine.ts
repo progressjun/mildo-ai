@@ -3,7 +3,8 @@
  */
 import type { ChangeRequest, Dataset, Incident } from '@/core/types';
 import { DATA_TIMETABLE, GFA_DELEGATION, MEDIA } from '@/data/constants';
-import { headline, monthlyPacing } from '@/core/selectors';
+import { headline, monthlyPacing, previousRange, rangeOf } from '@/core/selectors';
+import { comparableScope, comparableTotals } from '@/modules/board/engine';
 import { paceCampaigns } from '@/modules/adpilot/engine';
 import { buildTimetable, dataNowMinutes } from '@/modules/reports/engine';
 import { fmt, isOffDay, metrics } from '@/core/util';
@@ -72,8 +73,36 @@ export function homeTimetable(data: Dataset, opts: { offHours?: boolean; inciden
   return { off: t.off, offLabel: t.offLabel, nextBusinessDay: t.nextBusinessDay, items };
 }
 
+/**
+ * KPI 증감 근거 — 데이터가 없는 구간끼리 '0.0%'를 만들지 않고(출처 없음 · 수집 전), 직전 구간에 아직 데이터가 없던 매체 · 채널은
+ * Board와 같은 기준(comparableScope)으로 증감에서 뺀다. 두 구간 모두 데이터가 있어야 증감을 낸다(없으면 NaN → 화면 '—').
+ */
+export function kpiCoverage(data: Dataset) {
+  const y = rangeOf(data, 'yesterday');
+  const py = previousRange(y);
+  const w = rangeOf(data, 'last7');
+  const pw = previousRange(w);
+  const media = (r: { from: string; to: string }) => data.mediaDaily.some((x) => x.date >= r.from && x.date <= r.to);
+  const sales = (r: { from: string; to: string }) => data.salesDaily.some((x) => x.date >= r.from && x.date <= r.to);
+  const dayScope = comparableScope(data, y, py);
+  const weekScope = comparableScope(data, w, pw);
+  return {
+    /** 웨어하우스 · 데모 어디에도 매체 · 판매 데이터가 없다 (출처 없음) */
+    none: !data.mediaDaily.length && !data.salesDaily.length,
+    mediaYesterday: media(y), mediaDayBefore: media(py), media7: media(w), mediaPrev7: media(pw),
+    salesYesterday: sales(y), salesDayBefore: sales(py),
+    day: comparableTotals(data, dayScope, y, py), week: comparableTotals(data, weekScope, w, pw),
+    /** 증감 기준 문구 (같은 기준 비교로 뺀 매체 · 채널이 있을 때) */
+    notes: [...new Set([dayScope.note, weekScope.note].filter((x): x is string => !!x))],
+  };
+}
+
 export function operatingSummary(data: Dataset, incidents: Incident[], changes: ChangeRequest[]) {
   const h = headline(data);
+  const cov = kpiCoverage(data);
+  const pc = metrics.pctChange;
+  const dayMedia = cov.mediaYesterday && cov.mediaDayBefore;
+  const weekMedia = cov.media7 && cov.mediaPrev7;
   const open = incidents.filter((i) => i.status !== 'resolved');
   // 예산 조기 소진: Board · AD Pilot · Alert와 같은 기준(최근 28일 시간대 소진 곡선, 23시 전 마감)
   const early = paceCampaigns(data)
@@ -96,9 +125,12 @@ export function operatingSummary(data: Dataset, incidents: Incident[], changes: 
     under,
     pending,
     off,
-    roasDelta: metrics.pctChange(h.yesterday.roas, h.dayBefore.roas),
-    costDelta: metrics.pctChange(h.yesterday.cost, h.dayBefore.cost),
-    salesDelta: metrics.pctChange(h.salesYesterday, h.salesDayBefore),
+    cov,
+    roasDelta: dayMedia ? pc(cov.day.cur.roas, cov.day.prev.roas) : NaN,
+    costDelta: dayMedia ? pc(cov.day.cur.cost, cov.day.prev.cost) : NaN,
+    salesDelta: cov.salesYesterday && cov.salesDayBefore ? pc(cov.day.sales, cov.day.prevSales) : NaN,
+    cpa7Delta: weekMedia ? pc(cov.week.cur.cpa, cov.week.prev.cpa) : NaN,
+    cac7Delta: weekMedia ? pc(cov.week.cur.cac, cov.week.prev.cac) : NaN,
   };
 }
 
@@ -108,12 +140,17 @@ export function morningBrief(data: Dataset, incidents: Incident[], changes: Chan
   const y = s.h.yesterday;
   const w = s.h.last7;
   const pw = s.h.prev7;
-  const mer = s.h.salesYesterday / (y.cost || 1);
-  const facts = [
-    `어제 광고비 ${fmt.krw(y.cost)}원, 광고 매출 ${fmt.krw(y.revenue)}원으로 ROAS ${fmt.roas(y.roas)} (전날 대비 ${fmt.delta(s.roasDelta)}). 판매 채널 합산 실매출은 ${fmt.krw(s.h.salesYesterday)}원으로 광고비 대비 ${mer.toFixed(1)}배입니다. (TEST DATA)`,
-    `최근 7일 ROAS ${fmt.roas(w.roas)}, 직전 7일 ${fmt.roas(pw.roas)}. CPA ${fmt.won(w.cpa)}, 신규 고객 CAC ${fmt.won(w.cac)}. (TEST DATA)`,
-    `열린 이슈 ${s.open.length}건 (P1 ${s.p1.length} · P2 ${s.p2.length} · P3 ${s.p3.length}), 승인 대기 변경 ${s.pending.length}건, AD Pilot 조정 후보 ${proposalCount}건.`,
-  ];
+  const mer = y.cost > 0 ? s.h.salesYesterday / y.cost : NaN;
+  const facts = s.cov.none
+    ? ['연결된 데이터 출처가 없어 어제 광고비 · 매출 · 실매출 데이터가 없습니다. 데이터 연결에서 매체 API를 연결하거나 CSV를 올린 뒤 다시 확인합니다.']
+    : [
+      s.cov.mediaYesterday
+        ? `어제 광고비 ${fmt.krw(y.cost)}원, 광고 매출 ${fmt.krw(y.revenue)}원으로 ROAS ${fmt.roas(y.roas)} (전날 대비 ${fmt.delta(s.roasDelta)}). 판매 채널 합산 실매출은 ${s.cov.salesYesterday ? `${fmt.krw(s.h.salesYesterday)}원으로 광고비 대비 ${fmt.dec1(mer)}배` : '데이터 없음'}입니다. (TEST DATA)`
+        : '어제 매체 광고비 · 매출 데이터가 아직 없습니다 (수집 전 또는 지연 — 데이터 연결 수집 현황 확인).',
+      `최근 7일 ROAS ${fmt.roas(w.roas)}, 직전 7일 ${fmt.roas(pw.roas)}. CPA ${fmt.won(w.cpa)}, 신규 고객 CAC ${fmt.won(w.cac)}. (TEST DATA)`,
+    ];
+  facts.push(`열린 이슈 ${s.open.length}건 (P1 ${s.p1.length} · P2 ${s.p2.length} · P3 ${s.p3.length}), 승인 대기 변경 ${s.pending.length}건, AD Pilot 조정 후보 ${proposalCount}건.`);
+  for (const n of s.cov.notes) facts.push(`${n}.`);
   const patterns: string[] = [];
   if (s.early.length) patterns.push(`일 예산 조기 소진 예상 캠페인 ${s.early.length}개(23시 전 마감, 21~23시 피크 전 마감 ${s.early.filter((c) => c.missesPeak).length}개): ${s.early.slice(0, 3).map((c) => `${c.name}(예상 마감 ${hhmmOf(c.exhaustHour)})`).join(', ')}. 최근 28일 시간대별 소진 비중이 오늘도 유지된다는 가정입니다.`);
   if (s.over.length) patterns.push(`월 예산 초과 페이스 매체: ${s.over.map((p) => `${MEDIA[p.media].name}(예상 월 소진 ${fmt.krw(p.projected)} / 예산 ${fmt.krw(p.budget)})`).join(', ')}.`);

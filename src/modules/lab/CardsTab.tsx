@@ -19,7 +19,7 @@ const MEDIA_OPTS: string[] = ['네이버 SA', '네이버 GFA · Prospecting', '�
 const EMPTY_DRAFT: CardDraft = { title: '', hypothesis: '', variable: '랜딩', media: '네이버 SA', intent: 'problem', control: '', variant: '', primary: 'cvr' };
 
 function NewCardForm({ m, draft, onDone }: { m: LabModel; draft: CardDraft | null; onDone: () => void }) {
-  const { d, state, actions } = m;
+  const { d, state, actions, perms } = m;
   const [f, setF] = useState<CardDraft>(draft ?? EMPTY_DRAFT);
   const [start, setStart] = useState(addDays(d.today, 1));
   const [days, setDays] = useState<number>(CARD_RULES.days);
@@ -35,6 +35,7 @@ function NewCardForm({ m, draft, onDone }: { m: LabModel; draft: CardDraft | nul
   const set = <K extends keyof CardDraft>(k: K, v: CardDraft[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const submit = () => {
+    if (!perms.request.ok) { actions.toast({ tone: 'warning', title: '변경 요청 권한이 없습니다', body: perms.request.reason }); return; }
     const e = validateCardInput({ title: f.title, hypothesis: f.hypothesis, variable: f.variable, control: f.control, variant: f.variant, sameTarget, budgetGapPct: gap, start, today: d.today, plannedDays: days });
     if (rv && rv.level === 'block') e.push(`변형안 문안 검수 차단 — ${rv.findings.filter((x) => x.level === 'block').map((x) => x.match).join(' · ')} (수정안: ${rv.suggested})`);
     if (rc && rc.level === 'block') e.push(`기존안 문안 검수 차단 — ${rc.findings.filter((x) => x.level === 'block').map((x) => x.match).join(' · ')} (수정안: ${rc.suggested})`);
@@ -103,7 +104,7 @@ function NewCardForm({ m, draft, onDone }: { m: LabModel; draft: CardDraft | nul
         <Src kind="PROPOSAL" page="p.27 · p.28" />
       </div>
       {errors.length ? <Callout tone="critical" title="등록할 수 없습니다">{errors.join(' · ')}</Callout> : null}
-      <div className="row"><Button variant="primary" icon="send" onClick={submit}>테스트 카드 등록 요청</Button><span className="lab-sub">승인 요청(ChangeRequest · 담당 AE)으로 남고, 승인 후 집행 데이터가 쌓이면 같은 기준으로 판정합니다.</span></div>
+      <div className="row"><Button variant="primary" icon="send" disabled={!perms.request.ok} title={perms.request.ok ? undefined : perms.request.reason} onClick={submit}>테스트 카드 등록 요청</Button><span className="lab-sub">승인 요청(ChangeRequest · 담당 AE)으로 남고, 승인 후 집행 데이터가 쌓이면 같은 기준으로 판정합니다.</span></div>
     </div>
   );
 }
@@ -144,7 +145,7 @@ function WrapupBox({ card, j, dec, wrap, today }: { card: TestCard; j: CardJudge
 }
 
 function TestCardView({ card, m }: { card: TestCard; m: LabModel }) {
-  const { judgements, lab, state, actions, d } = m;
+  const { judgements, lab, state, actions, d, perms } = m;
   const j = judgements[card.id];
   const dec = lab.decisions[card.id];
   const decChange = dec?.changeId ? state.changes.find((c) => c.id === dec.changeId) : undefined;
@@ -152,6 +153,7 @@ function TestCardView({ card, m }: { card: TestCard; m: LabModel }) {
   const series = cumulativeSeries(card, card.primary, j.dataDays);
   const xs = series.c.map((_, i) => `D${i + 1}`);
   const decide = (verdict: CardDecision['verdict']) => {
+    if (!perms.request.ok) { actions.toast({ tone: 'warning', title: '변경 요청 권한이 없습니다', body: perms.request.reason }); return; }
     const after = verdict === 'expand' ? `확대 — ${card.expandScope}` : verdict === 'stop' ? '중단 — 기존안 복귀' : '모니터링 지속 — 기존안 유지';
     const ch = actions.addChange({
       module: 'lab', kind: 'test', target: `${card.id} ${card.title}`, targetId: `labcard:${card.id}:decision`, before: '테스트 진행', after,
@@ -221,8 +223,8 @@ function TestCardView({ card, m }: { card: TestCard; m: LabModel }) {
       ) : decidable ? (
         <div className="row" style={{ gap: 6 }}>
           {lab.rejectedDecisions[card.id] ? <span className="lab-sub" style={{ flexBasis: '100%' }}>직전 결정 요청({CARD_VERDICT_META[lab.rejectedDecisions[card.id].verdict].label}) 반려 · 롤백 — 근거 확인 후 다시 결정할 수 있습니다</span> : null}
-          <Button size="sm" variant={j.verdict === 'stop' ? 'danger' : 'primary'} icon="send" onClick={() => decide(j.verdict as CardDecision['verdict'])}>{CARD_VERDICT_META[j.verdict].label} 결정 · 승인 요청</Button>
-          {j.verdict !== 'monitor' ? <Button size="sm" onClick={() => decide('monitor')}>모니터링 지속</Button> : null}
+          <Button size="sm" variant={j.verdict === 'stop' ? 'danger' : 'primary'} icon="send" disabled={!perms.request.ok} title={perms.request.ok ? undefined : perms.request.reason} onClick={() => decide(j.verdict as CardDecision['verdict'])}>{CARD_VERDICT_META[j.verdict].label} 결정 · 승인 요청</Button>
+          {j.verdict !== 'monitor' ? <Button size="sm" disabled={!perms.request.ok} title={perms.request.ok ? undefined : perms.request.reason} onClick={() => decide('monitor')}>모니터링 지속</Button> : null}
         </div>
       ) : null}
     </Card>

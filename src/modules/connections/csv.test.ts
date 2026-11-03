@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   blockingIssues, detectDelimiter, normalizeCsv, normalizeHeader, parseChannel, parseCsv, parseDate, parseHour, parseMedia, parseNumber, resolveMapping, templateCsv,
-  TEMPLATES, UPLOAD_TEMPLATES, type MediaDailyRecord, type KeywordDailyRecord, type SalesDailyRecord, type MediaHourlyRecord,
+  TEMPLATE_EXAMPLE_NOTE, TEMPLATES, UPLOAD_TEMPLATES, type MediaDailyRecord, type KeywordDailyRecord, type SalesDailyRecord, type MediaHourlyRecord,
 } from './csv';
 
 describe('RFC 4180 파서', () => {
@@ -159,14 +159,70 @@ describe('템플릿별 정규화', () => {
     expect(blockingIssues(normalizeCsv('search_term_daily', '일자,검색어\n').issues).map((i) => i.code)).toEqual(['no_rows']);
   });
 
-  it('템플릿 CSV: UTF-8 BOM · 한글 머리글 · 예시 행이 그대로 다시 읽힌다', () => {
+  it('템플릿 CSV: UTF-8 BOM · 한글 머리글이 모두 매핑되고, 예시 행(일자 칸 표시)은 실제 데이터로 가져오지 않는다', () => {
     for (const t of UPLOAD_TEMPLATES) {
       const csv = templateCsv(t);
       expect(csv.startsWith('﻿')).toBe(true);
+      expect(csv, t).toContain(TEMPLATE_EXAMPLE_NOTE);
       const r = normalizeCsv(t, csv);
-      expect(blockingIssues(r.issues), t).toEqual([]);
-      expect(r.records.length, t).toBe(1);
+      expect(r.mapping.missing, t).toEqual([]);
+      expect(r.records, t).toEqual([]);
+      expect(r.issues.find((i) => i.code === 'template_example_row'), t).toMatchObject({ severity: 'warning' });
+      // 예시 행만 있으면 가져올 행이 없다 — 예시 행을 지우라는 안내
+      expect(blockingIssues(r.issues).map((i) => i.code), t).toEqual(['no_valid_rows']);
+      expect(blockingIssues(r.issues)[0].message, t).toContain('예시 행');
       expect(TEMPLATES[t].fields.length).toBeGreaterThan(3);
     }
+  });
+});
+
+describe('템플릿 예시 행 · 값 검사 (서버 수집 품질 검사와 같은 기준)', () => {
+  const HEAD = '일자,매체,노출,클릭,광고비,전환,전환매출,신규 고객';
+  const LEGACY_EXAMPLE = '2026-10-30,naver_sa,120000,2400,1850000,21,22000000,13';
+  const GOOGLE = ['2026-10-27,google,90000,1800,3000000,30,12000000,20', '2026-10-28,google,91000,1810,3010000,31,12100000,21'];
+
+  it('표시 없는 예전 템플릿의 예시 행(값이 예시와 전부 같음)도 알아보고 빼며, 그 아래 실제 행은 가져온다', () => {
+    const r = normalizeCsv('media_daily', [HEAD, LEGACY_EXAMPLE, ...GOOGLE].join('\n'));
+    expect((r.records as MediaDailyRecord[]).map((x) => x.media)).toEqual(['google', 'google']);
+    expect(r.summary).toMatchObject({ rows: 3, validRows: 2, invalidRows: 1, channels: ['google'], excluded: { example: 1 } });
+    expect(r.issues.find((i) => i.code === 'template_example_row')!.message).toContain('2행');
+    expect(r.preview.map((p) => p._line)).toEqual([3, 4]);
+    expect(blockingIssues(r.issues)).toEqual([]);
+  });
+
+  it('예시와 한 값이라도 다르면 실제 행 — 예시 행으로 보지 않는다', () => {
+    const r = normalizeCsv('media_daily', [HEAD, '2026-10-30,naver_sa,120000,2400,1850001,21,22000000,13'].join('\n'));
+    expect(r.records).toHaveLength(1);
+    expect(r.issues.map((i) => i.code)).not.toContain('template_example_row');
+  });
+
+  it('음수 지표 · 오늘 이후 날짜 레코드는 빼고 행 단위 오류로 알린다 (가져오기는 막지 않음, 남는 행이 없으면 막음)', () => {
+    const csv = [
+      '일자,매체,노출수,클릭수,광고비(원),전환수,전환매출(원)',
+      '2026-10-28,구글,"101,111","2,011","-₩3,010,000",11,"₩30,100,000"',
+      '2026-10-29,구글,-5,"2,022","3,020,000",-12,"30,200,000"',
+      '2026-11-20,구글,100,10,"1,000",1,"10,000"',
+      '2026-11-03,카카오,100,10,"1,000",1,"10,000"',
+    ].join('\n');
+    const r = normalizeCsv('media_daily', csv, { today: '2026-11-03' });
+    expect((r.records as MediaDailyRecord[]).map((x) => `${x.date}|${x.media}`)).toEqual(['2026-11-03|kakao']);
+    expect(r.summary).toMatchObject({ rows: 4, validRows: 1, invalidRows: 3, dateFrom: '2026-11-03', dateTo: '2026-11-03', channels: ['kakao'], excluded: { negative: 2, future: 1 } });
+    const neg = r.issues.find((i) => i.code === 'negative_values')!;
+    expect(neg.severity).toBe('error');
+    expect(neg.message).toContain('음수 지표가 있는 2행을 제외했습니다');
+    expect(neg.message).toContain('2행 광고비 -3,010,000');
+    expect(r.issues.find((i) => i.code === 'future_dates')!.message).toContain('오늘(2026-11-03) 이후 날짜 1행');
+    expect(r.preview.map((p) => p._line)).toEqual([5]);
+    expect(blockingIssues(r.issues)).toEqual([]);
+    const none = normalizeCsv('media_daily', csv.split('\n').slice(0, 4).join('\n'), { today: '2026-11-03' });
+    expect(blockingIssues(none.issues).map((i) => i.code)).toEqual(['no_valid_rows']);
+    // 기준일을 주지 않으면 미래 날짜는 판정하지 않는다(음수는 항상)
+    expect(normalizeCsv('media_daily', csv).records).toHaveLength(2);
+  });
+
+  it('같은 키 합산 뒤 값 기준 — 환불 · 조정 행(음수)이 있어도 합계가 0 이상이면 가져온다 (워커와 같은 판정)', () => {
+    const r = normalizeCsv('media_daily', ['일자,매체,광고비', '2026-10-30,meta,100000', '2026-10-30,meta,-20000'].join('\n'), { today: '2026-11-03' });
+    expect((r.records as MediaDailyRecord[])[0].cost).toBe(80000);
+    expect(r.issues.map((i) => i.code)).not.toContain('negative_values');
   });
 });

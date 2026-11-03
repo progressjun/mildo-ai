@@ -249,6 +249,37 @@ export async function listConnectionViews(q: Queryable, config: AppConfig, wsId:
   return rows.map((r) => toConnectionView(r, config, { pendingJobs: jobMap.get(r.id) ?? 0, lastRun: runMap.get(r.id) ?? null }));
 }
 
+/* ---------- 검증 오류 문구 ---------- */
+
+type SchemaIssue = { path: PropertyKey[]; message: string; code?: string };
+
+/** 스키마 오류 사유 — 스키마의 한국어 메시지를 그대로, 영문 기본 메시지(zod)는 한국어로 */
+function issueReason(i: SchemaIssue): string {
+  if (/[가-힣]/.test(i.message)) return i.message;
+  if (i.code === 'invalid_type' && /received undefined/i.test(i.message)) return '입력해 주세요';
+  if (i.code === 'too_small') return '값이 너무 짧거나 작습니다';
+  if (i.code === 'too_big') return '값이 너무 길거나 큽니다';
+  return '형식이 올바르지 않습니다';
+}
+
+/** 필드별 오류 목록 — 화면 라벨(credentialFields) · 사유. 같은 필드는 첫 사유만 */
+export function describeIssues(issues: readonly SchemaIssue[], labels?: readonly { key: string; label: string }[]): { path: string; label: string; reason: string; text: string }[] {
+  const out = new Map<string, { path: string; label: string; reason: string; text: string }>();
+  for (const i of issues) {
+    const path = i.path.map(String).join('.') || '(전체)';
+    if (out.has(path)) continue;
+    const label = labels?.find((f) => f.key === String(i.path[0]))?.label ?? path;
+    const reason = issueReason(i);
+    out.set(path, { path, label, reason, text: `${label}: ${reason}` });
+  }
+  return [...out.values()];
+}
+
+/** 자격증명 스키마 오류 → '자격증명 항목을 확인해 주세요 — 광고 계정 ID: 광고 계정 ID는 숫자입니다 …' (연결 확인 · 수집 · 저장 공용) */
+export function credentialIssueText(def: Pick<ConnectorDef, 'credentialFields'>, issues: readonly SchemaIssue[]): string {
+  return `자격증명 항목을 확인해 주세요 — ${describeIssues(issues, def.credentialFields).map((x) => x.text).join(' · ')}`;
+}
+
 /* ---------- 연결 확인 ---------- */
 
 const TEST_TIMEOUT_MS = 30_000;
@@ -263,7 +294,7 @@ export async function runConnectionTest(db: Queryable, config: AppConfig, row: C
     if (!parsed.success && needsOAuthApproval(def.provider, ctx.credentials)) {
       result = { ok: false, message: oauthApprovalMessage(def) };
     } else if (!parsed.success) {
-      result = { ok: false, message: `자격증명 항목을 확인해 주세요: ${parsed.error.issues.map((i) => i.path.join('.') || '(전체)').join(', ')}` };
+      result = { ok: false, message: credentialIssueText(def, parsed.error.issues) };
     } else {
       let timer: NodeJS.Timeout | undefined;
       const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`연결 확인 시간 초과 (${TEST_TIMEOUT_MS / 1000}초)`)), TEST_TIMEOUT_MS); });
@@ -306,11 +337,11 @@ const PatchBody = z.object({
 const DateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 const SyncBody = z.object({ from: DateStr.optional(), to: DateStr.optional() });
 
-function validateWith<T>(schema: z.ZodType<T>, input: unknown, what: string): T {
+function validateWith<T>(schema: z.ZodType<T>, input: unknown, what: string, labels?: ConnectorDef['credentialFields']): T {
   const r = schema.safeParse(input);
   if (!r.success) {
-    const fields = r.error.issues.map((i) => i.path.join('.') || '(전체)');
-    throw badRequest(`${what} 항목을 확인해 주세요: ${[...new Set(fields)].join(', ')}`, fields.map((path) => ({ path })));
+    const items = describeIssues(r.error.issues, labels);
+    throw badRequest(`${what} 항목을 확인해 주세요 — ${items.map((x) => x.text).join(' · ')}`, items.map(({ path, label, reason }) => ({ path, label, reason })));
   }
   return r.data;
 }
@@ -324,7 +355,7 @@ function validateCredentials(def: ConnectorDef, input: Credentials): Credentials
   if (r.success) return r.data as Credentials;
   const pending = oauthPendingCredentials(def.provider, input, r.error.issues);
   if (pending) return pending;
-  return validateWith(def.credentialsSchema, input, '자격증명') as Credentials;
+  return validateWith(def.credentialsSchema, input, '자격증명', def.credentialFields) as Credentials;
 }
 
 function resolveChannel(def: ConnectorDef, requested: string | null | undefined): string | null {
@@ -464,23 +495,37 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
     const { id } = req.params as { id: string };
     const row = await loadConnection(db, ws, id);
     if (!row) throw notFound('커넥션을 찾을 수 없습니다');
-    const purged = await db.tx(async (q) => {
-      // 먼저 행을 잠근다 — 진행 중인 수집의 쓰기(같은 행을 잠근다)가 끝난 뒤 지우므로, 지운 뒤 고아 행이 생기지 않는다
+    const { purged, uploads } = await db.tx(async (q) => {
+      // 이 커넥션으로 올린 업로드(출처 'csv:<업로드 id>')도 이 커넥션이 수집한 데이터다 — 함께 지운다 (FK는 ON DELETE SET NULL이라 그냥 두면
+      // 업로드 행 · 웨어하우스 행이 남아 계속 Dataset에 쓰이고 우선순위만 기본값으로 떨어진다).
+      // 잠금 순서는 업로드 → 커넥션: 업로드 가져오기(importUpload)도 업로드 행을 먼저 잠그고 커넥션을 갱신한다(교착 방지).
+      const lockUploads = async () => (await q.query<{ id: string; filename: string }>(
+        'SELECT id, filename FROM uploads WHERE workspace_id = $1 AND connection_id = $2 ORDER BY created_at FOR UPDATE', [ws, id],
+      )).rows;
+      await lockUploads();
+      // 커넥션 행을 잠근다 — 진행 중인 수집의 쓰기(같은 행을 잠근다)가 끝난 뒤 지우므로, 지운 뒤 고아 행이 생기지 않는다
       if (!(await one(q, 'SELECT id FROM connections WHERE workspace_id = $1 AND id = $2 FOR UPDATE', [ws, id]))) throw notFound('커넥션을 찾을 수 없습니다');
-      const n = await purgeSource(q, ws, sourceKeyOf(row));
-      // 대기 중 수집은 취소 (실패가 아니므로 done + 사유)
+      // 잠그는 사이 새로 커밋된 업로드까지 (커넥션 잠금 뒤에는 이 커넥션으로 새 업로드가 들어오지 못한다 — FK 확인이 기다린다)
+      const ups = await lockUploads();
+      let n = await purgeSource(q, ws, sourceKeyOf(row));
+      for (const u of ups) n += await purgeSource(q, ws, `csv:${u.id}`);
+      // 대기 중 수집 · 업로드 가져오기는 취소 (실패가 아니므로 done + 사유)
       await q.query(
         `UPDATE jobs SET status = 'done', finished_at = now(), result = $3, last_error = NULL
-          WHERE workspace_id = $1 AND status = 'queued' AND payload->>'connectionId' = $2`,
-        [ws, id, JSON.stringify({ cancelled: '커넥션 삭제로 취소' })],
+          WHERE workspace_id = $1 AND status = 'queued' AND (payload->>'connectionId' = $2 OR payload->>'uploadId' = ANY($4::text[]))`,
+        [ws, id, JSON.stringify({ cancelled: '커넥션 삭제로 취소' }), ups.map((u) => u.id)],
       );
+      if (ups.length) await q.query('DELETE FROM uploads WHERE workspace_id = $1 AND id = ANY($2::uuid[])', [ws, ups.map((u) => u.id)]);
       await q.query('DELETE FROM connections WHERE workspace_id = $1 AND id = $2', [ws, id]);
-      await audit(q, { workspaceId: ws, userId: c.user.id, actor: c.actor, action: 'connection.delete', targetType: 'connection', targetId: id, ip: c.ip, detail: { provider: row.provider, label: row.label, purgedRows: n } });
+      await audit(q, {
+        workspaceId: ws, userId: c.user.id, actor: c.actor, action: 'connection.delete', targetType: 'connection', targetId: id, ip: c.ip,
+        detail: { provider: row.provider, label: row.label, purgedRows: n, purgedUploads: ups.length, uploads: ups.slice(0, 20).map((u) => ({ id: u.id, filename: u.filename })) },
+      });
       await publish(q, ws, { type: 'connection', id });
       if (n) await publish(q, ws, { type: 'dataset' });
-      return n;
+      return { purged: n, uploads: ups.length };
     });
-    return { ok: true, purgedRows: purged, connections: await list(ws) };
+    return { ok: true, purgedRows: purged, purgedUploads: uploads, connections: await list(ws) };
   });
 
   // 외부 API를 부르는 요청은 사용자 · IP 단위로 묶어 과호출을 막는다

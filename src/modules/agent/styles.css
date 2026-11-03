@@ -10,3 +10,6 @@
   .agent-layout { grid-template-columns: 1fr; }
   .agent-tools { max-height: 260px; }
 }
+
+/* 끊긴 Claude 답(AI 배지)과 규칙 엔진 결과(규칙 엔진 배지) 사이 구분선 */
+.msg.assistant .agent-split { border: 0; border-top: 1px dashed var(--line); margin: 4px 0; width: 100%; }

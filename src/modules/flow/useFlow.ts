@@ -5,10 +5,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeRequest, Incident } from '@/core/types';
 import { useActions, useStore } from '@/core/store';
 import { useSaas } from '@/saas/context';
+import { operateCheck, requestCheck, type Actor } from '@/core/permissions';
+import { withJosa } from '@/core/util';
 import { makeClock } from './clock';
 import { STATUS_META } from './data';
 import {
-  ACTION_META, adpilotConfigOf, bulkChangeAlerts, bulkGuard, canAct, canRollback, checkAllPromotions, executionCheck, flowSummary, fmtValue, incidentStagePatch, nextStatus,
+  ACTION_META, actionAllowed, actorLabel, adpilotConfigOf, bulkChangeAlerts, bulkGuard, canRollback, checkAllPromotions, executionCheck, flowSummary, fmtValue, incidentStagePatch, nextStatus,
   opsCases, seedChanges, type ChangeInput, type FlowAction,
 } from './engine';
 
@@ -28,8 +30,18 @@ export function autoLoadSeeds(server: boolean, load: () => number): number {
 export function useFlow() {
   const { state, dispatch } = useStore();
   const actions = useActions();
+  const saas = useSaas();
   /** 서버 모드 (MILDO OS Cloud) — 시연 이력 적재 · 역할 전환을 끄고, 반영 · 롤백 결과는 서버 판정으로 알린다 */
-  const server = useSaas().mode === 'server';
+  const server = saas.mode === 'server';
+  /**
+   * 권한 판정 주체: 데모 = 데모 3역할(역할 선택), 서버 = 멤버십 역할(서버와 같은 권한표 · 전이별 판정).
+   * 역할을 모르면(워크스페이스 정보 전) 열람자로 본다 — 서버가 거절할 버튼을 켜지 않게.
+   */
+  const memberRole = saas.role;
+  const actor: Actor = useMemo(() => (server ? { member: memberRole ?? 'viewer' } : state.role), [server, memberRole, state.role]);
+  /** 변경 요청 만들기 · 이슈 처리 권한 (데모 모드는 시연 역할 모두 허용 — 기존 그대로) */
+  const requestPerm = useMemo(() => (server ? requestCheck(memberRole ?? 'viewer') : { ok: true, reason: '' }), [server, memberRole]);
+  const operatePerm = useMemo(() => (server ? operateCheck(memberRole ?? 'viewer') : { ok: true, reason: '' }), [server, memberRole]);
   const data = state.data;
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -54,17 +66,18 @@ export function useFlow() {
 
   const changes = state.changes;
   const incidents = state.incidents;
-  const summary = useMemo(() => flowSummary(changes, state.role, clock.nowMs, clock.toMs, data.today), [changes, state.role, clock, data.today]);
+  const summary = useMemo(() => flowSummary(changes, actor, clock.nowMs, clock.toMs, data.today), [changes, actor, clock, data.today]);
   const checks = useMemo(() => checkAllPromotions(data, { changes, incidents }), [data, changes, incidents]);
   const cases = useMemo(() => opsCases(data, incidents, changes, clock.toMs), [data, incidents, changes, clock]);
   /** 대량 변경 실수 감지 (MILDO Alert detectBulkChange · p.45) — 요청 · 승인 이력 화면에 표시 */
   const bulkAlerts = useMemo(() => bulkChangeAlerts(changes, data.today, incidents), [changes, data.today, incidents]);
-  /** AD Pilot 공식 기준 (일 조정 폭 상한 · 대량 변경 건수) — 승인 · 반영된 설정 변경 포함 */
-  const apCfg = useMemo(() => adpilotConfigOf(changes), [changes]);
+  /** AD Pilot 공식 기준 (일 조정 폭 상한 · 대량 변경 건수) — 승인 · 반영된 설정 변경 포함 · 워크스페이스 설정이 바뀌면 다시 */
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const apCfg = useMemo(() => adpilotConfigOf(changes), [changes, saas.config]);
 
   /** 단건 액션 (권한 · 실행 점검 · 이력) */
   const act = useCallback((c: ChangeRequest, action: FlowAction, note = '', opts: { silent?: boolean; bulk?: boolean } = {}): boolean => {
-    const perm = canAct(state.role, c.approver);
+    const perm = actionAllowed(actor, c.approver, action);
     const meta = ACTION_META[action];
     const say = (t: Parameters<typeof actions.toast>[0]) => { if (!opts.silent) actions.toast(t); };
     if (!perm.ok) { say({ tone: 'warning', title: `${meta.label} 권한이 없습니다`, body: perm.reason }); return false; }
@@ -77,7 +90,8 @@ export function useFlow() {
         say({ tone: 'warning', title: '실행 점검에서 보류했습니다', body: ex.blocks[0], route: 'flow' });
         return false;
       }
-      actions.updateChange(c.id, { status: 'applied' }, opts.bulk ? '일괄 반영' : '반영', [...ex.passes, ...ex.warnings].join(' · '));
+      // 서버 모드: 실행 점검 · 매체 반영 기록은 서버가 이력에 직접 남긴다 — 화면은 사용자가 쓴 메모만 보낸다(화면 점검 문구 · 데모 꼬리표가 서버 이력에 중복으로 붙지 않게)
+      actions.updateChange(c.id, { status: 'applied' }, opts.bulk ? '일괄 반영' : '반영', server ? note.trim() || undefined : [...ex.passes, ...ex.warnings].join(' · '));
       // 서버 모드: 서버가 실행 점검 · 매체 반영(dry_run · live)을 판정하고 결과는 플랫폼 브리지가 따로 알린다 — 여기서는 보냈다는 사실만
       if (server) say({ tone: 'info', title: '반영 요청을 보냈습니다', body: `${c.target}: ${fmtValue(c, c.before)} → ${fmtValue(c, c.after)} · 서버 실행 점검 · 매체 반영 결과는 이어서 알립니다`, route: 'flow' });
       else say({ tone: 'good', title: '반영했습니다', body: `${c.target}: ${fmtValue(c, c.before)} → ${fmtValue(c, c.after)} · 롤백 가능` });
@@ -86,9 +100,10 @@ export function useFlow() {
     if (action === 'rollback') {
       const r = canRollback(changes, c);
       if (!r.ok) { say({ tone: 'warning', title: '롤백할 수 없습니다', body: r.reason }); return false; }
-      actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', `직전 상태로 복원: ${fmtValue(c, c.after)} → ${fmtValue(c, c.before)}${note ? ` · ${note}` : ''}`);
-      if (server) say({ tone: 'info', title: '롤백 요청을 보냈습니다', body: `${c.target}: ${fmtValue(c, c.before)}로 복원 · 서버 매체 반영 결과는 이어서 알립니다`, route: 'flow' });
-      else say({ tone: 'info', title: '롤백했습니다', body: `${c.target}: ${fmtValue(c, c.before)}로 복원` });
+      // 서버 모드: 복원 내용(직전 상태로 복원: …)은 서버가 이력에 남긴다 — 사용자 메모만
+      actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', server ? note.trim() || undefined : `직전 상태로 복원: ${fmtValue(c, c.after)} → ${fmtValue(c, c.before)}${note ? ` · ${note}` : ''}`);
+      if (server) say({ tone: 'info', title: '롤백 요청을 보냈습니다', body: `${c.target}: ${withJosa(fmtValue(c, c.before), '으로/로')} 복원 요청 · 서버 매체 반영 결과는 이어서 알립니다`, route: 'flow' });
+      else say({ tone: 'info', title: '롤백했습니다', body: `${c.target}: ${withJosa(fmtValue(c, c.before), '으로/로')} 복원` });
       return true;
     }
     const allowedFrom: Record<FlowAction, ChangeRequest['status'][]> = {
@@ -96,10 +111,11 @@ export function useFlow() {
     };
     if (!allowedFrom[action].includes(c.status)) { say({ tone: 'warning', title: `${meta.label}할 수 없는 상태입니다`, body: `현재 상태 ${STATUS_META[c.status].label}` }); return false; }
     const label = action === 'approve' && opts.bulk ? '일괄 승인' : meta.label;
-    actions.updateChange(c.id, { status: nextStatus(c, action) }, label, note.trim() || perm.reason);
+    // 서버 모드: 메모가 없으면 서버가 권한 근거를 이력에 남긴다 (화면 문구를 보내지 않는다)
+    actions.updateChange(c.id, { status: nextStatus(c, action) }, label, note.trim() || (server ? undefined : perm.reason));
     say({ tone: action === 'approve' ? 'good' : 'info', title: `${label}: ${c.target}`, body: action === 'approve' ? '반영 대기로 이동했습니다' : undefined });
     return true;
-  }, [actions, changes, data, incidents, server, state.role]);
+  }, [actions, actor, changes, data, incidents, server]);
 
   const bulk = useCallback((list: ChangeRequest[], action: 'approve' | 'apply') => {
     const g = bulkGuard(list, action, apCfg);
@@ -112,18 +128,26 @@ export function useFlow() {
   }, [act, actions, apCfg, server]);
 
   const createRequest = useCallback((input: ChangeInput, silent = false) => {
+    if (!requestPerm.ok) {
+      if (!silent) actions.toast({ tone: 'warning', title: '변경 요청 권한이 없습니다', body: requestPerm.reason });
+      return null;
+    }
     const c = actions.addChange({ ...input, requestedBy: state.role });
     if (!silent) actions.toast({ tone: 'info', title: '승인 요청을 만들었습니다', body: `${c.target} · 승인 주체 ${c.approver === 'CLIENT' ? '수면밀도' : c.approver === 'PM' ? 'PM' : '담당 AE'}`, route: 'flow' });
     return c;
-  }, [actions, state.role]);
+  }, [actions, requestPerm, state.role]);
 
   const incidentStep = useCallback((inc: Incident, step: 'ack' | 'action' | 'report', note = '') => {
+    if (!operatePerm.ok) { actions.toast({ tone: 'warning', title: '이슈 처리 권한이 없습니다', body: operatePerm.reason }); return; }
     if (step === 'action' && !note.trim()) { actions.toast({ tone: 'warning', title: '조치 내용을 입력하세요' }); return; }
-    const { patch, log } = incidentStagePatch(inc, step, clock.nowIso, state.role, note.trim());
+    const { patch, log } = incidentStagePatch(inc, step, clock.nowIso, server ? actorLabel(actor) : state.role, note.trim());
     actions.updateIncident(inc.id, patch, log);
     actions.toast({ tone: 'info', title: log, body: inc.title });
-  }, [actions, clock.nowIso, state.role]);
+  }, [actions, actor, clock.nowIso, operatePerm, server, state.role]);
 
-  return { server, state, data, dispatch, actions, clock, seeds, missingSeeds, loadSeeds, changes, incidents, summary, checks, cases, bulkAlerts, apCfg, act, bulk, createRequest, incidentStep };
+  return {
+    server, state, data, dispatch, actions, clock, seeds, missingSeeds, loadSeeds, changes, incidents, summary, checks, cases, bulkAlerts, apCfg, act, bulk, createRequest, incidentStep,
+    actor, requestPerm, operatePerm,
+  };
 }
 export type FlowCtx = ReturnType<typeof useFlow>;

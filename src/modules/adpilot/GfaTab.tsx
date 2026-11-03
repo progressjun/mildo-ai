@@ -17,6 +17,7 @@ const showVal = (v: string | number) => (typeof v === 'number' ? fmt.krw(v) : v 
 export function GfaTab({ ap }: { ap: AdPilotCtx }) {
   /** 서버 모드: 역할 선택이 없다 — 승인 권한은 멤버십 역할로 정해지고 서버가 최종 판정한다 */
   const server = useSaas().mode === 'server';
+  const who = ap.roleLabel;
   const views = ap.gfa;
   const firstCampaign = views[0]?.campaigns[0];
   const [draft, setDraft] = useState<GfaRequestDraft>({ type: 'budget', accountId: views[0]?.account.id ?? '', campaignId: firstCampaign?.campaign.id, pct: 10, objective: GFA_OBJECTIVES[0], reason: '' });
@@ -26,7 +27,7 @@ export function GfaTab({ ap }: { ap: AdPilotCtx }) {
   const gfaChanges = ap.changes.filter((c) => c.module === 'gfa');
   const allCampaigns = views.flatMap((v) => v.campaigns.map((c) => ({ ...c, accountName: v.account.name })));
   const issues = views.reduce((n, v) => n + v.issues.filter((i) => i.level === 'warn' || i.level === 'critical').length + v.campaigns.reduce((m, c) => m + c.issues.filter((i) => i.level === 'warn' || i.level === 'critical').length, 0), 0);
-  const perm = canApprove(ap.state.role, plan.route.approver);
+  const perm = canApprove(ap.actor, plan.route.approver);
   const perf = useMemo(() => {
     const r = rangeOf(ap.data, 'last7');
     const pr = previousRange(r);
@@ -66,7 +67,7 @@ export function GfaTab({ ap }: { ap: AdPilotCtx }) {
         {c.issues.map((i, n) => <span key={n} className="adpilot-basis">{i.text} — {i.basis}</span>)}
       </div>
     ) },
-    { key: 'act', label: '', align: 'right', render: (c) => <Button size="sm" icon="edit" onClick={() => prefill(c)}>변경 요청</Button> },
+    { key: 'act', label: '', align: 'right', render: (c) => <Button size="sm" icon="edit" disabled={!ap.requestPerm.ok} title={ap.requestPerm.ok ? undefined : ap.requestPerm.reason} onClick={() => prefill(c)}>변경 요청</Button> },
   ];
 
   const queueCols: Column<ChangeRequest>[] = [
@@ -207,18 +208,18 @@ export function GfaTab({ ap }: { ap: AdPilotCtx }) {
           {plan.errors.length ? <Callout tone="critical" title="요청 불가">{plan.errors.join(' · ')}</Callout> : null}
           {plan.warnings.length ? <Callout tone="warning" title="주의">{plan.warnings.join(' · ')}</Callout> : null}
           <div className="row-between">
-            <span className="xs muted">현재 역할 {ap.state.role}: {perm.ok ? '이 건을 직접 승인할 수 있습니다' : perm.reason}</span>
-            <Button variant="primary" icon="send" disabled={!plan.ok} onClick={submit}>승인 요청 → {APPROVER_LABEL[plan.route.approver]}</Button>
+            <span className="xs muted">현재 역할 {who}: {!ap.requestPerm.ok ? ap.requestPerm.reason : perm.ok ? (server && !ap.perm({ approver: plan.route.approver }, 'apply').ok ? '이 건을 직접 승인할 수 있습니다 (실행은 대행사 운영 역할)' : '이 건을 직접 승인할 수 있습니다') : perm.reason}</span>
+            <Button variant="primary" icon="send" disabled={!plan.ok || !ap.requestPerm.ok} title={ap.requestPerm.ok ? undefined : ap.requestPerm.reason} onClick={submit}>승인 요청 → {APPROVER_LABEL[plan.route.approver]}</Button>
           </div>
         </Card>
 
         <Card title="위임 범위 · 승인 주체" sub="위임 범위는 예시이며 계약 시 확정합니다" actions={<Src kind="PROPOSAL" page="p.15" />}>
           <div className="table-wrap">
             <table className="tbl">
-              <thead><tr><th>변경 범위 · 예시</th><th>승인 주체</th><th>현재 역할 ({ap.state.role})</th></tr></thead>
+              <thead><tr><th>변경 범위 · 예시</th><th>승인 주체</th><th>현재 역할 ({who})</th></tr></thead>
               <tbody>
                 {GFA_DELEGATION.map((r, i) => {
-                  const p = canApprove(ap.state.role, r.approver);
+                  const p = canApprove(ap.actor, r.approver);
                   return (
                     <tr key={r.range} className={i === plan.route.rowIndex ? 'adpilot-route-row' : undefined}>
                       <td>{i === plan.route.rowIndex ? <strong>{r.range}</strong> : r.range}</td>

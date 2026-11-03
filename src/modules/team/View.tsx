@@ -12,7 +12,7 @@ import { can, ROLE_LABEL, type Role } from '@/core/permissions';
 import { summarizeTeam, type Invite, type InviteResult, type Member, type SessionRow } from './engine';
 import { demoInvites, demoMembers, demoSessions } from './demo';
 import * as teamApi from './api';
-import { MembersCard, type MemberHandlers } from './MembersCard';
+import { MembersCard, type LastResetLink, type MemberHandlers } from './MembersCard';
 import { InvitesCard, type InviteHandlers } from './InvitesCard';
 import { PasswordCard, SessionsCard, type AccountHandlers } from './AccountCard';
 import { RoleMatrixCard } from './RoleMatrix';
@@ -33,6 +33,8 @@ export interface TeamScreenProps {
   error: string | null;
   busy: string | null;
   lastInvite: InviteResult | null;
+  /** 마지막으로 발급한 비밀번호 재설정 링크 (서버 모드) */
+  lastReset?: LastResetLink | null;
   nowMs: number;
   handlers: TeamHandlers;
   initialTab?: TeamTab;
@@ -83,7 +85,7 @@ export function TeamScreen(p: TeamScreenProps) {
 
       {tab === 'members' ? (
         p.members
-          ? <MembersCard members={members} myRole={p.myRole} canManage={canManage} readOnly={readOnly} busy={p.busy} nowMs={p.nowMs} handlers={p.handlers} />
+          ? <MembersCard members={members} myRole={p.myRole} canManage={canManage} readOnly={readOnly} busy={p.busy} nowMs={p.nowMs} handlers={p.handlers} lastReset={p.lastReset ?? null} />
           : <Card><Empty icon="users" title="구성원을 불러오는 중입니다" /></Card>
       ) : null}
 
@@ -106,7 +108,7 @@ export function TeamScreen(p: TeamScreenProps) {
 }
 
 const NOOP_HANDLERS: TeamHandlers = {
-  onRole: () => undefined, onTitle: () => undefined, onStatus: () => undefined, onRemove: () => undefined,
+  onRole: () => undefined, onTitle: () => undefined, onStatus: () => undefined, onRemove: () => undefined, onResetLink: () => undefined,
   onInvite: async () => false, onResend: () => undefined, onRevoke: () => undefined,
   onRevokeSession: () => undefined, onRevokeOthers: () => undefined, onChangePassword: async () => false, onReload: () => undefined,
 };
@@ -134,6 +136,7 @@ function ServerTeam() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [lastInvite, setLastInvite] = useState<InviteResult | null>(null);
+  const [lastReset, setLastReset] = useState<LastResetLink | null>(null);
   const busyRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -199,6 +202,11 @@ function ServerTeam() {
         ? { title: `${m.name} 계정을 비활성화했습니다`, body: '로그인이 막히고 모든 세션이 종료되었습니다' }
         : { title: `${m.name} 계정을 다시 활성화했습니다` };
     }),
+    onResetLink: (m) => void run(`reset:${m.user_id}`, () => teamApi.issueResetLink(ws.id, m.user_id), (r) => {
+      setLastReset({ ...r, name: m.name });
+      // 메일로 보냈을 때만 성공 토스트 — 못 보냈으면 표 위 안내(링크 복사)로 알린다
+      return r.mail.sent ? { title: `${m.name}에게 재설정 링크 메일을 보냈습니다`, body: '이전에 보낸 링크는 더 이상 쓸 수 없습니다' } : null;
+    }),
     onRemove: (m) => void run(`remove:${m.user_id}`, () => teamApi.removeMember(ws.id, m.user_id), (r) => {
       if (m.is_me) {
         void saas.refreshMe().catch(() => null);
@@ -244,7 +252,7 @@ function ServerTeam() {
 
   return (
     <TeamScreen mode="server" workspaceName={ws.name} myRole={myRole} members={members} invites={canManage ? invites : null} sessions={sessions}
-      error={error} busy={busy} lastInvite={lastInvite} nowMs={Date.now()} handlers={handlers} />
+      error={error} busy={busy} lastInvite={lastInvite} lastReset={lastReset} nowMs={Date.now()} handlers={handlers} />
   );
 }
 

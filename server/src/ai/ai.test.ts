@@ -24,7 +24,11 @@ import {
   type AiClient,
   type AiEvent,
   type AiStream,
+  UsageTracker,
+  estimateOutputTokens,
 } from './service';
+import { aiUnavailableReason, upstreamErrorLogFields } from './index';
+import pino from 'pino';
 
 /* ---------------- 가짜 Anthropic 클라이언트 ---------------- */
 
@@ -319,6 +323,22 @@ describe('Anthropic 오류 → 한국어 error 이벤트', () => {
     expect(row).toEqual({ status: 'error', input_tokens: 180 });
   });
 
+  it('스트림 도중 끊기면 출력 토큰은 message_start 값(1)이 아니라 받은 델타 길이로 추정한다 (사용량 · 한도 과소 집계 방지)', async () => {
+    const mid = new Anthropic.APIError(undefined, { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }, undefined, new Headers(), 'overloaded_error');
+    // 한글 30자 = 90바이트 → 3바이트 ≈ 1토큰 → 30토큰 (message_start의 output_tokens는 1)
+    queue.push({ events: textEvents(['가나다라마바사아자차'.repeat(3)]).slice(0, 3), midError: mid });
+    const ev = sse((await pm.post(url(), { messages: [{ role: 'user', content: 'q' }] })).body);
+    expect(ev.map((e) => e.event)).toEqual(['text', 'error']);
+    const row = (await t.db.query<{ status: string; output_tokens: number }>('SELECT status, output_tokens FROM ai_usage')).rows[0];
+    expect(row).toEqual({ status: 'error', output_tokens: 30 });
+  });
+
+  it('끝까지 받은 스트림은 message_delta의 실제 출력 토큰을 쓴다 (추정하지 않음)', async () => {
+    queue.push({ events: textEvents(['가'.repeat(300)]), final: message([{ type: 'text', text: '가'.repeat(300) }], 'end_turn') });
+    await pm.post(url(), { messages: [{ role: 'user', content: 'q' }] });
+    expect((await t.db.query<{ output_tokens: number }>('SELECT output_tokens FROM ai_usage')).rows[0].output_tokens).toBe(30);
+  });
+
   it('mapAnthropicError: 중지 · 알 수 없는 오류', () => {
     expect(mapAnthropicError(new Anthropic.APIUserAbortError()).code).toBe('cancelled');
     expect(mapAnthropicError(new Error('boom')).code).toBe('upstream_error');
@@ -353,6 +373,31 @@ describe('runRound — 중지', () => {
     expect(r.errorCode).toBe('cancelled');
     expect(got.map((e) => e.event)).toEqual(['text']);
     expect(r.usage.inputTokens).toBe(180);
+    // '하나' 6바이트 → 2토큰 추정 (message_start의 1보다 크다)
+    expect(r.usage.outputTokens).toBe(2);
+  });
+
+  it('UsageTracker — thinking · 도구 입력 델타도 출력으로 센다, message_delta를 받으면 그 값을 쓴다', () => {
+    const tr = new UsageTracker();
+    tr.observe({ type: 'message_start', message: message([], 'end_turn', usage({ input_tokens: 10, output_tokens: 1 })) } as unknown as BetaRawMessageStreamEvent);
+    tr.observe({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'a'.repeat(30) } } as unknown as BetaRawMessageStreamEvent);
+    tr.observe({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"q":"'.padEnd(30, 'x') } } as unknown as BetaRawMessageStreamEvent);
+    expect(tr.snapshot().outputTokens).toBe(estimateOutputTokens(60));
+    expect(tr.estimated).toBe(true);
+    tr.observe({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 7, input_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null } } as unknown as BetaRawMessageStreamEvent);
+    expect(tr.snapshot().outputTokens).toBe(7);
+    expect(tr.estimated).toBe(false);
+  });
+});
+
+describe('ai upstream error 로그', () => {
+  it('요청 로거의 requestId(서버 요청 id)를 덮어쓰지 않고 Anthropic 요청 id는 upstreamRequestId로 남긴다', async () => {
+    const lines: string[] = [];
+    const log = pino({ level: 'warn' }, { write: (l: string) => { lines.push(l); } }).child({ requestId: 'srv-req-0001' });
+    log.warn(upstreamErrorLogFields('ws-1', { errorCode: 'ai_auth', requestId: 'req_fake_1' }), 'ai upstream error');
+    expect(lines).toHaveLength(1);
+    expect(lines[0].match(/"requestId"/g)).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({ requestId: 'srv-req-0001', upstreamRequestId: 'req_fake_1', code: 'ai_auth', ws: 'ws-1' });
   });
 });
 
@@ -566,7 +611,7 @@ describe('권한 · 격리 · 서버 키', () => {
       expect(r.json.error.code).toBe('workspace_locked');
       const u = await pm.get(`/api/w/${t.ws}/ai/usage`);
       expect(u.status).toBe(200);
-      expect(u.json).toMatchObject({ canUse: false, available: false });
+      expect(u.json).toMatchObject({ canUse: false, available: false, unavailableReason: 'workspace_locked' });
     } finally {
       await t.db.query(`UPDATE workspaces SET status = 'active' WHERE id = $1`, [t.ws]);
     }
@@ -606,6 +651,31 @@ describe('권한 · 격리 · 서버 키', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('GET /ai/usage — 못 쓰는 사유(unavailableReason) · 한도 도달이면 available false · 브라우저 직접 호출(CSP) 여부', async () => {
+    const ok = await pm.get(`/api/w/${t.ws}/ai/usage`);
+    expect(ok.json).toMatchObject({ available: true, unavailableReason: null, browserDirect: false });
+    expect((await (await as('viewer')).get(`/api/w/${t.ws}/ai/usage`)).json).toMatchObject({ available: false, unavailableReason: 'forbidden' });
+    await t.db.query(`UPDATE workspaces SET config = '{"ai":{"monthlyTokenLimit":1000}}'::jsonb WHERE id = $1`, [t.ws]);
+    await t.db.query(`INSERT INTO ai_usage (workspace_id, user_id, model, purpose, input_tokens, output_tokens) VALUES ($1, $2, 'm', 'agent', 5000, 489)`, [t.ws, t.userIds.pm]);
+    const over = await pm.get(`/api/w/${t.ws}/ai/usage`);
+    expect(over.json).toMatchObject({ budgetExceeded: true, available: false, unavailableReason: 'budget_exceeded', totalTokens: 5489, limit: 1000 });
+    // 지난달을 조회해도 지금 호출 가능 여부는 이번 달 기준
+    const prev = await pm.get(`/api/w/${t.ws}/ai/usage?month=2020-01`);
+    expect(prev.json).toMatchObject({ budgetExceeded: false, available: false, unavailableReason: 'budget_exceeded' });
+    await t.db.query(`UPDATE workspaces SET config = '{"ai":{"enabled":false}}'::jsonb WHERE id = $1`, [t.ws]);
+    expect((await pm.get(`/api/w/${t.ws}/ai/usage`)).json).toMatchObject({ available: false, unavailableReason: 'ai_disabled' });
+  });
+
+  it('aiUnavailableReason — 관리자가 고칠 순서(키 → 켜기 → 잠금 → 권한 → 한도)', () => {
+    const all = { configured: true, enabled: true, locked: false, canRequest: true, budgetExceeded: false };
+    expect(aiUnavailableReason(all)).toBeNull();
+    expect(aiUnavailableReason({ ...all, configured: false, enabled: false })).toBe('ai_not_configured');
+    expect(aiUnavailableReason({ ...all, enabled: false, canRequest: false })).toBe('ai_disabled');
+    expect(aiUnavailableReason({ ...all, locked: true, canRequest: false })).toBe('workspace_locked');
+    expect(aiUnavailableReason({ ...all, canRequest: false, budgetExceeded: true })).toBe('forbidden');
+    expect(aiUnavailableReason({ ...all, budgetExceeded: true })).toBe('budget_exceeded');
+  });
+
   it('ANTHROPIC_API_KEY가 없으면 503 ai_not_configured (한국어), 사용량 API는 configured:false', async () => {
     const saved = t.config.anthropicApiKey;
     t.config.anthropicApiKey = null;
@@ -615,7 +685,7 @@ describe('권한 · 격리 · 서버 키', () => {
       expect(r.json.error.code).toBe('ai_not_configured');
       expect(r.json.error.message).toContain('ANTHROPIC_API_KEY');
       const u = await pm.get(`/api/w/${t.ws}/ai/usage`);
-      expect(u.json).toMatchObject({ configured: false, available: false });
+      expect(u.json).toMatchObject({ configured: false, available: false, unavailableReason: 'ai_not_configured' });
     } finally {
       t.config.anthropicApiKey = saved;
     }

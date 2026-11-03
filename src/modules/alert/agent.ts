@@ -5,7 +5,7 @@
 import type { ModuleAgentKit, ToolContext } from '../types';
 import type { Incident } from '@/core/types';
 import {
-  activeConfig, checkAccounts, detectIncidents, withAppliedTopups, fmtDateShort, fmtStamp, heldMedia, historyRecords, holidayPrecheck, incidentReport, nextAction,
+  activeConfig, checkAccounts, dataAsOf, detectIncidents, withAppliedTopups, fmtDateShort, fmtStamp, heldMedia, historyRecords, holidayPrecheck, incidentReport, nextAction,
   offBlocks, onDutyFor, primaryEvidence, regimeOf, rotationTable, sessionRecords, slaReport, slaState, typeOf, type AlertIncident,
 } from './engine';
 import { DEMO_CREATIVES, TYPE_LABEL } from './data';
@@ -74,7 +74,7 @@ export const agentKit: ModuleAgentKit = {
         const regime = regimeOf(ctx.state.data.today, ctx.state.offHoursMode);
         const nowMs = nowOf(ctx);
         return {
-          asOf: `${ctx.state.data.today} ${String(ctx.state.data.currentHour).padStart(2, '0')}:30`,
+          asOf: (() => { const a = dataAsOf(ctx.state.data); return `${a.date} ${a.clock}`; })(),
           dataKind: 'TEST DATA (시연용)',
           regime: regime.off ? { mode: '주말 · 공휴일 체계', label: regime.label, onDuty: regime.duty?.role, backup: regime.duty?.backup, escalation: 'P1 → PM' } : { mode: '평일' },
           counts: (() => { const o = all.filter((i) => i.status !== 'resolved'); return { open: o.length, P1: o.filter((i) => i.severity === 'P1').length, P2: o.filter((i) => i.severity === 'P2').length, P3: o.filter((i) => i.severity === 'P3').length, returned: Math.min(20, list.length), matched: list.length }; })(),

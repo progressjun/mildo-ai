@@ -6,7 +6,6 @@ import { useActions, useStore } from '@/core/store';
 import { Icon } from '@/ui/Icon';
 import { Button, Pill, Src } from '@/ui/primitives';
 import { useAi } from '@/ai/useAi';
-import { BACKEND_LABEL } from '@/ai/claude';
 import { activeConfig, detectBulkChange, detectIncidents } from '@/modules/alert/engine';
 import { seedChanges } from '@/modules/flow/engine';
 import { SettingsDialog } from './SettingsDialog';
@@ -126,8 +125,8 @@ export function Shell() {
             {serverMode ? <ConnectionPill /> : null}
           </div>
           <div className="topbar-spacer" />
-          <Pill tone={ai.connected ? 'good' : 'neutral'} icon={ai.connected ? 'check' : 'zap'}>
-            {ai.backend === 'checking' ? 'AI 연결 확인 중' : (BACKEND_LABEL as Record<string, string>)[ai.backend] ?? ai.backend}
+          <Pill tone={ai.connected ? 'good' : ai.note ? 'warning' : 'neutral'} icon={ai.connected ? 'check' : 'zap'} title={ai.note?.long}>
+            {ai.label}
           </Pill>
           {serverMode ? (
             <>

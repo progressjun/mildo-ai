@@ -6,6 +6,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { useStore } from '@/core/store';
 import { fmt, fmtDate } from '@/core/util';
+import { MEDIA_IDS } from '@/data/constants';
 import { Card, Empty, PageHeader, Pill, Segmented, Src, Stat, Tabs } from '@/ui/primitives';
 import { Sparkline } from '@/ui/charts';
 import { Icon } from '@/ui/Icon';
@@ -99,15 +100,16 @@ export default function View() {
             actions={<Src kind="DEMO" />}
           >
             <div className="board-kpis">
-              <div className="board-kpi"><Stat label="광고비" value={fmt.krw(k.cur.cost)} foot={<><NeutralDelta pct={k.deltas.cost} /><span className="muted">6개 매체</span></>} spark={spark('cost')} /></div>
+              <div className="board-kpi"><Stat label="광고비" value={fmt.krw(k.cur.cost)} foot={<><NeutralDelta pct={k.deltas.cost} /><span className="muted">{k.scope.excludedMedia.length ? `증감 ${k.scope.media.length}개 매체 기준` : `${MEDIA_IDS.length}개 매체`}</span></>} spark={spark('cost')} /></div>
               <div className="board-kpi"><Stat label="광고 매출" value={fmt.krw(k.cur.revenue)} delta={k.deltas.revenue} foot={<span className="muted">매체 귀속</span>} spark={spark('revenue', '--series-3')} /></div>
               <div className="board-kpi"><Stat label="ROAS" value={fmt.roas(k.cur.roas)} delta={k.deltas.roas} foot={<span className="muted">광고 매출 ÷ 광고비</span>} spark={spark('roas', '--series-3')} /></div>
               <div className="board-kpi"><Stat label="판매 채널 실매출" value={fmt.krw(k.sales)} delta={k.deltas.sales} foot={<span className="muted">광고 외 포함 · 광고 경유 {fmt.ratio(k.adShareOfSales, 0)}</span>} spark={spark('sales', '--series-7')} /></div>
-              <div className="board-kpi hl"><Stat label="MER · 광고비 대비 실매출" value={`${fmt.dec1(k.mer)}배`} delta={k.deltas.mer} foot={<span className="muted">직전 {fmt.dec1(k.prevMer)}배</span>} spark={spark('mer', '--series-7')} /></div>
+              <div className="board-kpi hl"><Stat label="MER · 광고비 대비 실매출" value={`${fmt.dec1(k.mer)}배`} delta={k.deltas.mer} foot={<span className="muted">{k.scope.note ? `같은 기준 ${fmt.dec1(k.cmp.mer)}배 · 직전 ${fmt.dec1(k.cmp.prevMer)}배` : `직전 ${fmt.dec1(k.prevMer)}배`}</span>} spark={spark('mer', '--series-7')} /></div>
               <div className="board-kpi"><Stat label="CPA" value={fmt.won(k.cur.cpa)} delta={k.deltas.cpa} invert foot={<span className="muted">전환 {fmt.dec1(k.cur.conversions)}</span>} spark={spark('cpa', '--series-2')} /></div>
               <div className="board-kpi"><Stat label="CVR" value={fmt.pct(k.cur.cvr, 2)} delta={k.deltas.cvr} foot={<span className="muted">전환 ÷ 클릭</span>} spark={spark('cvr', '--series-2')} /></div>
               <div className="board-kpi"><Stat label="신규 고객 CAC" value={fmt.won(k.cur.cac)} delta={k.deltas.cac} invert foot={<span className="muted">신규 {fmt.int(k.cur.newCustomers)}명</span>} spark={spark('cac', '--series-4')} /></div>
             </div>
+            {k.scope.note ? <div className="row xs ink2 board-kpi-note" style={{ gap: 6, marginTop: 8 }}><Pill tone="outline">같은 기준 비교</Pill><span>{k.scope.note}</span></div> : null}
           </Card>
           <Card title="지금 확인할 것" sub={`${fmtDate(d.today)} ${coll.asOf} 기준 · 데이터에서 탐지`} actions={<Src kind="DEMO" />}>
             {todo.length ? (

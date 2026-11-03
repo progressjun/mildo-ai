@@ -14,8 +14,9 @@ import {
   AD_PILOT, ANOMALY_THRESHOLDS, DECISION_MATRIX, FLOW_SEGMENTS, GFA_DELEGATION, MEDIA, MEDIA_IDS, REVIEW_RULES, SALES_CHANNEL_IDS, SALES_CHANNELS, SLA,
 } from '@/data/constants';
 import { monthlyPacing } from '@/core/selectors';
-import { addDays, fmt, fmtDate, isOffDay, mean, parseDate, sum, weekday, WEEKDAY_KO } from '@/core/util';
+import { addDays, fmt, fmtDate, isOffDay, mean, parseDate, sum, weekday, WEEKDAY_KO, withJosa } from '@/core/util';
 import type { Brief } from '@/ai/prompts';
+import { actorLabel, approvalLevelsOf, changeActionCheck, isMemberActor, type Actor } from '@/core/permissions';
 // 반영 단계 검증은 AD Pilot · GFA Control과 같은 함수로 (같은 요청은 어느 화면에서 반영해도 같은 결과)
 import {
   adpilotProposals, gfaOverview, hourlyCostCurve, officialConfig, validateAdpilotExecution, validateGfaExecution,
@@ -126,15 +127,43 @@ export function nextBusinessDay(date: string): string {
 export type Role = '담당 AE' | 'PM' | '수면밀도';
 export const ROLE_SCOPE: Record<string, ApprovalLevel[]> = { '담당 AE': ['AE'], PM: ['AE', 'PM'], '수면밀도': ['AE', 'PM', 'CLIENT'] };
 export const APPROVER_LABEL: Record<ApprovalLevel, string> = { AE: '담당 AE', PM: 'PM', CLIENT: '수면밀도' };
+export type { Actor } from '@/core/permissions';
+export { actorLabel } from '@/core/permissions';
 
-export function canAct(role: string, approver: ApprovalLevel): { ok: boolean; reason: string } {
-  const scope = ROLE_SCOPE[role] ?? [];
-  if (scope.includes(approver)) return { ok: true, reason: `${role} 승인 범위 (${scope.map((a) => APPROVER_LABEL[a]).join(' · ')} 건)` };
-  return { ok: false, reason: `${APPROVER_LABEL[approver]} 승인 건 · 현재 역할 ${role || '미지정'}의 범위는 ${scope.length ? scope.map((a) => APPROVER_LABEL[a]).join(' · ') : '없음'}` };
+/*
+ * 판정 주체(Actor): 데모 모드는 데모 3역할 문자열(아래 ROLE_SCOPE — 기존 규칙 그대로),
+ * 서버 모드는 멤버십 역할 { member } — 서버 checkActionPermission과 같은 권한표 · 전이별 판정(src/core/permissions.ts).
+ * 데모 매핑(viewer → 담당 AE, owner · admin → PM, client → 수면밀도)으로 판정하면 열람자가 승인 버튼을, 소유자가 CLIENT 건 승인을 못 하는 등
+ * 서버와 어긋나 '낙관적 성공 → 403 되돌림'이 된다.
+ */
+const scopeOf = (role: Actor): ApprovalLevel[] => (isMemberActor(role) ? approvalLevelsOf(role.member) : ROLE_SCOPE[role] ?? []);
+
+/** 승인 범위 판정 (이 승인 등급 건을 승인 · 반려할 수 있는가) */
+export function canAct(role: Actor, approver: ApprovalLevel): { ok: boolean; reason: string } {
+  const scope = scopeOf(role);
+  const who = actorLabel(role);
+  if (scope.includes(approver)) return { ok: true, reason: `${who} 승인 범위 (${scope.map((a) => APPROVER_LABEL[a]).join(' · ')} 건)` };
+  if (isMemberActor(role) && !scope.length) return { ok: false, reason: `${APPROVER_LABEL[approver]} 승인 건 · 현재 역할 ${withJosa(who, '은/는')} 승인 권한이 없습니다 (읽기 전용)` };
+  return { ok: false, reason: `${APPROVER_LABEL[approver]} 승인 건 · 현재 역할 ${role ? who : '미지정'}의 범위는 ${scope.length ? scope.map((a) => APPROVER_LABEL[a]).join(' · ') : '없음'}` };
 }
-export function roleScopeLabel(role: string): string {
-  const s = ROLE_SCOPE[role] ?? [];
+/** 전이별 권한 — 데모: 승인 범위(canAct) 하나로 모든 액션, 서버: 서버와 같은 판정(반영 · 롤백은 운영 권한도, 보류 · 보류 해제는 운영 권한) */
+export function actionAllowed(role: Actor, approver: ApprovalLevel, action: FlowAction | 'retry'): { ok: boolean; reason: string } {
+  if (isMemberActor(role)) return changeActionCheck(role.member, approver, action);
+  return canAct(role, approver);
+}
+export function roleScopeLabel(role: Actor): string {
+  const s = scopeOf(role);
   return s.length ? s.map((a) => APPROVER_LABEL[a]).join(' · ') : '없음';
+}
+/** '승인 범위 담당 AE · PM 건' · 승인 권한이 없는 멤버십 역할은 '승인 권한 없음 (읽기 전용)' */
+export function roleScopeText(role: Actor): string {
+  const s = scopeOf(role);
+  if (!s.length && isMemberActor(role)) return role.member === 'viewer' ? '승인 권한 없음 (읽기 전용)' : '승인 권한 없음';
+  return `승인 범위 ${roleScopeLabel(role)} 건`;
+}
+/** '승인 범위 담당 AE · PM' (상세 창 표기 — '건' 없이) · 승인 권한이 없는 멤버십 역할은 '승인 권한 없음' */
+export function roleScopeShort(role: Actor): string {
+  return roleScopeText(role).replace(/ 건$/, '');
 }
 
 /* ================================================================== */
@@ -546,9 +575,9 @@ const ACTIONS_BY_STATUS: Record<FlowStatus, FlowAction[]> = {
   rejected: [],
   rolled_back: [],
 };
-export function availableActions(c: ChangeRequest, role: string, changes: readonly ChangeRequest[]): ActionAvail[] {
-  const perm = canAct(role, c.approver);
+export function availableActions(c: ChangeRequest, role: Actor, changes: readonly ChangeRequest[]): ActionAvail[] {
   return (ACTIONS_BY_STATUS[c.status] ?? []).map((action) => {
+    const perm = actionAllowed(role, c.approver, action);
     if (!perm.ok) return { action, ok: false, reason: perm.reason };
     if (action === 'rollback') {
       const r = canRollback(changes, c);
@@ -558,36 +587,55 @@ export function availableActions(c: ChangeRequest, role: string, changes: readon
   });
 }
 
+/**
+ * '내 차례': 열린 요청 중 지금 역할이 다음 단계를 처리할 수 있는 건.
+ * 데모: 승인 범위 안의 열린 건(기존 규칙). 서버: 승인 대기 = 승인 권한, 승인 = 반영 권한(승인 + 운영), 보류 = 승인 범위(반려 · 보류 해제 판단).
+ */
+export function isMyTurn(c: Pick<ChangeRequest, 'status' | 'approver'>, role: Actor): boolean {
+  if (!isOpenStatus(c.status)) return false;
+  if (!isMemberActor(role)) return canAct(role, c.approver).ok;
+  if (c.status === 'pending') return actionAllowed(role, c.approver, 'approve').ok;
+  if (c.status === 'approved') return actionAllowed(role, c.approver, 'apply').ok;
+  return canAct(role, c.approver).ok;
+}
+
 /* ---------- 실행 점검 (p.15 04: 지원 API 범위 내 실행, 오류 시 보류 · 보고) ---------- */
 
 /*
  * 다른 모듈의 반영 검증 입력 — 같은 (data, changes, incidents) 참조면 다시 계산하지 않는다 (승인 대기 목록 · 미리보기가 렌더마다 부름).
  * 계산 실패 시 null → 실행 점검은 '검증 불가' 주의로 남긴다 (화면이 깨지지 않게).
  */
-let apMemo: { data: Dataset; changes: readonly ChangeRequest[]; incidents: readonly Incident[]; value: AdPilotProposal[] | null } | null = null;
+/*
+ * 메모 키에 공식 기준(목표 ROAS · SAFETY)도 넣는다 — 워크스페이스 설정이 바뀌면(applyWorkspaceConfig가 기본값을 제자리 갱신)
+ * 같은 data · changes 참조여도 다시 계산해야 한다 (다른 사용자가 설정을 저장한 뒤 열린 화면이 예전 기준으로 판정하지 않게).
+ */
+const cfgKeyOf = (changes: readonly ChangeRequest[]) => JSON.stringify(officialConfig(changes));
+let apMemo: { data: Dataset; changes: readonly ChangeRequest[]; incidents: readonly Incident[]; cfg: string; value: AdPilotProposal[] | null } | null = null;
 /** AD Pilot 조정 후보 + MILDO Alert 연계 보류 (공식 기준 = 반영된 AD Pilot 설정) */
 export function adpilotHolds(data: Dataset, changes: readonly ChangeRequest[], incidents: readonly Incident[]): AdPilotProposal[] | null {
-  if (apMemo && apMemo.data === data && apMemo.changes === changes && apMemo.incidents === incidents) return apMemo.value;
+  const cfg = cfgKeyOf(changes);
+  if (apMemo && apMemo.data === data && apMemo.changes === changes && apMemo.incidents === incidents && apMemo.cfg === cfg) return apMemo.value;
   let value: AdPilotProposal[] | null;
   try {
     value = adpilotProposals(data, officialConfig(changes), incidents, changes);
   } catch {
     value = null;
   }
-  apMemo = { data, changes, incidents, value };
+  apMemo = { data, changes, incidents, cfg, value };
   return value;
 }
-let gfaMemo: { data: Dataset; changes: readonly ChangeRequest[]; value: GfaAccountView[] | null } | null = null;
+let gfaMemo: { data: Dataset; changes: readonly ChangeRequest[]; cfg: string; value: GfaAccountView[] | null } | null = null;
 /** GFA Control 다계정 점검 (AD Pilot 화면과 같은 gfaOverview) */
 export function gfaViews(data: Dataset, changes: readonly ChangeRequest[]): GfaAccountView[] | null {
-  if (gfaMemo && gfaMemo.data === data && gfaMemo.changes === changes) return gfaMemo.value;
+  const cfg = cfgKeyOf(changes);
+  if (gfaMemo && gfaMemo.data === data && gfaMemo.changes === changes && gfaMemo.cfg === cfg) return gfaMemo.value;
   let value: GfaAccountView[] | null;
   try {
     value = gfaOverview(data, changes);
   } catch {
     value = null;
   }
-  gfaMemo = { data, changes, value };
+  gfaMemo = { data, changes, cfg, value };
   return value;
 }
 /** AD Pilot 공식 기준 (SAFETY 상한 · 대량 변경 기준 — 승인 · 반영된 설정 변경 포함) */
@@ -695,6 +743,48 @@ export function executionCheck(data: Dataset, changes: readonly ChangeRequest[],
   return { ok: blocks.length === 0, blocks, warnings, passes };
 }
 
+/** 화면(데모) 엔진 문구 중 서버 실행에 맞지 않는 꼬리표 '(데모: 로컬 상태 …)' 제거 — 서버 executor serverText와 같은 규칙 */
+export const stripDemoTag = (t: string): string => t.replace(/\s*\(데모: 로컬 상태[^)]*\)/g, '').trim();
+const DEMO_PASS = /데모: 로컬 상태 반영/;
+
+/**
+ * 서버 모드 반영 전 점검 미리보기 — 화면 엔진 점검(executionCheck)에서 데모 꼬리표를 빼고,
+ * 서버 가드가 더하는 대량 변경 실수 차단(p.45 · server/src/changes/bulk.ts decideBulk)을 미리 보여 준다.
+ * 판정은 서버가 한다 — 이 결과는 '반영 시 서버 판정 예상'이다 (실행 · 상태 전이에는 쓰지 않는다).
+ */
+export function serverPreApplyCheck(data: Dataset, changes: readonly ChangeRequest[], incidents: readonly Incident[], c: ChangeRequest): ExecCheck {
+  const ex = executionCheck(data, changes, incidents, c);
+  const blocks = ex.blocks.map(stripDemoTag);
+  const warnings = ex.warnings.map(stripDemoTag);
+  const passes = ex.passes.filter((p) => !DEMO_PASS.test(p)).map(stripDemoTag);
+  const bulk = bulkHoldPrediction(changes, incidents, c, data.today);
+  blocks.push(...bulk.blocks);
+  passes.push(...bulk.passes);
+  if (!blocks.length) passes.push('반영 시 서버가 같은 점검을 다시 하고, 연결된 매체 커넥터의 쓰기 모드(dry_run · live)로 실행합니다');
+  return { ok: blocks.length === 0, blocks, warnings, passes };
+}
+
+/**
+ * 대량 변경 실수로 서버가 반영을 보류할지 (서버 decideBulk와 같은 순서):
+ *   이 건이 들어간 대량 변경 이슈(bulk_change:*)가 열려 있음 → 보류
+ *   그런 이슈가 모두 확인 · 종료됨 → 통과
+ *   적재 전이지만 같은 기준(detectBulkChange)으로 이 건이 감지됨 → 반영 시 서버가 보류하고 이슈를 연다
+ */
+export function bulkHoldPrediction(changes: readonly ChangeRequest[], incidents: readonly Incident[], c: Pick<ChangeRequest, 'id'>, today: string): { blocks: string[]; passes: string[] } {
+  const bulkOf = (i: Incident) => i.id.startsWith('bulk_change:') ? ((i as Incident & { related?: string[] }).related ?? []) : [];
+  const covering = (incidents ?? []).filter((i) => bulkOf(i).includes(c.id));
+  const open = covering.find((i) => i.status !== 'resolved');
+  if (open) return { blocks: [`대량 변경 실수 감지 (P1 · ${open.title}) — 이슈 ${open.id} 확인 · 종료 전 신규 반영 일시 차단 (p.45) · 서버 판정 예상`], passes: [] };
+  if (covering.length) return { blocks: [], passes: [`대량 변경 이슈 ${covering.map((i) => i.id).join(' · ')} 확인 · 종료됨`] };
+  const hit = bulkChangeAlerts(changes, today, incidents).find((b) => b.related.includes(c.id));
+  if (hit) {
+    const logged = (incidents ?? []).find((i) => i.id === hit.id);
+    if (logged && logged.status === 'resolved') return { blocks: [], passes: [] };
+    return { blocks: [`대량 변경 실수 감지 (P1 · ${hit.title}) — ${hit.basis} · 반영하면 서버가 실행을 보류하고 MILDO Alert 이슈를 엽니다 (p.45) · 서버 판정 예상`], passes: [] };
+  }
+  return { blocks: [], passes: [] };
+}
+
 /* ================================================================== */
 /* 목록 · 보드 · 요약                                                    */
 /* ================================================================== */
@@ -706,13 +796,13 @@ export interface ChangeFilter {
   kind?: string;
   scope?: 'all' | 'mine' | 'overdue' | 'live' | 'seed';
 }
-export function filterChanges(changes: readonly ChangeRequest[], f: ChangeFilter, role: string, ctx?: { nowMs: number; toMs: ToMs }): ChangeRequest[] {
+export function filterChanges(changes: readonly ChangeRequest[], f: ChangeFilter, role: Actor, ctx?: { nowMs: number; toMs: ToMs }): ChangeRequest[] {
   const q = (f.q ?? '').trim().toLowerCase();
   return (changes ?? []).filter((c) => {
     if (f.module && f.module !== 'all' && c.module !== f.module) return false;
     if (f.approver && f.approver !== 'all' && c.approver !== f.approver) return false;
     if (f.kind && f.kind !== 'all' && c.kind !== f.kind) return false;
-    if (f.scope === 'mine' && !(isOpenStatus(c.status) && canAct(role, c.approver).ok)) return false;
+    if (f.scope === 'mine' && !isMyTurn(c, role)) return false;
     if (f.scope === 'seed' && !isSeed(c)) return false;
     if (f.scope === 'live' && isSeed(c)) return false;
     if (f.scope === 'overdue' && !(ctx && leadState(c, ctx.nowMs, ctx.toMs).overdue)) return false;
@@ -733,8 +823,8 @@ export function groupByStatus(changes: readonly ChangeRequest[]): Record<FlowSta
 }
 
 /** 현재 역할 기준 '내가 처리할 것' */
-export function myQueue(changes: readonly ChangeRequest[], role: string) {
-  const mine = (changes ?? []).filter((c) => canAct(role, c.approver).ok);
+export function myQueue(changes: readonly ChangeRequest[], role: Actor) {
+  const mine = (changes ?? []).filter((c) => isMyTurn(c, role));
   const approve = mine.filter((c) => c.status === 'pending');
   const apply = mine.filter((c) => c.status === 'approved');
   const held = mine.filter((c) => c.status === 'held');
@@ -754,7 +844,7 @@ export interface FlowSummary {
   seeds: number;
   byModule: { module: string; count: number }[];
 }
-export function flowSummary(changes: readonly ChangeRequest[], role: string, nowMs: number, toMs: ToMs, today: string): FlowSummary {
+export function flowSummary(changes: readonly ChangeRequest[], role: Actor, nowMs: number, toMs: ToMs, today: string): FlowSummary {
   const list = changes ?? [];
   const byStatus = Object.fromEntries(STATUS_ORDER.map((s) => [s, list.filter((c) => c.status === s).length])) as Record<FlowStatus, number>;
   const leads = list.map((c) => ({ c, l: leadState(c, nowMs, toMs) }));
@@ -2080,12 +2170,13 @@ export function seedChanges(data: Dataset): ChangeRequest[] {
 /* 규칙 기반 브리프 (AI 미연결)                                           */
 /* ================================================================== */
 
-export function pendingBrief(data: Dataset, changes: readonly ChangeRequest[], incidents: readonly Incident[], role: string, nowMs: number, toMs: ToMs): Brief {
-  const s = flowSummary(changes, role, nowMs, toMs, data.today);
+export function pendingBrief(data: Dataset, changes: readonly ChangeRequest[], incidents: readonly Incident[], actor: Actor, nowMs: number, toMs: ToMs): Brief {
+  const role = actorLabel(actor);
+  const s = flowSummary(changes, actor, nowMs, toMs, data.today);
   const q = s.queue;
   const facts = [
     `요청 · 승인 · 반영 이력 ${s.total}건: 승인 대기 ${s.byStatus.pending} · 승인(반영 대기) ${s.byStatus.approved} · 반영 ${s.byStatus.applied} · 반려 ${s.byStatus.rejected} · 롤백 ${s.byStatus.rolled_back} · 보류 ${s.byStatus.held}.${s.seeds ? ` 이 중 ${s.seeds}건은 시연용 이력(TEST DATA)입니다.` : ''}`,
-    `현재 역할 ${role}(승인 범위 ${roleScopeLabel(role)}) 기준 처리할 것: 승인 ${q.approve.length}건 · 반영 ${q.apply.length}건 · 보류 판단 ${q.held.length}건. 권한 밖 승인 대기 ${q.blocked.length}건${q.blocked.length ? ` (${q.blocked.map((c) => `${c.target} → ${APPROVER_LABEL[c.approver]}`).join(', ')})` : ''}.`,
+    `현재 역할 ${role}(승인 범위 ${roleScopeLabel(actor)}) 기준 처리할 것: 승인 ${q.approve.length}건 · 반영 ${q.apply.length}건 · 보류 판단 ${q.held.length}건. 권한 밖 승인 대기 ${q.blocked.length}건${q.blocked.length ? ` (${q.blocked.map((c) => `${c.target} → ${APPROVER_LABEL[c.approver]}`).join(', ')})` : ''}.`,
   ];
   if (q.approve.length) facts.push(`승인 대기 목록: ${q.approve.map((c) => `${c.target} ${fmtValue(c, c.before)} → ${fmtValue(c, c.after)}${finite(c.changePct ?? NaN) ? ` (${fmt.delta(c.changePct!)})` : ''} · ${leadState(c, nowMs, toMs).text}`).join(' / ')}.`);
   const patterns: string[] = [];

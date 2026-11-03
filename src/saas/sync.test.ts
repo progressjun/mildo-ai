@@ -10,7 +10,9 @@ import {
   apiErrorMessage, AUTH_ENTRY_RE, backoffDelay, configFingerprint, dataSourceLabel, dataTimeLabel, decodeStorageValue, encodeStorageValue, EVENT_REFETCH, FIXTURE_TITLE_RE, FLOW_SEED_PREFIX,
   fromServerComment, isGlobalToastError, isSyncedStorageKey, mergeWithPending, normalizeInvite, normalizeResetCheck, offHoursFromConfig, passwordProblem, planStorageLoad, readAuthTokens, RECONNECT_TARGETS,
   refetchTargetForEvent, refetchTargetOf, resetLinkProblem, SERVER_EVENT_TYPES, serverKoreanMessage, srcDemoLabel, STATE_KEY_RE, stripAuthTokens, visibleModuleIds,
+  channelName, describeSources, withObjectParticle,
 } from './sync';
+import { channelLabel } from '@/modules/connections/model';
 import { readFileSync } from 'node:fs';
 
 describe('모듈 로컬 저장 키 필터', () => {
@@ -282,12 +284,35 @@ describe('서버 모드 AI 거부 코드 (ai 도메인 ↔ SearchTuneOS 진단 �
     for (const code of ['not_granted', 'sampling_disabled', 'no_backend', 'ai_not_configured', 'ai_disabled', 'forbidden', 'workspace_locked']) expect(DENIED_CODES.has(code), code).toBe(true);
     // ai 도메인(src/ai/claude.ts)이 서버 백엔드를 끄는(markServerDenied) 코드는 모두 거부 코드다
     const src = readFileSync(new URL('../ai/claude.ts', import.meta.url), 'utf8');
-    const line = src.split('\n').find((l) => l.includes('markServerDenied()') && l.includes('code ==='));
+    const line = src.split('\n').find((l) => l.includes('markServerDenied(code, null)') && l.includes('code ==='));
     expect(line).toBeTruthy();
     const codes = [...line!.matchAll(/code === '([a-z_]+)'/g)].map((m) => m[1]);
     expect(codes.length).toBeGreaterThan(2);
     for (const code of codes) expect(DENIED_CODES.has(code), code).toBe(true);
     // 일시적 오류는 거부로 보지 않는다 (사용자가 다시 시도할 수 있게)
     for (const code of ['rate_limited', 'upstream_error', 'budget_exceeded']) expect(DENIED_CODES.has(code), code).toBe(false);
+  });
+});
+
+describe('출처 채널 이름 · 조사', () => {
+  it("브랜드 검색량(brand_search)도 한국어 이름 — 데이터 연결 화면(channelLabel)과 같다", () => {
+    expect(channelName('brand_search')).toBe('브랜드 검색량');
+    expect(channelName('brand_search')).toBe(channelLabel('brand_search'));
+    for (const id of ['naver_sa', 'meta', 'coupang', 'own_mall']) expect(channelName(id)).toBe(channelLabel(id));
+    expect(channelName('unknown_x')).toBe('unknown_x');
+    const meta = { sources: [{ channel: 'brand_search', kind: 'demo', latestDate: '2026-11-03', latestHour: null }] } as unknown as DatasetMeta;
+    expect(describeSources(meta)[0]).toMatch(/^브랜드 검색량 · 테스트 데이터 · 최신 /);
+  });
+
+  it('목적격 조사: 받침이 있으면 을, 없으면 를 (숫자 · 영문은 읽는 소리)', () => {
+    expect(withObjectParticle('반영')).toBe('반영을');
+    expect(withObjectParticle('승인')).toBe('승인을');
+    expect(withObjectParticle('보류')).toBe('보류를');
+    expect(withObjectParticle('처리')).toBe('처리를');
+    expect(withObjectParticle('롤백')).toBe('롤백을');
+    expect(withObjectParticle('변경')).toBe('변경을');
+    expect(withObjectParticle('3')).toBe('3을');
+    expect(withObjectParticle('2')).toBe('2를');
+    expect(withObjectParticle('SA')).toBe('SA를');
   });
 });

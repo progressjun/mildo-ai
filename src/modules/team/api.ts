@@ -4,7 +4,7 @@
  */
 import { api, wsPath } from '@/saas/api';
 import type { Role } from '@/core/permissions';
-import type { Invite, InviteResult, Member, SessionRow } from './engine';
+import type { Invite, InviteResult, Member, ResetLinkResult, SessionRow } from './engine';
 import { setTeamSnapshot } from './live';
 
 const silent = { silent: true } as const;
@@ -32,6 +32,10 @@ export const revokeInvite = (ws: string, id: string) =>
 
 export const patchMember = (ws: string, userId: string, patch: { role?: Role; title?: string | null; status?: 'active' | 'disabled' }) =>
   api<{ member: Member | null; members: Member[] }>(wsPath(ws, `/members/${encodeURIComponent(userId)}`), { method: 'PATCH', body: patch, ...silent });
+
+/** 비밀번호 재설정 링크 발급 — 메일로 보냈으면 link 없음 */
+export const issueResetLink = (ws: string, userId: string) =>
+  api<ResetLinkResult>(wsPath(ws, `/members/${encodeURIComponent(userId)}/password-reset`), { method: 'POST', body: {}, ...silent });
 
 export const removeMember = (ws: string, userId: string) =>
   api<{ ok: true; members: Member[] }>(wsPath(ws, `/members/${encodeURIComponent(userId)}`), { method: 'DELETE', ...silent });

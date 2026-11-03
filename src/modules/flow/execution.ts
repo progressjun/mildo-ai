@@ -2,6 +2,7 @@
  * 매체 반영 실행 상태 표시 (서버 모드 — changes 도메인이 돌려주는 change.executing · change.execution).
  *  - executing          : 반영 · 롤백이 서버에서 진행 중 ('반영 중')
  *  - execution.mode     : dry_run = 매체 미반영 (보낼 요청만 기록) · live = 매체 API 호출 (성공 · 실패) · none = 기록만 (매체 API 대상 아님 · 커넥션 없음)
+ *                         none + ok:false = 실행 보류 (서버 가드 — 최대 입찰가 · 일 조정 폭 · 대량 변경 · 잔액 등에서 막혀 매체를 호출하지 않음)
  * 데모 모드의 변경 요청에는 두 필드가 없다 → 표시하지 않는다 (데모 화면은 지금과 같다). React 없음 — 단위 테스트 대상.
  */
 import type { ChangeExecution, ChangeRequest } from '@/core/types';
@@ -25,7 +26,7 @@ export type ServerChangeView = ChangeRequest & {
   executing?: { phase?: ExecPhase; since?: string; background?: boolean };
 };
 
-export type ExecStateKind = 'executing' | 'live' | 'live_failed' | 'dry_run' | 'none';
+export type ExecStateKind = 'executing' | 'live' | 'live_failed' | 'dry_run' | 'held' | 'none';
 export interface ExecState {
   kind: ExecStateKind;
   label: string;
@@ -91,6 +92,14 @@ export function executionState(c: Pick<ServerChangeView, 'executing' | 'executio
       ? { kind: 'live', label: '매체 반영됨', tone: 'good', icon: 'check', basis: `매체 API 호출 성공${ex.appliedValue !== undefined && ex.appliedValue !== '' ? ` · 반영 값 ${ex.appliedValue}` : ''}${tail ? ` · ${tail}` : ''}${note}`, unverified }
       : { kind: 'live_failed', label: '매체 반영 실패', tone: 'critical', icon: 'x', basis: `매체 API 호출 실패${ex.error ? ` · ${ex.error}` : ''}${tail ? ` · ${tail}` : ''}${note}`, unverified };
   }
+  if (ex.ok === false) {
+    // 서버 가드에서 막힘 — '기록만(매체 API 대상 아님)'이 아니라 실행 보류와 그 사유
+    const why = ex.error ?? ex.checks?.blocks?.join(' · ') ?? ex.reason ?? '서버 실행 점검에서 막혔습니다';
+    return {
+      kind: 'held', label: '실행 보류', tone: 'critical', icon: 'pause',
+      basis: `실행 보류 · ${why} — 매체 API를 호출하지 않았습니다. 사유를 해소한 뒤 재실행하거나 실행 취소합니다${tail ? ` · ${tail}` : ''}`,
+    };
+  }
   return {
     kind: 'none', label: '기록만', tone: 'neutral', icon: 'sparkle',
     basis: `${ex.reason ?? ex.note ?? '매체 API로 반영하는 유형이 아니거나 연결된 쓰기 커넥션이 없어 상태만 기록했습니다'}${tail ? ` · ${tail}` : ''}`,
@@ -135,17 +144,23 @@ export interface ExecutionAttempt {
 }
 
 const MODE_SHORT: Record<string, string> = { dry_run: 'dry-run 기록', live: '매체 호출', none: '기록만' };
+/** 실행 방식 한 줄 (상세 패널) — none + 실패는 '기록만'이 아니라 실행 보류 */
+export function modeLine(d: Pick<ServerExecutionView, 'mode' | 'ok'>): string {
+  if (d.mode === 'dry_run') return 'dry_run (요청만 기록 · 매체 미호출)';
+  if (d.mode === 'live') return `live (매체 API 호출 ${d.ok ? '성공' : '실패'})`;
+  return d.ok === false ? '실행 보류 (서버 점검에서 막혀 매체 미호출)' : '기록만 (매체 API 대상 아님)';
+}
 
 /** 시도 한 줄 요약: '11/2 14:05 · 반영 · dry-run 기록 · 네이버 검색광고 · 대상 nkw-1 · 김PM' */
 export function attemptLine(a: ExecutionAttempt): { text: string; tone: ExecState['tone'] } {
   const parts = [
     kstStamp(a.finishedAt ?? a.startedAt),
     phaseLabel((a.phase as ExecPhase) ?? 'apply'),
-    `${MODE_SHORT[a.mode] ?? a.mode}${a.mode === 'live' ? (a.ok ? ' 성공' : ' 실패') : ''}`,
+    a.mode === 'none' && !a.ok ? '실행 보류' : `${MODE_SHORT[a.mode] ?? a.mode}${a.mode === 'live' ? (a.ok ? ' 성공' : ' 실패') : ''}`,
     providerLabel(a.provider),
     a.targetExternalId ? `대상 ${a.targetExternalId}` : '',
     a.actor ?? '',
   ].filter(Boolean);
-  const tone: ExecState['tone'] = a.mode === 'dry_run' ? 'warning' : a.mode === 'live' ? (a.ok ? 'good' : 'critical') : 'neutral';
+  const tone: ExecState['tone'] = a.mode === 'dry_run' ? 'warning' : a.mode === 'live' ? (a.ok ? 'good' : 'critical') : a.ok ? 'neutral' : 'critical';
   return { text: parts.join(' · ') + (a.error ? ` · ${a.error}` : ''), tone };
 }

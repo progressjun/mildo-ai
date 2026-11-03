@@ -11,7 +11,7 @@ import { fixStateOf, fmtMetric, fmtPp, promoNextInput, promoReport, type Channel
 import type { FlowCtx } from './useFlow';
 
 export function PromoReportTab({ ctx, promoId, onPromo }: { ctx: FlowCtx; promoId: string; onPromo: (id: string) => void }) {
-  const { data, changes, incidents, createRequest } = ctx;
+  const { data, changes, incidents, createRequest, requestPerm } = ctx;
   const promos = data.promotions ?? [];
   const p = promos.find((x) => x.id === promoId) ?? promos[0];
   const r = useMemo(() => (p ? promoReport(data, p, { changes, incidents }) : null), [data, p, changes, incidents]);
@@ -108,7 +108,7 @@ export function PromoReportTab({ ctx, promoId, onPromo }: { ctx: FlowCtx; promoI
           {nextInput ? (
             nextState
               ? <Pill tone="outline" icon="check">반영 요청됨 · {STATUS_META[nextState.status].label}</Pill>
-              : <Button size="sm" variant="accent" icon="send" onClick={() => createRequest(nextInput)}>다음 기획 반영 요청 · 수면밀도 승인</Button>
+              : <Button size="sm" variant="accent" icon="send" disabled={!requestPerm.ok} title={!requestPerm.ok ? requestPerm.reason : undefined} onClick={() => createRequest(nextInput)}>다음 기획 반영 요청 · 수면밀도 승인</Button>
           ) : null}
         </Card>
       </div>

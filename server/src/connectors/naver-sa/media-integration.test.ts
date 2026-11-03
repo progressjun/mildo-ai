@@ -98,7 +98,9 @@ describe('카탈로그 · 커넥션', () => {
     const good = { clientId: '1234567890-abc.apps.googleusercontent.com', clientSecret: 'GOCSPX-integration-secret', refreshToken: '1//0integration-refresh', customerId: '123-456-7890' };
     const bad = await u.pm.post(base, { provider: 'google_ads', credentials: { ...good, customerId: '12-34' } });
     expect(bad.status).toBe(400);
-    expect(bad.json.error.message).toMatch(/customerId/);
+    // 내부 키 대신 입력 화면 라벨 · 스키마 사유 (어느 칸인지는 detail.path)
+    expect(bad.json.error.message).toMatch(/고객 ID: 고객 ID는 10자리 숫자/);
+    expect(bad.json.error.detail.map((d: { path: string }) => d.path)).toContain('customerId');
     expect((await u.ae.post(base, { provider: 'google_ads', credentials: good })).status).toBe(403);
 
     const ok = await u.pm.post(base, { provider: 'google_ads', credentials: good });

@@ -179,6 +179,20 @@ export function fmtStamp(iso: string | null | undefined): string {
   return `${parts.month}.${parts.day} ${parts.hour === '24' ? '00' : parts.hour}:${parts.minute}`;
 }
 
+/** KST 기준 날짜 'YYYY-MM-DD' (서버 lib/time kstToday와 같은 기준) */
+export function kstDateOf(ms: number): string {
+  return new Date(ms + 9 * 3600_000).toISOString().slice(0, 10);
+}
+
+/**
+ * CSV 미래 날짜 판정 기준일 — 화면 Dataset 기준일과 실제 오늘(KST) 중 늦은 날.
+ * 서버는 실제 오늘(KST)로 판정하므로, 데모(기준일 고정) 미리보기가 실제로는 지난 날짜를 미래라고 하지 않게 한다.
+ */
+export function csvCheckDay(datasetToday: string, nowMs: number): string {
+  const real = kstDateOf(nowMs);
+  return datasetToday > real ? datasetToday : real;
+}
+
 /** 경과 시간 표시 ('3분 전', '5시간 전', '2일 전') */
 export function ago(iso: string | null | undefined, nowMs: number): string {
   if (!iso) return '없음';
@@ -218,6 +232,54 @@ export function sourceModeOf(meta: DatasetMeta | undefined): { mode: 'demo' | 'l
   // 출처가 하나도 없으면 LIVE라고 부르지 않는다 (플랫폼 배지와 같은 '데이터 없음')
   if (!live.length) return { mode: 'live', label: '데이터 없음', basis: '연결된 출처 없음 — 매체 API를 연결하거나 CSV를 올리세요' };
   return { mode: 'live', label: 'LIVE DATA', basis: `실데이터 ${[...new Set(live)].join(' · ')}` };
+}
+
+/** 긴 목록 문구를 max자 안에서 구분자(' · ' · ' / ') 단위로 자르고 '…'을 붙인다 (전체 문구는 title로) */
+export function clipList(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const at = Math.max(cut.lastIndexOf(' · '), cut.lastIndexOf(' / '));
+  const head = (at > max * 0.4 ? cut.slice(0, at) : cut).replace(/[\s·/,]+$/u, '');
+  return `${head} …`;
+}
+
+/** CSV 가져오기 버튼 잠금 사유 (없으면 null) — 예시 내용(TEST DATA)은 실데이터로 가져오지 않는다 */
+export function uploadImportLock(o: { server: boolean; canOperate: boolean; isSample: boolean; serverPreview: boolean; blocking: number }): string | null {
+  if (!o.server) return '서버 연결 시 가져올 수 있습니다';
+  if (!o.canOperate) return '담당 AE 이상';
+  if (o.isSample) return '예시 내용(TEST DATA)은 미리보기만 할 수 있습니다 — 실제 파일을 올려 주세요';
+  if (!o.serverPreview) return '미리보기를 먼저 누르세요';
+  if (o.blocking) return '오류를 먼저 해결하세요';
+  return null;
+}
+
+/** 업로드 이력 상태 — 서버 업로드 summary.outcome(가져옴 · 일부 제외 · 0행)과 status로 판정. 0행이면 '가져옴'(초록)이라고 하지 않는다 */
+export function uploadStatusMeta(u: Pick<UploadView, 'status' | 'summary'>): { label: string; tone: 'good' | 'warning' | 'critical' | 'neutral'; title?: string; runFilter?: 'partial' | 'failed' } {
+  const sm = u.summary ?? {};
+  const why = Array.isArray(sm.issueSummary) ? (sm.issueSummary as unknown[]).map(String).join('\n') : undefined;
+  if (u.status === 'failed') {
+    const err = sm.error ? String(sm.error) : '';
+    return { label: `실패${err ? ` · ${err.slice(0, 40)}${err.length > 40 ? '…' : ''}` : ''}`, tone: 'critical', title: err || undefined, runFilter: 'failed' };
+  }
+  if (u.status !== 'imported') return { label: '가져오는 중', tone: 'neutral' };
+  const written = Number(sm.rowsWritten ?? sm.records ?? 0);
+  if (sm.outcome === 'empty' || (sm.rowsWritten !== undefined && written === 0)) return { label: '가져온 행 없음 · 모두 제외', tone: 'warning', title: why, runFilter: 'partial' };
+  if (sm.outcome === 'partial') return { label: `일부 제외 · ${written.toLocaleString('ko-KR')}행 가져옴`, tone: 'warning', title: why, runFilter: 'partial' };
+  return { label: '가져옴', tone: 'good' };
+}
+
+/** 수집 현황 빈 표 문구 — 필터 때문에 비었는지, 정말 실행이 없는지 구분한다 */
+export function runsEmptyText(server: boolean, filter: 'all' | 'failed' | 'partial', loaded: number, hasMore: boolean): string {
+  if (filter !== 'all' && loaded > 0) return `불러온 실행 중 조건(${filter === 'failed' ? '실패' : '일부 제외'})에 맞는 실행이 없습니다${hasMore ? ' — 더 보기로 이전 실행을 불러올 수 있습니다' : ''}`;
+  return server ? '아직 수집 실행이 없습니다' : '예시 실행이 없습니다';
+}
+
+/** 커넥션 삭제 확인 문구 — 실제로 지우는 범위(CSV 커넥션은 그 커넥션으로 올린 업로드까지) */
+export function deleteScopeText(c: Pick<ConnectionView, 'provider' | 'sourceKind'>, uploads: number): string {
+  const what = c.sourceKind === 'csv'
+    ? `이 커넥션으로 올린 업로드${uploads ? ` ${uploads}개` : ''}와 그 웨어하우스 데이터, 수집 이력을 모두 지웁니다`
+    : '이 커넥션으로 수집한 웨어하우스 데이터와 수집 이력, 대기 중인 수집을 모두 지웁니다';
+  return `${what}. 같은 매체에 다른 출처가 있으면 그 값이 다시 쓰입니다${c.provider === 'demo' ? ' (데모 TEST DATA를 지우면 실데이터만 남습니다)' : ''}. 되돌릴 수 없고 감사 로그에 남습니다.`;
 }
 
 /** 출처별 최신 날짜가 기준일 전날보다 오래되면 지연 */

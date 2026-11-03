@@ -84,7 +84,7 @@ export function VerifyTab({ ap, keywordId, setKeywordId }: { ap: AdPilotCtx; key
               <ChangeButtons ap={ap} c={active!} />
             </div>
           ) : (
-            <Button variant="primary" icon="send" disabled={v.blocked} onClick={() => ap.requestInput(bidChangeInput(k, current, bid, v, ap.state.role, note))}>
+            <Button variant="primary" icon="send" disabled={v.blocked || !ap.requestPerm.ok} title={ap.requestPerm.ok ? undefined : ap.requestPerm.reason} onClick={() => ap.requestInput(bidChangeInput(k, current, bid, v, ap.state.role, note))}>
               승인 요청 ({APPROVER_LABEL[v.route.approver]})
             </Button>
           )}

@@ -7,7 +7,7 @@ import type { ChangeRequest, Dataset, Incident } from '@/core/types';
 import { SLA } from '@/data/constants';
 import { fmt, sum } from '@/core/util';
 import {
-  checkAccounts, fmtDateShort, fmtStamp, heldMedia, historyRecords, holidayPrecheck, nextAction, nextBusinessDay, offBlocks, onDutyFor,
+  checkAccounts, dataAsOf, fmtDateShort, fmtStamp, heldMedia, historyRecords, holidayPrecheck, nextAction, nextBusinessDay, offBlocks, onDutyFor,
   primaryEvidence, regimeOf, sessionRecords, slaReport, slaState, typeOf, type AlertConfig, type AlertIncident,
 } from './engine';
 import { TYPE_LABEL } from './data';
@@ -43,13 +43,17 @@ function interpret(i: AlertIncident): string | null {
   }
 }
 
-export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs = Date.parse(data.generatedAt), toMs: (iso: string) => number = Date.parse, offHours = false, changes?: readonly ChangeRequest[]): Brief {
+/**
+ * offHours: 지금의 운영 체계(당번 체계 강제) 표시. slaOff: SLA 목표에 소급 적용할지 — 데모 '주말 모드 시뮬레이션'은 offHours와 같고,
+ * 서버 모드는 false(이슈마다 감지 당시 배정 onDuty만 · 서버 SLA 잡과 같은 기준).
+ */
+export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs = Date.parse(data.generatedAt), toMs: (iso: string) => number = Date.parse, offHours = false, changes?: readonly ChangeRequest[], slaOff = offHours): Brief {
   const list = (incidents as AlertIncident[]).filter((i) => i.status !== 'resolved');
   const p = { P1: list.filter((i) => i.severity === 'P1'), P2: list.filter((i) => i.severity === 'P2'), P3: list.filter((i) => i.severity === 'P3') };
   const regime = regimeOf(data.today, offHours);
   const top = [...p.P1, ...p.P2].slice(0, 6);
   const facts = [
-    `기준 ${fmtDateShort(data.today)} ${String(data.currentHour).padStart(2, '0')}:30 열린 이슈 ${list.length}건 (P1 ${p.P1.length} · P2 ${p.P2.length} · P3 ${p.P3.length}). 수치는 시연용 TEST DATA.`,
+    `기준 ${dataAsOf(data).label} 열린 이슈 ${list.length}건 (P1 ${p.P1.length} · P2 ${p.P2.length} · P3 ${p.P3.length}). 수치는 시연용 TEST DATA.`,
     ...top.map((i) => `${i.severity} ${i.title}: ${primaryEvidence(i)} (판정 기준 ${i.basis ?? '—'}, 제안서 ${i.page ?? 'p.44'}).`),
   ];
   const held = heldMedia(list, changes);
@@ -76,7 +80,7 @@ export function issuesBrief(data: Dataset, incidents: readonly Incident[], nowMs
     '광고비 급증이 프로모션 · 소재 교체에 따른 의도된 증액이면 이상이 아니다. MILDO Flow 변경 이력으로 먼저 확인한다.',
   ];
   const actions = top.slice(0, 5).map((i) => {
-    const st = slaState(i, nowMs, toMs, offHours);
+    const st = slaState(i, nowMs, toMs, slaOff);
     return `${i.assignee ?? '담당 AE'}${i.onDuty ? '(당번)' : ''} · ${st.deadlineMs ? `${fmtStamp(st.deadlineMs)}까지 ${st.stageLabel}` : st.stageLabel} — ${i.title.replace(/^\[테스트\] /, '')}: ${nextAction(i.ruleId)}.`;
   });
   return { title: 'MILDO Alert 이슈 브리프', facts, patterns, interpretation, conditions, counter, actions };

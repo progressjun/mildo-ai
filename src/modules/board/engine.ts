@@ -143,6 +143,66 @@ export function periodWindow(d: Dataset, preset: BoardPeriod): PeriodWindow {
   };
 }
 
+/* ---------- 같은 기준 비교 (합계 증감) ---------- */
+
+export interface ScopeExclusion<K extends string> { id: K; name: string; firstDate: string }
+export interface ComparableScope {
+  /** 증감 계산에 넣는 매체 · 판매 채널 */
+  media: MediaId[];
+  channels: SalesChannelId[];
+  /** 직전 기간 시작일 이후에야 데이터가 들어온 매체 · 채널 — 그 전은 '수집 전'이지 '집행 0'이 아니다 */
+  excludedMedia: ScopeExclusion<MediaId>[];
+  excludedChannels: ScopeExclusion<SalesChannelId>[];
+  /** 화면 · 브리프에 그대로 쓰는 기준 문구 (제외가 없으면 null) */
+  note: string | null;
+}
+
+/**
+ * 합계 증감을 같은 기준으로 비교할 매체 · 판매 채널.
+ * 데이터의 첫 날짜(그 매체 · 채널 행이 처음 있는 날)가 직전 기간 시작일보다 늦으면, 직전 기간은 '집행 0'이 아니라 '아직 수집 · 업로드 전'이다
+ * (예: 최근 7일만 CSV로 올린 Google — 서버 Dataset은 실데이터가 들어온 매체에서 데모 행을 통째로 뺀다).
+ * 그런 매체 · 채널을 넣으면 직전 기간 합계가 0으로 깔려 증감이 부풀므로 증감 계산에서만 뺀다(금액 자체는 전체 기준).
+ * 직전 기간 시작일 이전부터 데이터가 있으면 중간에 행이 없는 날은 집행 0으로 본다. 데모 데이터(120일 · 모든 매체)는 제외가 없다.
+ */
+export function comparableScope(d: Dataset, cur: { from: string; to: string }, prev: { from: string; to: string }): ComparableScope {
+  const firstMedia = new Map<MediaId, string>();
+  for (const r of d.mediaDaily) { const f = firstMedia.get(r.media); if (f === undefined || r.date < f) firstMedia.set(r.media, r.date); }
+  const firstChannel = new Map<SalesChannelId, string>();
+  for (const r of d.salesDaily) { const f = firstChannel.get(r.channel); if (f === undefined || r.date < f) firstChannel.set(r.channel, r.date); }
+  // 직전 기간 시작 뒤에 데이터가 시작됐고, 비교 구간(직전 시작 ~ 선택 기간 끝) 안에 행이 있는 것만 제외 — 구간 밖에서 시작했으면 증감에 영향이 없다
+  const late = (first: string | undefined): first is string => first !== undefined && first > prev.from && first <= cur.to;
+  const excludedMedia: ScopeExclusion<MediaId>[] = [];
+  for (const id of MEDIA_IDS) { const f = firstMedia.get(id); if (late(f)) excludedMedia.push({ id, name: MEDIA[id].name, firstDate: f }); }
+  const excludedChannels: ScopeExclusion<SalesChannelId>[] = [];
+  for (const id of SALES_CHANNEL_IDS) { const f = firstChannel.get(id); if (late(f)) excludedChannels.push({ id, name: SALES_CHANNELS[id].name, firstDate: f }); }
+  const ex = [...excludedMedia, ...excludedChannels];
+  let note: string | null = null;
+  if (ex.length) {
+    const last = ex[ex.length - 1].name;
+    const particle = josa(last, '은/는').slice(last.length);
+    note = `증감은 같은 기준 비교 — 직전 기간(${rangeText(prev.from, prev.to)})에 아직 데이터가 없던 ${ex.map((x) => `${x.name}(${fmtDate(x.firstDate, false)}부터)`).join(' · ')}${particle} 증감 계산에서 뺐습니다 (금액은 전체 기준)`;
+  }
+  return {
+    media: MEDIA_IDS.filter((id) => !excludedMedia.some((x) => x.id === id)),
+    channels: SALES_CHANNEL_IDS.filter((id) => !excludedChannels.some((x) => x.id === id)),
+    excludedMedia, excludedChannels, note,
+  };
+}
+
+/** 같은 기준 합계 (제외가 없으면 전체와 같다) */
+export interface ComparableTotals { cur: Totals; prev: Totals; sales: number; prevSales: number; mer: number; prevMer: number }
+export function comparableTotals(d: Dataset, scope: ComparableScope, cur: { from: string; to: string }, prev: { from: string; to: string }): ComparableTotals {
+  const media = scope.excludedMedia.length ? scope.media : undefined;
+  const chSet = scope.excludedChannels.length ? new Set<SalesChannelId>(scope.channels) : null;
+  const salesOf = (r: { from: string; to: string }) => sum(salesByChannel(d, r.from, r.to).filter((x) => !chSet || chSet.has(x.channel)), (x) => x.revenue);
+  // 매체를 모두 뺐으면 rows가 비어 0 대 0 — 증감은 아래 deltaOf에서 '—'로
+  const c = totalsOf(media && !media.length ? [] : mediaRows(d, cur.from, cur.to, media));
+  const p = totalsOf(media && !media.length ? [] : mediaRows(d, prev.from, prev.to, media));
+  const sales = salesOf(cur);
+  const prevSales = salesOf(prev);
+  return { cur: c, prev: p, sales, prevSales, mer: c.cost > 0 ? sales / c.cost : NaN, prevMer: p.cost > 0 ? prevSales / p.cost : NaN };
+}
+
 export interface BoardKpis {
   win: PeriodWindow;
   cur: Totals;
@@ -156,7 +216,11 @@ export interface BoardKpis {
   prevMer: number;
   /** 실매출 중 광고 경유 비중 (0~1) */
   adShareOfSales: number;
+  /** 증감은 같은 기준(직전 기간에 데이터가 있던 매체 · 채널끼리) — comparableScope */
   deltas: { cost: number; revenue: number; roas: number; sales: number; mer: number; cpa: number; cvr: number; cac: number; conversions: number; newCustomers: number };
+  /** 증감 기준: 제외한 매체 · 채널과 같은 기준 합계 (제외가 없으면 cmp = 전체) */
+  scope: ComparableScope;
+  cmp: ComparableTotals;
   hasData: boolean;
 }
 
@@ -172,22 +236,32 @@ export function boardKpis(d: Dataset, preset: BoardPeriod): BoardKpis {
   const prevAdAttributed = sum(sp, (c) => c.adAttributedRevenue);
   const mer = cur.cost > 0 ? sales / cur.cost : NaN;
   const prevMer = prev.cost > 0 ? prevSales / prev.cost : NaN;
+  const prevWin = { from: win.prevFrom, to: win.prevTo };
+  const scope = comparableScope(d, win, prevWin);
+  const cmp = comparableTotals(d, scope, win, prevWin);
   const pc = metrics.pctChange;
+  // 같은 기준으로 비교할 매체(채널)가 하나도 남지 않으면 증감을 내지 않는다 (0 대 0을 '0.0%'라고 하지 않게)
+  const noMedia = scope.excludedMedia.length > 0 && !scope.media.some((m) => d.mediaDaily.some((r) => r.media === m && r.date >= win.prevFrom && r.date <= win.to));
+  const noSales = scope.excludedChannels.length > 0 && !scope.channels.some((ch) => d.salesDaily.some((r) => r.channel === ch && r.date >= win.prevFrom && r.date <= win.to));
+  const mp = (a: number, b: number) => (noMedia ? NaN : pc(a, b));
+  const c = cmp.cur;
+  const p = cmp.prev;
   return {
     win, cur, prev, sales, prevSales, adAttributed, prevAdAttributed, mer, prevMer,
     adShareOfSales: sales > 0 ? adAttributed / sales : NaN,
     deltas: {
-      cost: pc(cur.cost, prev.cost),
-      revenue: pc(cur.revenue, prev.revenue),
-      roas: fin(cur.roas) && fin(prev.roas) ? pc(cur.roas, prev.roas) : NaN,
-      sales: pc(sales, prevSales),
-      mer: fin(mer) && fin(prevMer) ? pc(mer, prevMer) : NaN,
-      cpa: fin(cur.cpa) && fin(prev.cpa) ? pc(cur.cpa, prev.cpa) : NaN,
-      cvr: fin(cur.cvr) && fin(prev.cvr) ? pc(cur.cvr, prev.cvr) : NaN,
-      cac: fin(cur.cac) && fin(prev.cac) ? pc(cur.cac, prev.cac) : NaN,
-      conversions: pc(cur.conversions, prev.conversions),
-      newCustomers: pc(cur.newCustomers, prev.newCustomers),
+      cost: mp(c.cost, p.cost),
+      revenue: mp(c.revenue, p.revenue),
+      roas: !noMedia && fin(c.roas) && fin(p.roas) ? pc(c.roas, p.roas) : NaN,
+      sales: noSales ? NaN : pc(cmp.sales, cmp.prevSales),
+      mer: !noMedia && !noSales && fin(cmp.mer) && fin(cmp.prevMer) ? pc(cmp.mer, cmp.prevMer) : NaN,
+      cpa: !noMedia && fin(c.cpa) && fin(p.cpa) ? pc(c.cpa, p.cpa) : NaN,
+      cvr: !noMedia && fin(c.cvr) && fin(p.cvr) ? pc(c.cvr, p.cvr) : NaN,
+      cac: !noMedia && fin(c.cac) && fin(p.cac) ? pc(c.cac, p.cac) : NaN,
+      conversions: mp(c.conversions, p.conversions),
+      newCustomers: mp(c.newCustomers, p.newCustomers),
     },
+    scope, cmp,
     hasData: cur.cost > 0 || sales > 0,
   };
 }
@@ -1440,7 +1514,7 @@ export function periodBrief(d: Dataset, preset: BoardPeriod = 'last7'): Brief {
   const pacing = budgetPacing(d);
   const facts = [
     `${w.label}(${w.rangeText}) 광고비 ${fmt.krw(k.cur.cost)}(직전 ${w.prevText} 대비 ${fmt.delta(k.deltas.cost)}), 광고 매출 ${fmt.krw(k.cur.revenue)}, ROAS ${fmt.roas(k.cur.roas)}(${fmt.delta(k.deltas.roas)}). 시연용 테스트 데이터 기준입니다.`,
-    `판매 채널 실매출은 ${fmt.krw(k.sales)}(${fmt.delta(k.deltas.sales)})이고 광고비 대비 실매출(MER)은 ${fmt.dec1(k.mer)}배(직전 ${fmt.dec1(k.prevMer)}배)입니다. 실매출 중 광고 경유 추정 비중은 ${fmt.ratio(k.adShareOfSales, 0)}입니다.`,
+    `판매 채널 실매출은 ${fmt.krw(k.sales)}(${fmt.delta(k.deltas.sales)})이고 광고비 대비 실매출(MER)은 ${fmt.dec1(k.mer)}배(${k.scope.note ? `같은 기준 ${fmt.dec1(k.cmp.mer)}배 · 직전 ${fmt.dec1(k.cmp.prevMer)}배` : `직전 ${fmt.dec1(k.prevMer)}배`})입니다. 실매출 중 광고 경유 추정 비중은 ${fmt.ratio(k.adShareOfSales, 0)}입니다.`,
     `CPA ${fmt.won(k.cur.cpa)}(${fmt.delta(k.deltas.cpa)}), CVR ${fmt.pct(k.cur.cvr, 2)}(${fmt.delta(k.deltas.cvr)}), 신규 고객 CAC ${fmt.won(k.cur.cac)}(${fmt.delta(k.deltas.cac)}, 신규 ${fmt.int(k.cur.newCustomers)}명).`,
   ];
   if (bestRoas && worstRoas && bestRoas.media !== worstRoas.media) {
@@ -1471,6 +1545,7 @@ export function periodBrief(d: Dataset, preset: BoardPeriod = 'last7'): Brief {
   const conditions = [
     `목표 ROAS ${R.targetRoas}%(브랜드 ${R.brandTargetRoas}%)는 제안서 p.14 초기값이며 온보딩 중 확정합니다. 매체 변동 판정은 p.47 이상 징후 기준을 기간 비교에 준용한 모듈 가정입니다.`,
     w.includesToday ? `이 구간은 오늘(${d.currentHour}시 기준) 부분일을 포함하므로 직전 기간 대비 증감이 낮게 나올 수 있습니다.` : `오늘(부분일)은 포함하지 않은 완결 구간입니다.`,
+    ...(k.scope.note ? [`${k.scope.note}.`] : []),
   ];
   const counter = [
     `광고 매출은 매체별 귀속 기준이라 매체 간 중복이 있을 수 있습니다. 판매 채널 실매출을 분모로 둔 MER이 함께 오르지 않으면 매체 ROAS 개선을 실매출 증가로 보지 않습니다.`,
@@ -1660,10 +1735,10 @@ export function boardPromptPayload(d: Dataset, preset: BoardPeriod): string {
   const payload = {
     출처: 'TEST DATA (시연용 테스트 데이터 · 실제 성과 아님)',
     기준: { 기준일: d.today, 기준시각: asOfClock(d), 목표ROAS: R.targetRoas, 브랜드목표ROAS: R.brandTargetRoas, 변동판정: `ROAS −${R.roasDropWarnPct}/−${R.roasDropDangerPct}% · CPA +${R.cpaRiseWarnPct}/+${R.cpaRiseDangerPct}% · 광고비 ±${R.costSwingWarnPct}/±${R.costSwingDangerPct}% (p.47 준용)` },
-    기간: { 이름: k.win.label, 범위: `${k.win.from}~${k.win.to}`, 직전: `${k.win.prevFrom}~${k.win.prevTo}`, 오늘부분일포함: k.win.includesToday },
+    기간: { 이름: k.win.label, 범위: `${k.win.from}~${k.win.to}`, 직전: `${k.win.prevFrom}~${k.win.prevTo}`, 오늘부분일포함: k.win.includesToday, ...(k.scope.note ? { 증감기준: k.scope.note } : {}) },
     KPI: {
       광고비: r0(k.cur.cost), 광고비증감pct: r1(k.deltas.cost), 광고매출: r0(k.cur.revenue), ROAS: r0(k.cur.roas), ROAS증감pct: r1(k.deltas.roas),
-      실매출: r0(k.sales), 실매출증감pct: r1(k.deltas.sales), MER배: r2(k.mer), 직전MER배: r2(k.prevMer), 광고경유비중pct: r1(k.adShareOfSales * 100),
+      실매출: r0(k.sales), 실매출증감pct: r1(k.deltas.sales), MER배: r2(k.mer), 직전MER배: r2(k.scope.note ? k.cmp.prevMer : k.prevMer), 광고경유비중pct: r1(k.adShareOfSales * 100),
       CPA: r0(k.cur.cpa), CPA증감pct: r1(k.deltas.cpa), CVRpct: r2(k.cur.cvr), 신규CAC: r0(k.cur.cac), 신규고객: r0(k.cur.newCustomers),
     },
     매체: rows.map((r) => ({ 매체: r.name, 역할: r.role, 판단지표: r.judgeMetric, 광고비: r0(r.cost), 비중pct: r1(r.share * 100), 가안비중pct: r1(r.planShare * 100), ROAS: r0(r.roas), CPA: r0(r.cpa), CVRpct: r2(r.cvr), 신규비중pct: r1(r.newShare * 100), ROAS증감pct: r1(r.deltas.roas), 판정: `${r.flag.label} · ${r.flag.basis}` })),

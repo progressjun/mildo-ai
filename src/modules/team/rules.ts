@@ -119,6 +119,29 @@ export function statusChangeProblem(actor: Role, target: MemberTarget, to: 'acti
   return null;
 }
 
+/**
+ * 관리자의 비밀번호 재설정 링크 발급 판정 (POST /api/w/:ws/members/:userId/password-reset).
+ * 링크를 받은 사람은 그 계정의 비밀번호를 정할 수 있으므로 계정 비활성화와 같은 범위만 허용한다:
+ * 자기 자신 아님(내 계정 보안 탭에서 변경) · 소유자 계정은 소유자만 · 활성 계정만 · 관리 범위 밖 워크스페이스에 소속되지 않은 계정만.
+ * @param outsideScope 대상이 actor가 관리하지 못하는 다른 워크스페이스에도 소속되어 있는지 (서버만 안다 — 화면은 false로 미리 판정)
+ */
+export function passwordResetIssueProblem(actor: Role, target: MemberTarget, outsideScope: boolean): RuleProblem | null {
+  if (!can(actor, 'manage_team')) return FORBIDDEN;
+  if (target.isSelf) return { status: 403, code: 'self_reset', message: '내 비밀번호는 내 계정 보안 탭에서 바꿔 주세요' };
+  if (target.role === 'owner' && !can(actor, 'owner')) {
+    return { status: 403, code: 'owner_only', message: '소유자 계정의 재설정 링크는 소유자만 발급할 수 있습니다' };
+  }
+  if (!target.active) return { status: 409, code: 'inactive_account', message: '비활성 계정입니다. 먼저 재활성화해 주세요' };
+  if (outsideScope) {
+    return {
+      status: 409,
+      code: 'shared_account',
+      message: '관리 범위 밖의 다른 워크스페이스에도 소속된 계정이라 재설정 링크를 발급할 수 없습니다. 본인이 로그인 화면의 비밀번호 재설정을 쓰거나 운영자에게 요청해 주세요',
+    };
+  }
+  return null;
+}
+
 /** 역할 → 권한 표 (화면 · 에이전트 도구용) */
 export const PERMISSION_LABEL: Record<string, string> = {
   read: '읽기',

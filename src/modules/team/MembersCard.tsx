@@ -1,8 +1,8 @@
-/** 구성원 표 — 역할 선택(권한별) · 2단계 적용 · 계정 비활성화 · 제외(2단계 확인) */
+/** 구성원 표 — 역할 선택(권한별) · 2단계 적용 · 계정 비활성화 · 비밀번호 재설정 링크 발급 · 제외(2단계 확인) */
 import { useState } from 'react';
-import { Button, Card, DataTable, Pill, type Column } from '@/ui/primitives';
+import { Button, Callout, Card, CopyButton, DataTable, Pill, type Column } from '@/ui/primitives';
 import { ROLE_LABEL, type Role } from '@/core/permissions';
-import { fmtKst, isDormant, memberActions, relTime, type Member } from './engine';
+import { fmtKst, isDormant, memberActions, relTime, type Member, type ResetLinkResult } from './engine';
 import { ConfirmButton, RolePill } from './parts';
 
 export interface MemberHandlers {
@@ -10,9 +10,34 @@ export interface MemberHandlers {
   onTitle: (m: Member, title: string | null) => void;
   onStatus: (m: Member, status: 'active' | 'disabled') => void;
   onRemove: (m: Member) => void;
+  /** 비밀번호 재설정 링크 발급 (POST /w/:ws/members/:userId/password-reset) */
+  onResetLink: (m: Member) => void;
 }
 
-export function MembersCard({ members, myRole, canManage, readOnly, busy, nowMs, handlers, sub }: {
+/** 마지막으로 발급한 재설정 링크 결과 (메일로 보냈으면 link 없음) */
+export type LastResetLink = ResetLinkResult & { name: string };
+
+/** 재설정 링크 발급 결과 — 메일로 보냈으면 그렇다고, 못 보냈으면(SMTP 미설정 · 실패) 직접 전달할 링크 */
+export function ResetLinkNote({ result, nowMs }: { result: LastResetLink; nowMs?: number }) {
+  if (result.mail.sent || !result.link) {
+    return (
+      <Callout tone="good" title={`${result.name}(${result.email})에게 재설정 링크 메일을 보냈습니다`}>
+        링크는 본인 메일로만 보냈고 이 화면에는 보이지 않습니다 · 만료 {fmtKst(result.expiresAt, nowMs)} · 이전에 보낸 링크는 더 이상 쓸 수 없습니다.
+      </Callout>
+    );
+  }
+  return (
+    <Callout tone="warning" title={`${result.name} 재설정 링크를 발급했습니다 · 메일은 보내지 않았습니다`}>
+      <div className="stack-sm">
+        <span>{result.mail.reason ?? '메일 발송 결과를 확인하지 못했습니다'} — 아래 링크를 복사해 본인({result.email})에게 직접 전달해 주세요.</span>
+        <div className="team-link" aria-label="비밀번호 재설정 링크">{result.link}</div>
+        <div className="row"><CopyButton text={result.link} label="재설정 링크 복사" /><span className="xs muted">링크를 가진 사람은 이 계정의 비밀번호를 정할 수 있으니 본인에게만 전달하세요 · 만료 {fmtKst(result.expiresAt, nowMs)} · 1회용</span></div>
+      </div>
+    </Callout>
+  );
+}
+
+export function MembersCard({ members, myRole, canManage, readOnly, busy, nowMs, handlers, sub, lastReset }: {
   members: Member[];
   myRole: Role | null;
   canManage: boolean;
@@ -21,6 +46,7 @@ export function MembersCard({ members, myRole, canManage, readOnly, busy, nowMs,
   nowMs: number;
   handlers: MemberHandlers;
   sub?: string;
+  lastReset?: LastResetLink | null;
 }) {
   const [draftRole, setDraftRole] = useState<Record<string, Role>>({});
   const [draftTitle, setDraftTitle] = useState<Record<string, string>>({});
@@ -132,6 +158,17 @@ export function MembersCard({ members, myRole, canManage, readOnly, busy, nowMs,
                   onConfirm={() => handlers.onStatus(m, m.status === 'active' ? 'disabled' : 'active')}
                 />
               ) : null}
+              {!m.is_me ? (
+                <ConfirmButton
+                  label="재설정 링크"
+                  confirmLabel="링크 발급"
+                  icon="link"
+                  disabled={readOnly || !!acts.resetLink}
+                  busy={busy === `reset:${m.user_id}`}
+                  title={acts.resetLink?.message ?? '비밀번호 재설정 링크를 발급합니다 (60분 · 1회용, 이전 링크 무효). 메일(SMTP)이 설정되어 있으면 본인 메일로 보내고, 없으면 여기서 복사해 직접 전달합니다'}
+                  onConfirm={() => handlers.onResetLink(m)}
+                />
+              ) : null}
               <ConfirmButton
                 label={m.is_me ? '나가기' : '제외'}
                 confirmLabel={m.is_me ? '정말 나가기' : '정말 제외'}
@@ -151,6 +188,7 @@ export function MembersCard({ members, myRole, canManage, readOnly, busy, nowMs,
 
   return (
     <Card title="구성원" sub={sub ?? `${members.length}명 · 역할은 서버가 최종 판정합니다 (같은 규칙으로 화면에서 미리 막음)`}>
+      {lastReset ? <div style={{ marginBottom: 12 }}><ResetLinkNote result={lastReset} nowMs={nowMs} /></div> : null}
       <DataTable rows={members} columns={columns} rowKey={(m) => m.user_id} empty="구성원이 없습니다" />
     </Card>
   );

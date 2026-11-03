@@ -84,7 +84,7 @@ export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () =
               <div className="xs">미승인 기준 {ap.dirty.length}건으로 화면 판정을 시뮬레이션 중입니다. 공식 기준은 승인 · 반영 후 바뀝니다 (목표 ROAS · 상한은 수면밀도 승인).</div>
               <div className="row" style={{ gap: 6 }}>
                 {ap.settingSplit.fresh.length
-                  ? <Button size="sm" variant="accent" icon="send" onClick={ap.submitSettings}>기준 변경 승인 요청 {ap.settingSplit.fresh.length}건</Button>
+                  ? <Button size="sm" variant="accent" icon="send" disabled={!ap.requestPerm.ok} title={ap.requestPerm.ok ? undefined : ap.requestPerm.reason} onClick={ap.submitSettings}>기준 변경 승인 요청 {ap.settingSplit.fresh.length}건</Button>
                   : <Button size="sm" icon="check" disabled title="같은 기준 항목의 열린 요청이 있습니다 — MILDO Flow에서 승인 · 반려 후 다시 요청">승인 요청됨 {ap.settingSplit.duplicate.length}건</Button>}
                 <Button size="sm" icon="refresh" onClick={() => ap.setDraft(ap.official)}>공식 기준으로</Button>
               </div>
@@ -112,7 +112,7 @@ export function SafetyPanel({ ap, onHistory }: { ap: AdPilotCtx; onHistory: () =
           <div className="adpilot-kv">
             <span>반영 중인 변경 (입찰 · 예산 · 상태)</span><strong className="num">{applied.length}건</strong>
           </div>
-          {rb.skipped.length ? <div className="xs adpilot-dim">현재 역할({ap.state.role}) 승인 범위 밖 {rb.skipped.length}건은 일괄 롤백에서 제외됩니다.</div> : null}
+          {rb.skipped.length ? <div className="xs adpilot-dim">현재 역할({ap.roleLabel}) {ap.server ? '권한' : '승인 범위'} 밖 {rb.skipped.length}건은 일괄 롤백에서 제외됩니다{ap.server ? ' (롤백은 승인 권한 + 운영 권한)' : ''}.</div> : null}
           {confirmRb && rb.list.length ? (
             <div className="row" style={{ gap: 6 }}>
               <Button size="sm" variant="danger" icon="rollback" onClick={(e) => { if (e.detail > 1) return; ap.rollbackAll(); setConfirmRb(false); }}>{rb.list.length}건 모두 복원 확정</Button>

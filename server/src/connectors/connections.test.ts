@@ -107,13 +107,15 @@ describe('커넥션 생성 · 조회', () => {
     expect(list.body).not.toContain('SECRET');
   });
 
-  it('입력 검증: 알 수 없는 공급자 · 자격증명 형식(필드 이름만 알려 준다) · 설정 · 잘못된 채널', async () => {
+  it('입력 검증: 알 수 없는 공급자 · 자격증명 형식(화면 라벨 · 사유만, 값은 알려 주지 않는다) · 설정 · 잘못된 채널', async () => {
     const pm = await as('pm');
     expect((await pm.post(base(), { provider: 'tiktok' })).status).toBe(400);
     const bad = await create(pm, { credentials: { developerToken: 'SECRET1', refreshToken: REFRESH, customerId: 'abc' } });
     expect(bad.status).toBe(400);
-    expect(bad.json.error.message).toMatch(/developerToken/);
-    expect(bad.json.error.message).toMatch(/customerId/);
+    // 내부 키(developerToken · customerId)가 아니라 입력 화면 라벨과 한국어 사유
+    expect(bad.json.error.message).toMatch(/개발자 토큰: 값이 너무 짧거나 작습니다/);
+    expect(bad.json.error.message).toMatch(/고객 ID: 형식이 올바르지 않습니다/);
+    expect(bad.json.error.detail.map((d: { path: string }) => d.path).sort()).toEqual(['customerId', 'developerToken']);
     expect(bad.body).not.toContain('SECRET1');
     expect((await create(pm, { settings: { unknownKey: 1 } })).status).toBe(400);
     expect((await pm.post(base(), { provider: 'csv', channel: 'tiktok' })).status).toBe(400);

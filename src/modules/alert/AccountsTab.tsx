@@ -7,7 +7,7 @@ import { LevelPill, MediaTag } from './parts';
 import type { AlertCtx } from './hooks';
 
 export function AccountsTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: string) => void }) {
-  const { data, cfg, state, actions, incidents } = ctx;
+  const { data, cfg, state, actions, incidents, perm } = ctx;
   const checks = useMemo(() => checkAccounts(data, cfg), [data, cfg]);
   const [sel, setSel] = useState<string>(() => checks.find((c) => c.worst === 'fail')?.account.id ?? checks[0]?.account.id ?? '');
   const cur = checks.find((c) => c.account.id === sel);
@@ -80,7 +80,7 @@ export function AccountsTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: strin
                 const prevAmt = prev ? Number(prev.after) - Number(prev.before) : NaN;
                 const amt = prev && Number.isFinite(prevAmt) && prevAmt > 0 ? prevAmt : topup;
                 return (
-                  <Button size="sm" variant="primary" icon="wallet" disabled={exists(tid) || topup <= 0}
+                  <Button size="sm" variant="primary" icon="wallet" disabled={exists(tid) || topup <= 0 || !perm.request} title={perm.requestReason}
                     onClick={() => { actions.addChange({ module: 'alert', kind: 'setting', target: `${cur.account.name} 충전`, targetId: tid, before: cur.account.balance, after: cur.account.balance + topup, changePct: cur.account.balance > 0 ? (topup / cur.account.balance) * 100 : undefined, reason: `잔액 ${fmt.dec1(cur.runwayDays)}일치 → ${cfg.runwayWarnDays}일치 확보 (${fmt.krw(topup)}원) · 결제 수단 수면밀도 (p.50)`, requestedBy: state.role, approver: 'CLIENT' }); actions.toast({ tone: 'info', title: '충전 요청을 만들었습니다', body: '승인: 수면밀도 · MILDO Flow', route: 'flow' }); }}>
                     {`충전 요청${prev ? '됨' : ''} ${fmt.krw(amt)}원 (수면밀도 승인)`}
                   </Button>
@@ -89,7 +89,7 @@ export function AccountsTab({ ctx, onOpen }: { ctx: AlertCtx; onOpen: (id: strin
               {cur.nonRealName || cur.stale ? (() => {
                 const tid = `alert:account:${cur.account.id}:revoke`;
                 return (
-                  <Button size="sm" icon="shield" disabled={exists(tid)}
+                  <Button size="sm" icon="shield" disabled={exists(tid) || !perm.request} title={perm.requestReason}
                     onClick={() => { actions.addChange({ module: 'alert', kind: 'setting', target: `${cur.account.name} 권한 회수`, targetId: tid, before: cur.account.permissions.filter((p) => !p.realName || dayDiff(data.today, p.lastLogin) > cfg.staleLoginDays).map((p) => `${p.user}(${p.role})`).join(', '), after: '회수 · 실명 계정 대체', reason: '담당자 실명 계정 · 최소 권한 · 교체 시 즉시 회수 (p.50)', requestedBy: state.role, approver: 'PM' }); actions.toast({ tone: 'info', title: '권한 회수 요청을 만들었습니다', body: 'PM → 수면밀도 통보', route: 'flow' }); }}>
                     {`권한 회수 요청${exists(tid) ? '됨' : ''} (PM → 수면밀도 통보)`}
                   </Button>

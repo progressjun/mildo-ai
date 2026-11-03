@@ -6,8 +6,8 @@ import { AiInsight } from '@/ui/AiInsight';
 import { Button, Callout, Card, DataTable, DownloadButton, Empty, Pill, Segmented, Src, type Column } from '@/ui/primitives';
 import { KIND_LABEL, MODULE_LABEL, STATUS_META, STATUS_ORDER } from './data';
 import {
-  APPROVER_LABEL, bulkGuard, canAct, executionCheck, filterChanges, fmtDuration, fmtStamp, fmtValue, groupByStatus, kindLabel, leadState, moduleLabel,
-  pendingBrief, roleScopeLabel, sortByCreatedDesc, type ChangeFilter,
+  actionAllowed, actorLabel, APPROVER_LABEL, bulkGuard, executionCheck, filterChanges, fmtDuration, fmtStamp, fmtValue, groupByStatus, isMyTurn, kindLabel, leadState, moduleLabel,
+  pendingBrief, roleScopeLabel, roleScopeText, serverPreApplyCheck, sortByCreatedDesc, type ChangeFilter,
 } from './engine';
 import { ApproverBadge, ChangeValue, ConfirmButton, LeadBadge, ModuleTag, SeedTag, StatusPill, settled } from './parts';
 import type { FlowCtx } from './useFlow';
@@ -15,10 +15,10 @@ import { ExecBadge } from './ExecutionPanel';
 import { execCsvLabel, executionState, isExecuting } from './execution';
 
 export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: string) => void; onNew: () => void }) {
-  const { changes, state, clock, summary, act, bulk, data, incidents, missingSeeds, loadSeeds, bulkAlerts, apCfg, server } = ctx;
+  const { changes, clock, summary, act, bulk, data, incidents, missingSeeds, loadSeeds, bulkAlerts, apCfg, server, actor, requestPerm } = ctx;
   const [filter, setFilter] = useState<ChangeFilter>({ scope: 'all', module: 'all', approver: 'all', kind: 'all', q: '' });
   const [view, setView] = useState<'board' | 'table'>('board');
-  const list = useMemo(() => sortByCreatedDesc(filterChanges(changes, filter, state.role, clock), clock.toMs), [changes, filter, state.role, clock]);
+  const list = useMemo(() => sortByCreatedDesc(filterChanges(changes, filter, actor, clock), clock.toMs), [changes, filter, actor, clock]);
   const cols = useMemo(() => groupByStatus(list), [list]);
   const q = summary.queue;
   const modules = useMemo(() => [...new Set(changes.map((c) => c.module))], [changes]);
@@ -55,21 +55,26 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
   return (
     <div className="stack-lg">
       <div className="grid g-3">
-        <Card className="span-2" title={<>내가 처리할 것 <Pill tone="accent">{state.role}</Pill></>} sub={`승인 범위 ${roleScopeLabel(state.role)} 건 · AE는 AE건, PM은 AE · PM건, 수면밀도는 전부 (p.53)`}
+        <Card className="span-2" title={<>내가 처리할 것 <Pill tone="accent">{actorLabel(actor)}</Pill></>}
+          sub={server
+            ? `${roleScopeText(actor)} · 멤버십 역할 기준 (서버 판정과 같은 권한표 — 반영 · 롤백 · 보류는 운영 권한도 필요, §2)`
+            : `승인 범위 ${roleScopeLabel(actor)} 건 · AE는 AE건, PM은 AE · PM건, 수면밀도는 전부 (p.53)`}
           actions={<>
             <Src kind="DEMO" />
             {q.approve.length ? (
               <ConfirmButton label={`일괄 승인 ${q.approve.length}건`} icon="check" variant="primary" disabled={!approveGuard.ok} title={approveGuard.reasons.join(' · ')} onConfirm={() => bulk(q.approve, 'approve')} />
             ) : null}
-            <Button size="sm" icon="plus" onClick={onNew}>신규 요청</Button>
+            <Button size="sm" icon="plus" disabled={!requestPerm.ok} title={!requestPerm.ok ? requestPerm.reason : undefined} onClick={onNew}>신규 요청</Button>
           </>}>
           {q.total === 0 ? (
-            <Empty icon="check" title="현재 역할로 처리할 요청이 없습니다">{q.blocked.length ? `권한 밖 승인 대기 ${q.blocked.length}건 — 승인 주체: ${[...new Set(q.blocked.map((c) => APPROVER_LABEL[c.approver]))].join(' · ')}` : '승인 대기 · 반영 대기 · 보류 모두 없음'}</Empty>
+            <Empty icon="check" title={server && roleScopeLabel(actor) === '없음' ? '현재 역할은 승인 · 반영 권한이 없습니다 (읽기 전용)' : '현재 역할로 처리할 요청이 없습니다'}>{q.blocked.length ? `권한 밖 승인 대기 ${q.blocked.length}건 — 승인 주체: ${[...new Set(q.blocked.map((c) => APPROVER_LABEL[c.approver]))].join(' · ')}` : '승인 대기 · 반영 대기 · 보류 모두 없음'}</Empty>
           ) : (
             <div className="flow-queue">
               {[...q.approve.map((c) => ({ c, a: 'approve' as const })), ...q.apply.map((c) => ({ c, a: 'apply' as const })), ...q.held.map((c) => ({ c, a: 'resume' as const }))].map(({ c, a }) => {
                 const l = leadState(c, clock.nowMs, clock.toMs);
-                const ex = a === 'apply' ? executionCheck(data, changes, incidents, c) : null;
+                const ex = a === 'apply' ? (server ? serverPreApplyCheck(data, changes, incidents, c) : executionCheck(data, changes, incidents, c)) : null;
+                // 큐에는 승인 범위 안의 건만 오지만, 서버 모드의 보류 해제는 운영 권한이 따로 필요하다 (광고주 담당자는 반려만)
+                const resumePerm = a === 'resume' ? actionAllowed(actor, c.approver, 'resume') : null;
                 return (
                   <div key={c.id} className={`flow-queue-row${l.overdue ? ' overdue' : ''}`}>
                     <button type="button" className="flow-queue-main" onClick={() => onOpen(c.id)}>
@@ -80,7 +85,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
                     <div className="row" style={{ gap: 4, flexWrap: 'nowrap' }}>
                       {a === 'approve' ? <Button size="sm" variant="primary" icon="check" onClick={settled(() => act(c, 'approve'))}>승인</Button> : null}
                       {a === 'apply' ? <Button size="sm" variant="accent" icon="zap" disabled={isExecuting(c)} title={isExecuting(c) ? '매체 반영이 진행 중입니다 — 끝나면 자동으로 갱신됩니다' : undefined} onClick={settled(() => act(c, 'apply'))}>{isExecuting(c) ? '반영 중' : '반영'}</Button> : null}
-                      {a === 'resume' ? <Button size="sm" icon="play" onClick={settled(() => act(c, 'resume'))}>보류 해제</Button> : null}
+                      {a === 'resume' ? <Button size="sm" icon="play" disabled={!resumePerm!.ok} title={!resumePerm!.ok ? resumePerm!.reason : undefined} onClick={settled(() => act(c, 'resume'))}>보류 해제</Button> : null}
                       <Button size="sm" variant="ghost" onClick={() => onOpen(c.id)}>상세</Button>
                     </div>
                   </div>
@@ -182,7 +187,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
                 {(cols[s] ?? []).length === 0 ? <div className="xs muted flow-col-empty">없음</div> : null}
                 {(cols[s] ?? []).map((c) => {
                   const l = leadState(c, clock.nowMs, clock.toMs);
-                  const mine = (c.status === 'pending' || c.status === 'approved' || c.status === 'held') && canAct(state.role, c.approver).ok;
+                  const mine = isMyTurn(c, actor);
                   return (
                     <button key={c.id} type="button" className={`flow-card${l.overdue ? ' overdue' : mine ? ' mine' : ''}`} onClick={() => onOpen(c.id)}>
                       <span className="row" style={{ gap: 4 }}><ModuleTag module={c.module} /><SeedTag c={c} />{mine ? <Pill tone="accent">내 차례</Pill> : null}{bulkOf.has(c.id) ? <Pill tone="critical" icon="alert" title={bulkOf.get(c.id)}>대량 변경</Pill> : null}</span>
@@ -206,8 +211,8 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
       </Card>
 
       <AiInsight title="승인 대기 우선순위 해석" sub="AI 연결 시 Claude가, 미연결 시 규칙 엔진이 같은 형식으로 정리" cta="해석 생성"
-        buildPrompt={() => `과제: MILDO Flow 승인 대기 목록의 처리 순서와 리스크를 현재 역할(${state.role}) 기준으로 판단하라.\n데이터(JSON):\n${JSON.stringify(changes.filter((c) => c.status === 'pending' || c.status === 'approved' || c.status === 'held').map((c) => ({ 대상: c.target, 상태: c.status, 모듈: c.module, 변경: `${c.before} → ${c.after}`, 폭: c.changePct, 승인주체: c.approver, 사유: c.reason, 대기: leadState(c, clock.nowMs, clock.toMs).text, 실행점검: c.status === 'approved' ? executionCheck(data, changes, incidents, c).blocks : undefined })))}`}
-        fallback={() => pendingBrief(data, changes, incidents, state.role, clock.nowMs, clock.toMs)} />
+        buildPrompt={() => `과제: MILDO Flow 승인 대기 목록의 처리 순서와 리스크를 현재 역할(${actorLabel(actor)}) 기준으로 판단하라.\n데이터(JSON):\n${JSON.stringify(changes.filter((c) => c.status === 'pending' || c.status === 'approved' || c.status === 'held').map((c) => ({ 대상: c.target, 상태: c.status, 모듈: c.module, 변경: `${c.before} → ${c.after}`, 폭: c.changePct, 승인주체: c.approver, 사유: c.reason, 대기: leadState(c, clock.nowMs, clock.toMs).text, 실행점검: c.status === 'approved' ? executionCheck(data, changes, incidents, c).blocks : undefined })))}`}
+        fallback={() => pendingBrief(data, changes, incidents, actor, clock.nowMs, clock.toMs)} />
     </div>
   );
 }

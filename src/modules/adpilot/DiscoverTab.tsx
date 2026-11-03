@@ -15,13 +15,15 @@ export function DiscoverTab({ ap }: { ap: AdPilotCtx }) {
   const [confirm, setConfirm] = useState<{ ps: AdPilotProposal[]; check: BulkCheck } | null>(null);
   const [blocked, setBlocked] = useState<BulkCheck | null>(null);
 
-  const requestable = cands.map((c) => byTerm.get(c.term)).filter((p): p is AdPilotProposal => !!p && ap.requestable(p));
+  // 서버 모드 열람자는 요청 권한이 없다 — 선택 · 일괄 등록도 막는다 (버튼은 비활성 + 이유)
+  const requestable = cands.map((c) => byTerm.get(c.term)).filter((p): p is AdPilotProposal => !!p && ap.requestPerm.ok && ap.requestable(p));
   const sel = requestable.filter((p) => selected.has(p.keyword));
   const run = (ps: AdPilotProposal[], force = false) => {
     const check = ap.bulkCheck(ps);
     setBlocked(null);
     if (check.level === 'block') { setBlocked(check); setConfirm(null); return; }
     if (check.level === 'warn' && !force) { setConfirm({ ps, check }); return; }
+    if (!ap.requestPerm.ok) { ap.actions.toast({ tone: 'warning', title: '변경 요청 권한이 없습니다', body: ap.requestPerm.reason }); return; }
     ps.forEach((p) => ap.request(p, true));
     ap.actions.toast({ tone: 'good', title: `테스트 그룹 등록 요청 ${ps.length}건`, body: '승인 후 테스트 전용 그룹에 입찰 상한으로 등록됩니다', route: 'flow' });
     setSelected(new Set());
@@ -33,7 +35,7 @@ export function DiscoverTab({ ap }: { ap: AdPilotCtx }) {
       key: 'sel', width: 32, label: '',
       render: (t) => {
         const p = byTerm.get(t.term);
-        const ok = !!p && ap.requestable(p);
+        const ok = !!p && ap.requestPerm.ok && ap.requestable(p);
         return <input type="checkbox" className="adpilot-check" aria-label={`${t.term} 선택`} disabled={!ok} checked={selected.has(t.term)} onChange={() => setSelected((s) => { const n = new Set(s); n.has(t.term) ? n.delete(t.term) : n.add(t.term); return n; })} />;
       },
     },
@@ -62,7 +64,7 @@ export function DiscoverTab({ ap }: { ap: AdPilotCtx }) {
       <Card title={`등록 후보 ${cands.length}개`} sub="검색어 보고서 기준 · 전환 × 목표 대비 효율 순"
         actions={<><Src kind="PROPOSAL" page="p.14 · p.26" /><Src kind="DEMO" />
           <Button size="sm" onClick={() => setSelected(new Set(requestable.map((p) => p.keyword)))} disabled={!requestable.length}>요청 가능 전체 선택</Button>
-          <Button size="sm" variant="primary" icon="send" disabled={!sel.length} onClick={() => run(sel)}>선택 {sel.length}건 등록 요청</Button></>}>
+          <Button size="sm" variant="primary" icon="send" disabled={!sel.length} title={ap.requestPerm.ok ? undefined : ap.requestPerm.reason} onClick={() => run(sel)}>선택 {sel.length}건 등록 요청</Button></>}>
         {blocked ? <Callout tone="critical" title="대량 변경 차단 (p.45)">{blocked.reasons.join(' · ')}</Callout> : null}
         {confirm ? (
           <Callout tone="warning" title={`${confirm.ps.length}건 일괄 등록 — 한 번 더 확인`}>

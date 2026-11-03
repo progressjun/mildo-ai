@@ -173,10 +173,43 @@ export function monthKey(s: string): string {
 export function nowIso(): string {
   return new Date().toISOString();
 }
+/**
+ * ISO 시각 → 'HH:mm' (KST 고정 — 브라우저 시간대와 무관).
+ * 제품 · 서버 · MILDO Flow 이력이 모두 KST 기준이라, 브라우저 시간대(UTC · 해외 출장 PC)로 바꿔 보이면 같은 이력이 화면마다 다른 시각이 된다.
+ */
 export function hhmm(iso: string): string {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return '--:--';
+  const k = new Date(ms + 9 * 3600_000);
+  return `${String(k.getUTCHours()).padStart(2, '0')}:${String(k.getUTCMinutes()).padStart(2, '0')}`;
 }
+
+/* ---------- 한국어 조사 ---------- */
+
+/** 숫자 · 영문 끝 글자의 한국어 읽기 받침 (0 = 받침 없음, 8 = ㄹ, 그 밖 = 다른 받침) — '1,310원' · 'PM' · 'ON' · '20%' 같은 화면 값 */
+const DIGIT_JONG: Record<string, number> = { '0': 21, '1': 8, '2': 0, '3': 16, '4': 0, '5': 0, '6': 1, '7': 8, '8': 8, '9': 0 };
+const LATIN_JONG: Record<string, number> = { L: 8, M: 16, N: 4, R: 8 };
+function finalJong(word: string): number {
+  const t = String(word ?? '').replace(/[\s)\]}"'’”.,·…]+$/u, '');
+  const ch = t.slice(-1);
+  if (!ch) return 0;
+  const code = ch.charCodeAt(0);
+  if (code >= 0xac00 && code <= 0xd7a3) return (code - 0xac00) % 28;
+  if (ch in DIGIT_JONG) return DIGIT_JONG[ch];
+  const up = ch.toUpperCase();
+  if (/[A-Z]/.test(up)) return LATIN_JONG[up] ?? 0;
+  return 0; // %(퍼센트) · 기호 — 받침 없음으로 읽는다
+}
+export type JosaPair = '을/를' | '이/가' | '은/는' | '과/와' | '으로/로';
+/** 앞말에 맞는 조사 ('1,310원' + 으로/로 → '으로', '반영' + 을/를 → '을', 'PM' + 으로/로 → '으로', '수면밀도' → '로') */
+export function josa(word: string, pair: JosaPair): string {
+  const j = finalJong(word);
+  const [withJ, noJ] = pair.split('/');
+  if (pair === '으로/로') return j === 0 || j === 8 ? noJ : withJ;
+  return j ? withJ : noJ;
+}
+/** 앞말 + 조사 */
+export const withJosa = (word: string, pair: JosaPair): string => `${word}${josa(word, pair)}`;
 export function uid(prefix = 'id'): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-4)}`;
 }

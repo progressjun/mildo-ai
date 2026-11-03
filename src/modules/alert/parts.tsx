@@ -6,7 +6,7 @@ import { fmt } from '@/core/util';
 import { Icon } from '@/ui/Icon';
 import { Pill, Sev, Swatch, type Tone } from '@/ui/primitives';
 import { fmtRemain, fmtValue, slaState, STATUS_LABEL, type AlertIncident, type CauseScore, type Evidence } from './engine';
-import { toDataMs, useDataClock } from './clock';
+import { toDataMs, useDataClock, useRealTimeClock } from './clock';
 
 export function mediaName(m?: string): string {
   if (!m) return '—';
@@ -50,11 +50,15 @@ export function StatusPill({ inc }: { inc: AlertIncident }) {
   );
 }
 
-/** SLA 타이머 — 1초 단위로 흐른다 (데이터 시계 기준) */
+/**
+ * SLA 타이머 — 1초 단위로 흐른다 (데모: 데이터 시계, 서버 모드: 실제 시각 — useAlert와 같은 기준).
+ * 당번 체계 강제는 데모에서만 열린 이슈 전체에 소급 적용하고, 서버 모드는 이슈의 감지 당시 배정(onDuty)만 쓴다 (서버 SLA 잡과 같은 기준).
+ */
 export function SlaTimer({ inc, compact }: { inc: AlertIncident; compact?: boolean }) {
   const { state } = useStore();
-  const now = useDataClock(state.data.generatedAt, 1000);
-  const st = slaState(inc, now, (iso) => toDataMs(iso, state.data.generatedAt), state.offHoursMode);
+  const realTime = useRealTimeClock();
+  const now = useDataClock(state.data.generatedAt, 1000, realTime);
+  const st = slaState(inc, now, (iso) => toDataMs(iso, state.data.generatedAt, realTime), realTime ? false : state.offHoursMode);
   if (st.stage === 'done') {
     const miss = [st.achieved.ack, st.achieved.action, st.achieved.report].some((v) => v === false);
     return <span className={`alert-sla ${miss ? 'warning' : 'good'}`}><Icon name="check" size={12} />{miss ? '해결 · SLA 일부 미달' : '해결 · SLA 달성'}</span>;

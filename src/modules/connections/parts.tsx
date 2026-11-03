@@ -39,6 +39,46 @@ function KV({ k, v }: { k: ReactNode; v: ReactNode }) {
 
 export interface CardPerms { configure: boolean; operate: boolean; liveWrite: boolean }
 
+/** 권한이 없어 잠긴 버튼의 사유 (title로 보인다) — 서버 권한표(src/core/permissions.ts)와 같은 기준 */
+export const CONFIGURE_ONLY = 'PM · 관리자 · 소유자만';
+export const LIVE_WRITE_ONLY = '관리자 · 소유자만 live를 켤 수 있습니다 (live_write 권한)';
+const LOCK_REASON = '서버 연결 시 사용할 수 있습니다';
+
+/**
+ * 쓰기 모드 선택지마다 잠금 사유 (없으면 null = 누를 수 있음).
+ * 서버 PATCH 판정과 같다: 쓰기 모드 변경은 configure(pm · admin · owner), live로 켜기는 live_write(admin · owner) — live 끄기는 configure로 충분.
+ */
+export function writeModeLock(m: WriteMode, current: WriteMode, perms: CardPerms, readOnly: boolean): string | null {
+  if (readOnly) return LOCK_REASON;
+  if (!perms.configure) return `쓰기 모드는 ${CONFIGURE_ONLY} 바꿀 수 있습니다`;
+  if (m === 'live' && current !== 'live' && !perms.liveWrite) return LIVE_WRITE_ONLY;
+  return null;
+}
+
+/** 쓰기 모드 옆 안내 (화면에 보이는 문구) */
+export function writeModeHint(perms: CardPerms, readOnly: boolean): string | null {
+  if (readOnly) return null;
+  if (!perms.configure) return `쓰기 모드 변경은 ${CONFIGURE_ONLY}`;
+  if (!perms.liveWrite) return 'live는 관리자 · 소유자만';
+  return null;
+}
+
+/** 쓰기 모드 세그먼트 — 공용 Segmented와 같은 모양(.seg)에 선택지별 잠금(disabled + 사유 title)을 더한다 */
+export function WriteModeControl({ value, perms, readOnly, onChange }: { value: WriteMode; perms: CardPerms; readOnly: boolean; onChange: (m: WriteMode) => void }) {
+  return (
+    <div className="seg conn-seg" role="group" aria-label="쓰기 모드">
+      {(['off', 'dry_run', 'live'] as WriteMode[]).map((m) => {
+        const why = writeModeLock(m, value, perms, readOnly);
+        return (
+          <button key={m} type="button" aria-pressed={value === m} disabled={!!why} title={why ?? WRITE_MODE_META[m].desc} onClick={() => { if (!why) onChange(m); }}>
+            {WRITE_MODE_META[m].label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ConnectionCard({ c, nowMs, perms, readOnly, busy, onTest, onSync, onEdit, onDelete, onWriteMode, onToggle, oauth, onOAuth }: {
   c: ConnectionView; nowMs: number; perms: CardPerms; readOnly: boolean; busy?: string | null;
   onTest: () => void; onSync: () => void; onEdit: () => void; onDelete: () => void; onWriteMode: (m: WriteMode) => void; onToggle: () => void;
@@ -48,7 +88,7 @@ export function ConnectionCard({ c, nowMs, perms, readOnly, busy, onTest, onSync
   const st = STATUS_META[c.status];
   const v = connectionVerdict(c, nowMs);
   const writes = c.capabilities?.writes ?? [];
-  const lock = readOnly ? '서버 연결 시 사용할 수 있습니다' : undefined;
+  const lock = readOnly ? LOCK_REASON : undefined;
   const isCsv = c.sourceKind === 'csv';
   const recollect = `어제 포함 ${dailyRecollectDays(c.kind)}일`;
   const schedule = isCsv ? '업로드할 때' : c.capabilities?.intraday ? `매일 07:00 전일 확정(${recollect}) · 매시 10분 당일 시간대` : `매일 07:00 전일 확정(${recollect})`;
@@ -104,9 +144,8 @@ export function ConnectionCard({ c, nowMs, perms, readOnly, busy, onTest, onSync
         </div>
         {writes.length ? (
           <div className="row" style={{ gap: 6 }}>
-            <Segmented<WriteMode> label="쓰기 모드" value={c.writeMode} onChange={(m) => { if (!readOnly && m !== c.writeMode) onWriteMode(m); }}
-              options={(['off', 'dry_run', 'live'] as WriteMode[]).map((m) => ({ id: m, label: WRITE_MODE_META[m].label }))} />
-            {!perms.liveWrite && !readOnly ? <span className="xs muted">live는 관리자 · 소유자만</span> : null}
+            <WriteModeControl value={c.writeMode} perms={perms} readOnly={readOnly} onChange={(m) => { if (!readOnly && m !== c.writeMode) onWriteMode(m); }} />
+            {writeModeHint(perms, readOnly) ? <span className="xs muted">{writeModeHint(perms, readOnly)}</span> : null}
           </div>
         ) : null}
       </div>
@@ -120,9 +159,9 @@ export function ConnectionCard({ c, nowMs, perms, readOnly, busy, onTest, onSync
         ) : null}
         {c.sourceKind === 'api' ? <Button size="sm" icon="check" onClick={onTest} disabled={readOnly || !perms.configure || busy === 'test'} title={lock ?? (!perms.configure ? 'PM · 관리자 · 소유자만' : undefined)}>{busy === 'test' ? '확인 중…' : '연결 확인'}</Button> : null}
         {!isCsv ? <Button size="sm" icon="refresh" variant="primary" onClick={onSync} disabled={readOnly || !perms.operate || c.status === 'disabled' || busy === 'sync'} title={lock ?? (!perms.operate ? '담당 AE 이상' : undefined)}>지금 수집</Button> : null}
-        <Button size="sm" icon="edit" onClick={onEdit} disabled={readOnly || !perms.configure} title={lock}>설정</Button>
-        <Button size="sm" icon={c.status === 'disabled' ? 'play' : 'pause'} onClick={onToggle} disabled={readOnly || !perms.configure} title={lock}>{c.status === 'disabled' ? '다시 켜기' : '사용 중지'}</Button>
-        <Button size="sm" icon="x" variant="ghost" onClick={onDelete} disabled={readOnly || !perms.configure} title={lock}>삭제</Button>
+        <Button size="sm" icon="edit" onClick={onEdit} disabled={readOnly || !perms.configure} title={lock ?? (!perms.configure ? CONFIGURE_ONLY : undefined)}>설정</Button>
+        <Button size="sm" icon={c.status === 'disabled' ? 'play' : 'pause'} onClick={onToggle} disabled={readOnly || !perms.configure} title={lock ?? (!perms.configure ? CONFIGURE_ONLY : undefined)}>{c.status === 'disabled' ? '다시 켜기' : '사용 중지'}</Button>
+        <Button size="sm" icon="x" variant="ghost" onClick={onDelete} disabled={readOnly || !perms.configure} title={lock ?? (!perms.configure ? CONFIGURE_ONLY : undefined)}>삭제</Button>
       </div>
     </section>
   );
@@ -144,7 +183,8 @@ export function CatalogCard({ p, readOnly, canAdd, exists, onAdd, onUpload }: { 
           {p.sourceKind === 'demo' ? <Src kind="DEMO" /> : null}
         </span>
       </div>
-      {p.sourceKind === 'api' && !p.verifiedLive ? <UnverifiedPill /> : null}
+      {/* CSV 전용 공급자는 API로 연결하지 않으므로 '실계정 연결 전 확인' 대상이 아니다 */}
+      {p.sourceKind === 'api' && !p.verifiedLive && !csvOnly ? <UnverifiedPill /> : null}
       {csvOnly ? (
         <div className="stack-sm">
           <strong className="xs">{csvOnlyLabel(csvOnly, TEMPLATES[csvOnly.template as UploadTemplate]?.label ?? csvOnly.template)}</strong>

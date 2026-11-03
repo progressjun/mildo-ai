@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Pill } from '@/ui/primitives';
 import { useSaas } from '@/saas/context';
 import { api, wsPath } from '@/saas/api';
-import { attemptLine, executionState, kstStamp, phaseLabel, providerLabel, requestPreview, UNVERIFIED_BASIS, UNVERIFIED_LABEL, type ExecutionAttempt, type ServerChangeView } from './execution';
+import { attemptLine, executionState, kstStamp, modeLine, phaseLabel, providerLabel, requestPreview, UNVERIFIED_BASIS, UNVERIFIED_LABEL, type ExecutionAttempt, type ServerChangeView } from './execution';
 import { KV } from './parts';
 
 /** 목록 · 카드용 배지 — 판정 근거는 툴팁 */
@@ -60,11 +60,11 @@ export function ExecutionPanel({ c }: { c: ServerChangeView }) {
       ) : null}
       {detail ? (
         <>
-          <KV k="실행 방식" v={detail.mode === 'dry_run' ? 'dry_run (요청만 기록 · 매체 미호출)' : detail.mode === 'live' ? `live (매체 API 호출 ${detail.ok ? '성공' : '실패'})` : '기록만 (매체 API 대상 아님)'} />
+          <KV k="실행 방식" v={modeLine(detail)} />
           {detail.provider ? <KV k="매체 커넥터" v={<>{providerLabel(detail.provider)}{detail.verifiedLive === false ? ` · ${UNVERIFIED_LABEL} (공식 문서 기준 구현 · 실계정 호출 미검증)` : detail.verifiedLive === true ? ' · 실계정 호출 검증됨' : ''}</>} /> : null}
           {detail.at ? <KV k="기록 시각" v={<span className="num">{kstStamp(detail.at)}</span>} /> : null}
           {detail.appliedValue !== undefined && detail.appliedValue !== '' ? <KV k="반영 값" v={<span className="num">{String(detail.appliedValue)}</span>} /> : null}
-          {detail.error ? <KV k="오류" v={<span style={{ color: 'var(--critical-ink)' }}>{detail.error}</span>} /> : null}
+          {detail.error ? <KV k={s.kind === 'held' ? '보류 사유' : '오류'} v={<span style={{ color: 'var(--critical-ink)' }}>{detail.error}</span>} /> : null}
           {checks && ((checks.blocks?.length ?? 0) + (checks.warnings?.length ?? 0)) > 0 ? (
             <KV k="서버 점검" v={<span className="stack-sm" style={{ gap: 2 }}>{[...(checks.blocks ?? []), ...(checks.warnings ?? [])].map((t, k) => <span key={k} className="xs">{t}</span>)}</span>} />
           ) : null}

@@ -44,7 +44,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
 
   const usable = ai.connected && !blocked;
   const reason = ai.backend === 'checking' ? 'AI 연결 상태를 확인하는 중입니다.'
-    : blocked ?? (ai.connected ? '' : 'AI 미연결 — 설정에서 Anthropic API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.');
+    : blocked ?? (ai.connected ? '' : ai.note ? `AI 미연결 — ${ai.note.long}` : 'AI 미연결 — 설정에서 Anthropic API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.');
 
   const running = useRef(false);
   const runLive = async (ids: string[]) => {
@@ -177,7 +177,7 @@ export function MonitorTab({ snap, vis, roundIndex, onRound, live, latest, onLiv
           <Card tone="dark" title={<span className="row" style={{ gap: 6 }}>라이브 진단 · Claude <Src kind="LIVE" /></span>}
             sub="Claude 응답 기준 진단이며 다른 엔진은 수집 연동 필요">
             <div className="row" style={{ gap: 6 }}>
-              <Pill tone={usable ? 'good' : 'neutral'} icon={usable ? 'check' : 'zap'}>{ai.backend === 'checking' ? '확인 중' : blocked ? 'Claude 사용 불가' : ai.connected ? 'Claude 연결됨' : 'AI 미연결'}</Pill>
+              <Pill tone={usable ? 'good' : 'neutral'} icon={usable ? 'check' : 'zap'}>{ai.backend === 'checking' ? '확인 중' : blocked ? 'Claude 사용 불가' : ai.connected ? 'Claude 연결됨' : ai.note ? `AI 미연결 · ${ai.note.short}` : 'AI 미연결'}</Pill>
               <span className="xs muted">질의 문장을 지시문 없이 그대로 보내고, 답변에서 '수면밀도 · 밀도 매트리스' 언급 · 순서 · 경쟁사 · 인용 URL을 파싱합니다.</span>
             </div>
             <div className="row" style={{ gap: 6 }}>

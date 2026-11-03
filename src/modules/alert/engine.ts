@@ -16,6 +16,7 @@ import {
 } from '@/data/constants';
 import { monthlyPacing } from '@/core/selectors';
 import { addDays, fmt, isOffDay, mean, metrics, sum } from '@/core/util';
+import { MODULE_LABEL } from '@/modules/flow/data';
 import {
   DEMO_CREATIVES, DETECT_DEFAULTS, MEDIA_OWNER_ROLE, NOTIFY_BY_TYPE, ON_DUTY_POOL, PACE_CURVE_DAYS, ROLE_ACCOUNT_USER, RULES, SLA_HISTORY, TYPE_LABEL,
   WEEKEND_ACK_MIN, type CreativeReview, type TestScenarioId,
@@ -679,6 +680,61 @@ function fmtDateShort(d: string): string {
   return `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}(${w})`;
 }
 export { fmtDateShort };
+
+/**
+ * 데이터 기준 시각 (KST) — Dataset.generatedAt의 실제 시 · 분 (상단 바 '데이터 기준'과 같은 값).
+ * 데모 데이터는 generatedAt이 'HH:30'이라 기존 표기와 같다. generatedAt을 읽지 못하면 today · currentHour:30.
+ */
+export function dataAsOf(data: Pick<Dataset, 'generatedAt' | 'today' | 'currentHour'>): { date: string; clock: string; label: string } {
+  const ms = data.generatedAt ? Date.parse(data.generatedAt) : NaN;
+  const date = Number.isFinite(ms) ? kstDate(ms) : data.today;
+  const clock = Number.isFinite(ms) ? fmtClock(ms) : `${pad2(data.currentHour)}:30`;
+  return { date, clock, label: `${fmtDateShort(date)} ${clock}` };
+}
+
+/* ============================== 서버 알림 발송 표기 (정직성 · SAAS_SPEC §0) ============================== */
+
+/** 엔진이 감지 시 적는 '알림 발송' 자동 조치 문구 (화면 시연용 — 실제 발송이 아님) */
+const SIM_NOTIFY_RE = /^(메신저|메일) (즉시 )?알림 발송 · /;
+/** 서버 발송 요청 결과: enqueued = 발송 잡을 만든 채널 수, skipped = 등급 기준 밖이라 보내지 않은 채널 수. null = 아직 모름 (화면에서 만든 이슈 — 서버가 저장하며 채널로 보낸다) */
+export type DeliveryResult = { enqueued: number; skipped: number } | null;
+
+function deliveryReason(d: { enqueued: number; skipped: number }, isTest: boolean): string {
+  if (d.skipped > 0) return `켜진 채널 ${d.skipped}곳이 이 등급을 받지 않음`;
+  return isTest ? "테스트 데이터 이슈를 받는 켜진 알림 채널 없음 ('test' 이벤트)" : '이 이벤트를 받는 켜진 알림 채널 없음';
+}
+
+/**
+ * 서버 모드 이슈 문서의 알림 문구를 실제 발송 요청 결과로 바꾼다 (순수 함수 · 새 객체).
+ * 엔진의 감지 타임라인('감지 · 메신저 알림 (…)')과 자동 조치('메신저 즉시 알림 발송 · …')는 데모 시뮬레이션 문구라,
+ * 서버에서 채널이 없거나 발송이 막혔을 때도 '보냈다'고 읽힌다. 실제 결과는 발송 이력(notifications)이 원본이다.
+ */
+export function withDeliveryNote<T extends Pick<AlertIncident, 'severity' | 'ruleId' | 'timeline' | 'autoActions'> & { typeId?: string; isTest?: boolean }>(inc: T, d: DeliveryResult): T {
+  const typeId = inc.typeId ?? RULES[inc.ruleId]?.typeId ?? 'external';
+  const route = NOTIFY_BY_TYPE[typeId] ?? { channel: inc.severity === 'P3' ? '메일' : '메신저', to: '담당 AE' };
+  const isTest = !!inc.isTest;
+  const none = d !== null && d.enqueued === 0;
+  const short = d === null
+    ? '알림은 서버가 켜진 채널로 발송 (결과는 알림 설정 › 발송 이력)'
+    : d.enqueued > 0 ? `알림 채널 ${d.enqueued}곳에 발송 요청 (결과는 알림 설정 › 발송 이력)` : `알림 미발송 (${deliveryReason(d, isTest)})`;
+  const auto = d === null
+    ? `알림: 서버가 이 이슈를 받는 켜진 채널로 발송 · 규칙상 수신 ${route.to} · 실제 발송 결과는 알림 설정 › 발송 이력`
+    : d.enqueued > 0
+      ? `알림 채널 ${d.enqueued}곳에 발송 요청 · 규칙상 수신 ${route.to} · 실제 발송 결과는 알림 설정 › 발송 이력`
+      : `알림 미발송 · ${deliveryReason(d, isTest)} · 규칙상 수신 ${route.to} — 알림 설정에서 채널 · 등급 · 이벤트 확인`;
+  // 첫 줄 = 엔진 감지 기록 ('감지 · …' · 테스트 주입은 '테스트 이슈 감지 · …') — 머리말은 두고 알림 부분만 바꾼다
+  const timeline = (inc.timeline ?? []).map((t, k) => {
+    const m = k === 0 && t.by === 'MILDO Alert' ? /^((?:테스트 이슈 )?감지) · /.exec(t.action) : null;
+    return m ? { ...t, action: `${m[1]} · ${short}` } : t;
+  });
+  const autoActions = (inc.autoActions ?? []).map((a) => {
+    if (SIM_NOTIFY_RE.test(a)) return auto;
+    // 당번 호출 · P1 에스컬레이션도 알림으로 전달된다 — 보낸 채널이 없으면 직접 연락이 필요하다고 적는다
+    if (none && (/30분 내 확인 요청$/.test(a) || a === 'P1 → PM 에스컬레이션 · 브랜드 담당자 연락')) return `${a} (알림 미발송 — 직접 연락 필요)`;
+    return a;
+  });
+  return { ...inc, timeline, autoActions };
+}
 
 /* ============================== 개별 검사 (화면 · 도구 공용) ============================== */
 
@@ -1440,7 +1496,8 @@ export function detectBulkChange(changes: readonly ChangeRequest[], opts: { toda
     }
     if (best.length >= cfg.bulkBatch) {
       const [module, by] = k.split('|');
-      out.push(mk(`${module} · ${by}`, `${module} ${by} ${cfg.bulkWindowMin}분 내 ${best.length}건 일괄 변경`, best, [
+      // 대상(target)은 이슈 id · 서버 대량 변경 가드의 계열 키라 모듈 id 그대로, 제목은 화면 표기(모듈 한글 · 제품명)
+      out.push(mk(`${module} · ${by}`, `${MODULE_LABEL[module] ?? module} ${by} ${cfg.bulkWindowMin}분 내 ${best.length}건 일괄 변경`, best, [
         { label: `${cfg.bulkWindowMin}분 내 변경 건수`, observed: best.length, unit: 'int', threshold: `≥ ${cfg.bulkBatch}건`, level: 'danger' },
         { label: '평균 변경 폭', observed: mean(best.map((c) => Math.abs(c.changePct ?? 0))), unit: 'pct', level: 'info' },
       ], `동일 요청자 ${cfg.bulkWindowMin}분 내 ${best.length}건`));

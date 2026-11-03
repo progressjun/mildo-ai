@@ -65,7 +65,7 @@ describe('비밀번호 재설정', () => {
   it('없는 이메일도 200 · 메일 없음, 형식 오류는 400', async () => {
     const r = await postFrom(t.anon(), '/api/auth/password-reset', { email: 'nobody@example.com' });
     expect(r.status).toBe(200);
-    expect(r.json).toEqual({ ok: true });
+    expect(r.json).toEqual({ ok: true, mail: { configured: true } }); // 메일 설정 여부는 서버 전역 사실 — 계정 존재와 무관하게 같다
     expect(getTestOutbox()).toHaveLength(0);
     expect((await postFrom(t.anon(), '/api/auth/password-reset', { email: 'not-email' })).status).toBe(400);
   });

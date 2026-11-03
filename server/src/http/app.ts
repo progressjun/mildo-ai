@@ -55,7 +55,7 @@ export async function buildApp(ctx: ServerContext, opts: { logger?: boolean } = 
       return reply.status(err.status).send({ error: { code: err.code, message: err.message, detail: err.detail } });
     }
     const e = err as { statusCode?: number; code?: string; message?: string; validation?: unknown };
-    if (e.statusCode === 429) return reply.status(429).send({ error: { code: 'rate_limited', message: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요' } });
+    if (e.statusCode === 429) return reply.status(429).send({ error: rateLimitedError(req.url, reply.getHeader('retry-after')) });
     if (e.statusCode && e.statusCode < 500) return reply.status(e.statusCode).send({ error: { code: e.code ?? 'bad_request', message: e.message ?? '요청을 처리할 수 없습니다' } });
     req.log?.error?.(err);
     if (ctx.config.env !== 'production') console.error('[api error]', err);
@@ -87,6 +87,21 @@ export async function buildApp(ctx: ServerContext, opts: { logger?: boolean } = 
     app.setNotFoundHandler((_req, reply) => reply.status(404).send({ error: { code: 'not_found', message: '경로를 찾을 수 없습니다' } }));
   }
   return app;
+}
+
+/**
+ * 라우트 속도 제한(@fastify/rate-limit) 429 본문 — 플러그인이 붙인 retry-after(초)를 문구 · detail에 싣는다.
+ * 로그인은 로그인 전용 문구(화면이 서버 문구를 그대로 보여 준다 — src/saas/AuthScreens.tsx authErrorMessage).
+ */
+export function rateLimitedError(url: string, retryAfter: unknown): { code: 'rate_limited'; message: string; detail?: { retryAfterSec: number } } {
+  const sec = Math.ceil(Number(Array.isArray(retryAfter) ? retryAfter[0] : retryAfter));
+  const wait = Number.isFinite(sec) && sec > 0 ? `${sec}초 후` : '잠시 후';
+  const login = url.split('?')[0] === '/api/auth/login';
+  return {
+    code: 'rate_limited',
+    message: login ? `로그인 시도가 너무 많습니다. ${wait} 다시 시도해 주세요` : `요청이 너무 많습니다. ${wait} 다시 시도해 주세요`,
+    ...(Number.isFinite(sec) && sec > 0 ? { detail: { retryAfterSec: sec } } : {}),
+  };
 }
 
 /** 로그용 URL 마스킹: /api/invites/<token>… 경로와 ?invite= · ?reset= · ?token= 쿼리 값 */

@@ -56,6 +56,14 @@ function emitError(e: ApiErrorEvent): void {
   });
 }
 
+/**
+ * api()를 거치지 않는 서버 호출(예: AI 응답 스트림 — src/ai/claude.ts가 fetch로 직접 읽는다)의 실패를 같은 전역 처리에 넘긴다.
+ * 401이면 플랫폼이 로그인 화면으로 보내고 세션 만료 안내를 띄운다(context.tsx). 데모 모드에서는 구독자가 없어 아무 일도 없다.
+ */
+export function reportApiFailure(e: ApiErrorEvent): void {
+  emitError(e);
+}
+
 /** CSRF 토큰 — 쿠키(mildo_csrf)가 기본, 로그인 응답 · /auth/me의 값으로 보강 (쿠키를 못 읽는 환경 대비) */
 let csrfOverride: string | null = null;
 export function setCsrfToken(token: string | null): void {

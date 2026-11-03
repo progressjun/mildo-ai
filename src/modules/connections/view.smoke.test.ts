@@ -68,10 +68,13 @@ describe('데이터 연결 화면', () => {
     expect(buttonDisabled(ae, '지금 수집')).toBe(false);
     expect(buttonDisabled(ae, '연결 확인')).toBe(true);
     expect(buttonDisabled(ae, '설정')).toBe(true);
-    expect(ae).toContain('live는 관리자 · 소유자만');
+    // ae는 쓰기 모드 자체를 바꿀 수 없다 — 'live만 막힌다'로 읽히는 안내 대신 변경 권한 안내
+    expect(ae).toContain('쓰기 모드 변경은 PM · 관리자 · 소유자만');
+    expect(ae).not.toContain('live는 관리자 · 소유자만');
     const pm = await card({ configure: true, operate: true, liveWrite: false });
     expect(buttonDisabled(pm, '연결 확인')).toBe(false);
     expect(buttonDisabled(pm, '삭제')).toBe(false);
+    expect(pm).toContain('live는 관리자 · 소유자만');
     const admin = await card({ configure: true, operate: true, liveWrite: true });
     expect(admin).not.toContain('live는 관리자 · 소유자만');
     expect(admin).toContain('반영 가능: 입찰가 · 일 예산 · ON/OFF');

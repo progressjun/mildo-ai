@@ -50,7 +50,7 @@ async function alertCtx(mode: 'server' | 'demo'): Promise<AlertCtx> {
   let ctx: AlertCtx | null = null;
   function Probe() { ctx = useAlert(); return null; }
   const inner: ReactNode = h(StoreProvider, null, h(Probe));
-  renderToString(mode === 'server' ? h(SaasTestProvider, { value: { mode: 'server', role: 'pm', workspace: WS }, children: inner }) : inner);
+  renderToString(mode === 'server' ? h(SaasTestProvider, { value: { mode: 'server', role: 'pm', workspace: WS, can: (p) => WS.permissions.includes(p) }, children: inner }) : inner);
   if (!ctx) throw new Error('useAlert 컨텍스트 없음');
   return ctx;
 }

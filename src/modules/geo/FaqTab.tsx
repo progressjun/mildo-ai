@@ -135,11 +135,11 @@ export function FaqTab({ d, onItems, reviewed, cov, vis }: {
             {/* 생성 중에도 시작 버튼은 제자리에서 비활성 — 빠른 두 번 클릭의 두 번째가 '중지'에 떨어져 방금 시작한 생성을 취소하지 않도록 */}
             <div className="row" style={{ gap: 6 }}>
               <Button size="sm" variant="accent" icon="sparkle" disabled={!usable || busy} onClick={generate}
-                title={usable ? undefined : blocked ? 'Claude 사용이 허용되지 않음 — 규칙 초안으로 계속' : 'AI 미연결 — 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 실행'}>AI 초안 생성</Button>
+                title={usable ? undefined : blocked ? 'Claude 사용이 허용되지 않음 — 규칙 초안으로 계속' : ai.note ? `AI 미연결 — ${ai.note.long}` : 'AI 미연결 — 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 실행'}>AI 초안 생성</Button>
               {busy ? <Button size="sm" icon="stop" onClick={() => ctl.current?.abort()}>중지</Button> : null}
             </div>
             {blocked ? <div className="xs muted">Claude 사용이 허용되지 않아 AI 초안을 만들 수 없습니다. 규칙 초안과 직접 편집으로 계속합니다.</div>
-              : !ai.connected ? <div className="xs muted">{ai.backend === 'checking' ? 'AI 연결 상태 확인 중' : 'AI 미연결 — 규칙 초안만 사용합니다. 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.'}</div> : null}
+              : !ai.connected ? <div className="xs muted">{ai.backend === 'checking' ? 'AI 연결 상태 확인 중' : ai.note ? `AI 미연결 — 규칙 초안만 사용합니다. ${ai.note.long}` : 'AI 미연결 — 규칙 초안만 사용합니다. 설정에서 API 키를 입력하거나 claude.ai 아티팩트에서 열면 사용할 수 있습니다.'}</div> : null}
             {busy ? <div className="xs muted">Claude가 FAQ 초안을 작성 중입니다.</div> : null}
             {note ? <div className="xs">{note}</div> : null}
           </Card>

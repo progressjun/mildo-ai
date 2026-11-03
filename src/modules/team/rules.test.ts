@@ -1,6 +1,6 @@
 /** 팀 규칙 (서버 판정과 공유) — 역할별 부여 가능 범위 · 자기 역할 금지 · 소유자 권한 · 마지막 소유자 보호 */
 import { describe, expect, it } from 'vitest';
-import { grantableRoles, invitableRoles, inviteRoleProblem, removalProblem, roleChangeProblem, statusChangeProblem, type MemberTarget } from './rules';
+import { grantableRoles, invitableRoles, inviteRoleProblem, passwordResetIssueProblem, removalProblem, roleChangeProblem, statusChangeProblem, type MemberTarget } from './rules';
 
 const T = (role: MemberTarget['role'], o: Partial<MemberTarget> = {}): MemberTarget => ({ isSelf: false, role, active: true, ...o });
 
@@ -52,5 +52,17 @@ describe('제외 · 비활성화', () => {
     expect(statusChangeProblem('admin', T('ae'), 'disabled', true, 0)?.code).toBe('shared_account');
     expect(statusChangeProblem('admin', T('ae'), 'disabled', false, 0)).toBeNull();
     expect(statusChangeProblem('admin', T('ae', { active: false }), 'active', false, 0)).toBeNull();
+  });
+});
+
+describe('비밀번호 재설정 링크 발급 (계정 비활성화와 같은 관리 범위)', () => {
+  it('팀 관리 권한 · 자기 자신 · 소유자 계정(소유자만) · 비활성 · 관리 범위 밖', () => {
+    for (const r of ['pm', 'ae', 'client', 'viewer'] as const) expect(passwordResetIssueProblem(r, T('ae'), false)?.status).toBe(403);
+    expect(passwordResetIssueProblem('admin', T('admin', { isSelf: true }), false)?.code).toBe('self_reset');
+    expect(passwordResetIssueProblem('admin', T('owner'), false)?.code).toBe('owner_only');
+    expect(passwordResetIssueProblem('owner', T('owner'), false)).toBeNull();
+    expect(passwordResetIssueProblem('admin', T('pm', { active: false }), false)?.code).toBe('inactive_account');
+    expect(passwordResetIssueProblem('admin', T('pm'), true)?.code).toBe('shared_account');
+    expect(passwordResetIssueProblem('admin', T('client'), false)).toBeNull();
   });
 });

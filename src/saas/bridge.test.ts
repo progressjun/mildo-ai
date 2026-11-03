@@ -194,6 +194,15 @@ describe('변경 요청', () => {
     expect(h.toasts[0]).toMatchObject({ tone: 'critical', body: '이미 다른 사람이 처리했습니다' });
     expect(h.toasts[0].title).toContain('승인');
   });
+
+  it('되돌림 안내의 조사는 작업 이름 받침에 맞춘다 (반영을 · 보류를 — "을(를)" 아님)', async () => {
+    const h = harness({ 'PATCH /changes/*': () => new ApiError(403, 'forbidden', '이 작업을 할 권한이 없습니다') });
+    h.state = { ...h.state, changes: [chg('c_a'), chg('c_b')] };
+    h.bridge.updateChange('c_a', { status: 'applied' }, { by: 'PM', action: '반영' });
+    h.bridge.updateChange('c_b', { status: 'held' }, { by: 'PM', action: '보류' });
+    await h.bridge.settle();
+    expect(h.toasts.map((t) => t.title)).toEqual(['반영을 서버에 반영하지 못해 되돌렸습니다', '보류를 서버에 반영하지 못해 되돌렸습니다']);
+  });
 });
 
 describe('이슈', () => {
@@ -236,6 +245,7 @@ describe('이슈', () => {
     await h.bridge.settle();
     expect(h.calls.find((c) => c.path.endsWith('/incidents/ok'))?.o.body).toEqual({ patch: { status: 'ack' }, action: '인지' });
     expect(h.state.incidents.map((i) => `${i.id}:${i.status}:${i.assignee ?? ''}`)).toEqual(['ok:ack:서버 배정', 'bad:open:']);
+    expect(h.toasts.map((t) => t.title)).toEqual(['이슈 종료를 서버에 반영하지 못해 되돌렸습니다']);
   });
 });
 

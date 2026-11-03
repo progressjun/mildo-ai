@@ -55,7 +55,14 @@ export default function View() {
         }
         actions={
           <>
-            <Pill tone="outline" icon="users" title="승인 버튼은 요청의 승인 주체와 현재 역할로 활성화됩니다">{state.role} · {ROLE_SCOPE[state.role] ?? '승인 권한 확인'}</Pill>
+            {m.perms.server ? (
+              // 서버 모드: 멤버십 역할 · 서버와 같은 권한표 (데모 3역할 매핑으로 보이지 않게)
+              <Pill tone="outline" icon="users" title="승인 · 반영 버튼은 멤버십 역할 권한표로 활성화되고 서버가 최종 판정합니다 (반영은 운영 권한도 필요)">
+                {m.perms.roleLabel} · {m.perms.request.ok ? `승인 범위 ${m.perms.scope}` : '읽기 전용'}
+              </Pill>
+            ) : (
+              <Pill tone="outline" icon="users" title="승인 버튼은 요청의 승인 주체와 현재 역할로 활성화됩니다">{state.role} · {ROLE_SCOPE[state.role] ?? '승인 권한 확인'}</Pill>
+            )}
             {confirmReset ? (
               <>
                 <Button size="sm" variant="danger" icon="refresh" onClick={() => { resetLab(); setConfirmReset(false); setDraft(null); }}>Lab 기록 초기화 확정</Button>

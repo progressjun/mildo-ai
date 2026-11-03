@@ -18,6 +18,7 @@ import { AD_PILOT, CAUSE_CANDIDATES, GFA_DELEGATION, INTENT_IDS, KEYWORD_TEST_RU
 import { campaignPacing, mediaRows, monthlyPacing, previousRange, rangeOf, totalsOf } from '@/core/selectors';
 import { addDays, clamp, fmt, fmtDate, metrics, sum, weekday } from '@/core/util';
 import type { Brief } from '@/ai/prompts';
+import { changeActionCheck, isMemberActor, operateCheck, requestCheck, type Actor, type ChangeAction } from '@/core/permissions';
 import {
   GFA_AD_GROUPS, GFA_DEMO_ACCOUNTS, GFA_DEMO_CAMPAIGNS, GFA_MAIN_ACCOUNT_ID, MODULE_ASSUMPTIONS,
 } from './data';
@@ -194,12 +195,37 @@ export const AUTO_CHARGE_LABEL: Record<AdAccount['autoCharge'], string> = { ok: 
 export const ACCOUNT_STATUS_LABEL: Record<AdAccount['status'], string> = { active: '정상', review: '검수 · 확인 필요', restricted: '제재' };
 export type Role = '담당 AE' | 'PM' | '수면밀도';
 
-/** 역할별 승인 권한 (AE는 AE건, PM은 AE·PM건, 수면밀도는 전부) */
-export function canApprove(role: Role | string, approver: ApprovalLevel): { ok: boolean; reason: string } {
+/**
+ * 역할별 승인 권한 (AE는 AE건, PM은 AE·PM건, 수면밀도는 전부).
+ * 서버 모드는 멤버십 역할 { member } — 서버와 같은 권한표(approve:AE|PM|CLIENT, src/core/permissions.ts)로 판정한다.
+ */
+export function canApprove(role: Actor, approver: ApprovalLevel): { ok: boolean; reason: string } {
+  if (isMemberActor(role)) return changeActionCheck(role.member, approver, 'approve');
   const allowed: Record<string, ApprovalLevel[]> = { '담당 AE': ['AE'], PM: ['AE', 'PM'], '수면밀도': ['AE', 'PM', 'CLIENT'] };
   const list = allowed[role] ?? [];
   if (list.includes(approver)) return { ok: true, reason: `${role} 승인 범위` };
   return { ok: false, reason: `${APPROVER_LABEL[approver]} 범위 건입니다 · 현재 역할 ${role}의 승인 범위는 ${list.length ? list.map((a) => APPROVER_LABEL[a]).join(' · ') : '없음'}` };
+}
+
+/**
+ * 변경 요청 단계별 권한. 데모: 승인 주체 범위(canApprove) 하나로 모든 단계 (MILDO Flow canAct와 같은 규칙 — 기존 그대로).
+ * 서버: 서버 checkActionPermission과 같은 판정 — 반영 · 실행 · 재실행 · 롤백은 승인 권한 + 운영 권한(광고주 담당자는 승인 · 반려까지,
+ * CLIENT 건 반영은 소유자), 보류 · 보류 해제는 운영 권한, 승인 · 반려 · 실행 취소는 승인 권한.
+ */
+export function changePermission(role: Actor, c: Pick<ChangeRequest, 'approver'>, action: ChangeAction): { ok: boolean; reason: string } {
+  if (isMemberActor(role)) return changeActionCheck(role.member, c.approver, action);
+  return canApprove(role, c.approver);
+}
+
+/** 변경 요청 만들기 — 데모: 시연 역할 모두, 서버: 'request' 권한 (열람자는 불가) */
+export function canRequest(role: Actor): { ok: boolean; reason: string } {
+  if (isMemberActor(role)) return requestCheck(role.member);
+  return { ok: true, reason: '' };
+}
+/** MILDO Alert 이슈 등록(알림 발송) — 데모: 모두, 서버: 'operate' 권한 */
+export function canRaiseIncident(role: Actor): { ok: boolean; reason: string } {
+  if (isMemberActor(role)) return operateCheck(role.member);
+  return { ok: true, reason: '' };
 }
 
 /* ================================================================== */
@@ -1500,15 +1526,15 @@ export function canRollback(changes: readonly ChangeRequest[], c: ChangeRequest)
  * 승인 이후 단계(반영 · 실행 · 재실행 · 실행 취소 · 롤백)도 승인 주체 범위 안의 역할만 처리한다
  * — MILDO Flow canAct 와 같은 규칙 (AE는 AE 건, PM은 AE · PM 건, 수면밀도는 전부).
  */
-export function canOperate(role: Role | string, c: Pick<ChangeRequest, 'approver'>): { ok: boolean; reason: string } {
-  return canApprove(role, c.approver);
+export function canOperate(role: Actor, c: Pick<ChangeRequest, 'approver'>): { ok: boolean; reason: string } {
+  return changePermission(role, c, 'apply');
 }
 
 /**
  * SAFETY '반영분 전체 롤백' 대상 — 현재 역할 범위 안의 반영 건만, 최신 건부터.
  * 같은 대상에 범위 밖 최신 반영 건이 있으면 그 이전 건도 건너뛴다 (최신 건부터 롤백 원칙).
  */
-export function rollbackAllPlan(changes: readonly ChangeRequest[], role: Role | string): { list: ChangeRequest[]; skipped: ChangeRequest[] } {
+export function rollbackAllPlan(changes: readonly ChangeRequest[], role: Actor): { list: ChangeRequest[]; skipped: ChangeRequest[] } {
   const applied = (changes ?? [])
     .filter((c) => (c.module === 'adpilot' || c.module === 'gfa') && c.status === 'applied' && c.kind !== 'setting')
     .sort((a, b) => appliedAt(b).localeCompare(appliedAt(a)));
@@ -1517,7 +1543,7 @@ export function rollbackAllPlan(changes: readonly ChangeRequest[], role: Role | 
   const skipped: ChangeRequest[] = [];
   for (const c of applied) {
     const key = `${c.module}|${c.kind}|${c.targetId ?? c.target}`;
-    if (blocked.has(key) || !canOperate(role, c).ok) { blocked.add(key); skipped.push(c); continue; }
+    if (blocked.has(key) || !changePermission(role, c, 'rollback').ok) { blocked.add(key); skipped.push(c); continue; }
     list.push(c);
   }
   return { list, skipped };

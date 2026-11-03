@@ -8,7 +8,7 @@ import { Icon } from '@/ui/Icon';
 import { useActions, useStore } from '@/core/store';
 import { fmt } from '@/core/util';
 import {
-  ago, channelLabel, fmtDuration, fmtStamp, JOB_LABEL, KIND_LABEL, RUN_STATUS_META, sourceModeOf, staleSources,
+  ago, channelLabel, clipList, deleteScopeText, fmtDuration, fmtStamp, JOB_LABEL, KIND_LABEL, RUN_STATUS_META, runsEmptyText, sourceModeOf, staleSources,
   type CatalogProvider, type ConnectionView, type RunView, type WriteMode,
 } from './model';
 import { connectionsApi } from './client';
@@ -173,7 +173,7 @@ export default function View() {
           <Stat label="마지막 수집" value={lastSync ? ago(lastSync, s.nowMs) : '없음'} foot={<span className="xs">{lastSync ? fmtStamp(lastSync) : '연결 후 07:00 예약 또는 지금 수집'} · 기준 26시간</span>} />
           <Stat label="데이터 품질" value={<span>{s.qualitySummary.error}<span className="small muted"> 오류 · </span>{s.qualitySummary.warning}<span className="small muted"> 경고</span></span>} foot={<span className="xs">최근 실행 · 연결 상태 기준</span>} />
           <Stat label="Dataset 출처" value={src.label} src={src.mode !== 'live' ? <Src kind="DEMO" /> : undefined}
-            foot={<span className="xs" title={src.basis}>{stale.length ? `지연 ${stale.map((x) => channelLabel(x.channel)).slice(0, 3).join(' · ')}${stale.length > 3 ? ' …' : ''} (어제 데이터 없음)` : src.basis.slice(0, 60)}</span>} />
+            foot={<span className="xs" title={src.basis}>{stale.length ? `지연 ${stale.map((x) => channelLabel(x.channel)).slice(0, 3).join(' · ')}${stale.length > 3 ? ' …' : ''} (어제 데이터 없음)` : clipList(src.basis, 60)}</span>} />
         </div>
       </Card>
 
@@ -235,7 +235,7 @@ export default function View() {
         <Card title="수집 현황" sub="수집 실행마다 받은 행 · 쓴 행 · 품질 검사 결과. 행을 누르면 상세" actions={
           <Segmented<'all' | 'failed' | 'partial'> label="상태" value={runFilter} onChange={setRunFilter} options={[{ id: 'all', label: '전체' }, { id: 'failed', label: '실패' }, { id: 'partial', label: '일부 제외' }]} />
         }>
-          <DataTable<RunView> rows={runs} rowKey={(r) => r.id} onRowClick={setRun} maxHeight={560} empty={server ? '아직 수집 실행이 없습니다' : '예시 실행이 없습니다'}
+          <DataTable<RunView> rows={runs} rowKey={(r) => r.id} onRowClick={setRun} maxHeight={560} empty={runsEmptyText(server, runFilter, s.runs.length, !!s.nextBefore)}
             columns={[
               { key: 'startedAt', label: '시작', render: (r) => fmtStamp(r.startedAt), sort: (r) => r.startedAt ?? '' },
               { key: 'label', label: '출처', render: (r) => <span>{r.label} {r.provider === 'demo' ? <Src kind="DEMO" /> : null}</span> },
@@ -264,6 +264,7 @@ export default function View() {
 
       {tab === 'upload' ? (
         <UploadPanel key={uploadPreset ? `${uploadPreset.template}:${uploadPreset.channel ?? ''}` : 'default'} server={server} workspaceId={ws} canOperate={server ? perms.operate : true} canConfigure={perms.configure} csvConnections={csvConnections} uploads={s.uploads} onImported={() => void s.refresh()}
+          onShowRuns={(f) => { setRunFilter(f); setTab('runs'); }}
           initialTemplate={uploadPreset?.template} initialChannel={uploadPreset?.channel} />
       ) : null}
 
@@ -289,9 +290,10 @@ export default function View() {
         <ConfirmModal title={`${dialog.c.label} 삭제`} confirmLabel="커넥션 삭제" saving={saving} error={dialogError} onClose={close}
           onConfirm={() => ws && void act(() => connectionsApi.remove(ws, dialog.c.id), (r) => {
             s.setConnections(r.connections);
-            toast({ tone: 'good', title: '커넥션을 삭제했습니다', body: `이 출처로 들어온 웨어하우스 ${fmt.int(r.purgedRows)}행을 정리했습니다` });
+            toast({ tone: 'good', title: '커넥션을 삭제했습니다', body: `이 출처로 들어온 웨어하우스 ${fmt.int(r.purgedRows)}행${r.purgedUploads ? `(업로드 ${fmt.int(r.purgedUploads)}개 포함)` : ''}을 정리했습니다` });
+            void s.refresh();
           })}>
-          <span className="small">이 커넥션으로 수집한 웨어하우스 데이터와 수집 이력, 대기 중인 수집을 모두 지웁니다. 같은 매체에 다른 출처가 있으면 그 값이 다시 쓰입니다{dialog.c.provider === 'demo' ? ' (데모 TEST DATA를 지우면 실데이터만 남습니다)' : ''}. 되돌릴 수 없고 감사 로그에 남습니다.</span>
+          <span className="small">{deleteScopeText(dialog.c, s.uploads.filter((u) => u.connectionId === dialog.c.id).length)}</span>
         </ConfirmModal>
       ) : null}
       {run ? <RunDrawer r={run} onClose={() => setRun(null)} /> : null}

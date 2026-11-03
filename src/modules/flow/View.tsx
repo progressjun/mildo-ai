@@ -15,7 +15,7 @@ import { PromoReportTab } from './PromoReportTab';
 import { RequestTab } from './RequestTab';
 import { SystemTab } from './SystemTab';
 import { TimelineTab } from './TimelineTab';
-import { EMPTY_DRAFT, fmtDuration, fmtStamp, roleScopeLabel, stageCounts, type RequestDraft } from './engine';
+import { actorLabel, EMPTY_DRAFT, fmtDuration, fmtStamp, roleScopeText, stageCounts, type RequestDraft } from './engine';
 import { useFlow } from './useFlow';
 import './styles.css';
 
@@ -48,12 +48,12 @@ export default function View() {
             <span className="xs muted">현재 역할</span>
             {server ? (
               // 서버 모드: 역할은 멤버십 기준(role/set은 서버 모드에서 버려진다) — 읽기 전용으로 표시하고 바꾸는 곳은 팀 · 권한
-              <strong className="small flow-role-fixed" aria-label="현재 역할 (멤버십)">{saas.role ? ROLE_LABEL[saas.role] : state.role}</strong>
+              <strong className="small flow-role-fixed" aria-label="현재 역할 (멤버십)">{saas.role ? ROLE_LABEL[saas.role] : actorLabel(ctx.actor)}</strong>
             ) : (
               <Segmented<AppState['role']> label="현재 역할" value={state.role} onChange={(role) => dispatch({ type: 'role/set', role })}
                 options={[{ id: '담당 AE', label: '담당 AE' }, { id: 'PM', label: 'PM' }, { id: '수면밀도', label: '수면밀도' }]} />
             )}
-            <span className="xs ink2">승인 범위 {roleScopeLabel(state.role)} 건</span>
+            <span className="xs ink2">{roleScopeText(ctx.actor)}{server && saas.role === 'client' ? ' · 반영 · 롤백은 대행사 운영 역할' : ''}</span>
           </div>
         } />
 

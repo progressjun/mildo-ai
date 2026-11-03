@@ -130,6 +130,24 @@ export function backoffDelay(attempt: number, rand: () => number = Math.random):
   return Math.round(base * (1 + 0.2 * rand()));
 }
 
+/* ---------- 조사 ---------- */
+
+/** 끝 글자의 받침 유무 — 한글은 종성, 숫자 · 영문은 읽는 소리 기준(1 일 · 3 삼 · L 엘 · M 엠 · N 엔), 그 밖은 받침 없음 */
+function hasFinalConsonant(word: string): boolean {
+  const w = word.replace(/[\s)\]'"’”·.]+$/u, '');
+  const ch = w.slice(-1);
+  if (!ch) return false;
+  const code = ch.charCodeAt(0);
+  if (code >= 0xac00 && code <= 0xd7a3) return (code - 0xac00) % 28 !== 0;
+  if (/\d/.test(ch)) return '013678'.includes(ch);
+  if (/[a-z]/i.test(ch)) return 'lmn'.includes(ch.toLowerCase());
+  return false;
+}
+/** 목적격 조사 — '반영을' · '승인을' · '보류를' (동적으로 들어가는 작업 이름 뒤, '을(를)' 대신) */
+export function withObjectParticle(word: string): string {
+  return `${word}${hasFinalConsonant(word) ? '을' : '를'}`;
+}
+
 /* ---------- 데이터 출처 라벨 ---------- */
 
 export interface DataSourceLabel {
@@ -143,9 +161,14 @@ export interface DataSourceLabel {
 
 const KIND_LABEL: Record<string, string> = { api: 'API 연동', csv: 'CSV 업로드', demo: '테스트 데이터' };
 
+/** 매체 · 판매 채널이 아닌 웨어하우스 출처 채널 (server/src/warehouse 데이터셋 메타 sources[].channel) */
+const NON_MEDIA_CHANNEL: Record<string, string> = { brand_search: '브랜드 검색량' };
+
+/** 출처 채널 id → 한국어 이름 (매체 · 판매 채널 · 브랜드 검색량). connections/model.ts channelLabel과 같은 이름을 쓴다 */
 export function channelName(id: string): string {
   return (MEDIA as Record<string, { name: string } | undefined>)[id]?.name
     ?? (SALES_CHANNELS as Record<string, { name: string } | undefined>)[id]?.name
+    ?? NON_MEDIA_CHANNEL[id]
     ?? id;
 }
 

@@ -317,15 +317,35 @@ export function usageFromMessage(u: BetaUsage | null | undefined): TokenUsage {
   return t;
 }
 
-/** 스트림 도중 끊겼을 때 이벤트로 본 사용량(최선 추정) */
-class UsageTracker {
+/**
+ * 받은 출력 길이(UTF-8 바이트) → 출력 토큰 추정. 한글은 글자당 3바이트 · 영문은 토큰당 약 4바이트라 3바이트 ≈ 1토큰으로 잡는다
+ * (한도 판정에 쓰므로 적게 세지 않는 쪽). 실제 청구 토큰이 아니라 추정이다 — usageSummary basis에 적는다.
+ */
+export const estimateOutputTokens = (bytes: number) => (bytes > 0 ? Math.ceil(bytes / 3) : 0);
+const utf8Bytes = (s: unknown) => (typeof s === 'string' && s ? Buffer.byteLength(s, 'utf8') : 0);
+
+/**
+ * 스트림 도중 끊겼을 때 이벤트로 본 사용량(최선 추정).
+ * 출력 토큰은 message_delta(끝날 때 한 번)에만 실제 값이 온다 — 중지 · 스트림 오류로 그 전에 끊기면 message_start의 값(보통 1)만 남아
+ * 이미 생성 · 청구된 토큰이 사용량 · 한도에서 빠진다. 그때는 받은 텍스트 · thinking · 도구 입력 델타 길이로 추정한 값과 큰 쪽을 쓴다.
+ */
+export class UsageTracker {
   input = 0;
   cacheRead = 0;
   cacheCreation = 0;
   output = 0;
   model: string | null = null;
+  /** 받은 출력 델타 바이트 (text · thinking · tool input json) */
+  streamedBytes = 0;
+  /** message_delta로 최종 출력 토큰을 받았는지 */
+  finalOutput = false;
   observe(e: BetaRawMessageStreamEvent): void {
-    if (e.type === 'message_start') {
+    if (e.type === 'content_block_delta') {
+      const d = e.delta as { type: string; text?: string; thinking?: string; partial_json?: string };
+      if (d.type === 'text_delta') this.streamedBytes += utf8Bytes(d.text);
+      else if (d.type === 'thinking_delta') this.streamedBytes += utf8Bytes(d.thinking);
+      else if (d.type === 'input_json_delta') this.streamedBytes += utf8Bytes(d.partial_json);
+    } else if (e.type === 'message_start') {
       const u = e.message.usage as Partial<BetaUsage> | undefined;
       this.model = e.message.model ?? this.model;
       if (u) {
@@ -340,12 +360,20 @@ class UsageTracker {
         if (u.input_tokens != null) this.input = n(u.input_tokens);
         if (u.cache_read_input_tokens != null) this.cacheRead = n(u.cache_read_input_tokens);
         if (u.cache_creation_input_tokens != null) this.cacheCreation = n(u.cache_creation_input_tokens);
-        if (u.output_tokens != null) this.output = n(u.output_tokens);
+        if (u.output_tokens != null) {
+          this.output = n(u.output_tokens);
+          this.finalOutput = true;
+        }
       }
     }
   }
+  /** 출력 토큰을 추정했는지 (최종 값을 받지 못하고 받은 델타 길이로 잡은 경우) */
+  get estimated(): boolean {
+    return !this.finalOutput && estimateOutputTokens(this.streamedBytes) > this.output;
+  }
   snapshot(): TokenUsage {
-    return { inputTokens: this.input + this.cacheRead + this.cacheCreation, outputTokens: this.output, cacheReadTokens: this.cacheRead, cacheCreationTokens: this.cacheCreation };
+    const output = this.finalOutput ? this.output : Math.max(this.output, estimateOutputTokens(this.streamedBytes));
+    return { inputTokens: this.input + this.cacheRead + this.cacheCreation, outputTokens: output, cacheReadTokens: this.cacheRead, cacheCreationTokens: this.cacheCreation };
   }
 }
 
@@ -655,6 +683,6 @@ export async function usageSummary(
     configured: o.configured,
     enabled: aiEnabled(c.workspace.config),
     canUse: o.canUse,
-    basis: `집계 기준: KST ${o.month}-01 00:00부터 다음 달 1일 00:00 전까지. 입력 토큰은 캐시 읽기 · 쓰기를 포함한 전체 입력이며, 한도 판정은 입력 + 출력 합계로 한다.`,
+    basis: `집계 기준: KST ${o.month}-01 00:00부터 다음 달 1일 00:00 전까지. 입력 토큰은 캐시 읽기 · 쓰기를 포함한 전체 입력이며, 한도 판정은 입력 + 출력 합계로 한다. 중지 · 오류로 중간에 끊긴 호출의 출력 토큰은 받은 출력 길이(3바이트 ≈ 1토큰)로 추정한 값이다.`,
   };
 }

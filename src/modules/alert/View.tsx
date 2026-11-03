@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react';
 import './styles.css';
 import { SAFETY_NET } from '@/data/constants';
 import { Button, Card, PageHeader, Pill, Src, Tabs } from '@/ui/primitives';
-import { fmtDateShort, holidayPrecheck, offBlocks, sevCounts, slaState, fmtRemain, dayDiff, type AlertIncident } from './engine';
+import { dataAsOf, fmtDateShort, holidayPrecheck, offBlocks, sevCounts, slaState, fmtRemain, dayDiff, type AlertIncident } from './engine';
 import { RULES } from './data';
 import { useAlert, type AlertCtx } from './hooks';
 import { QueueTab } from './QueueTab';
@@ -35,13 +35,14 @@ export default function View() {
         eyebrow="05 OPERATIONAL STABILITY · MILDO ALERT"
         title="MILDO Alert"
         sub="API · 광고 상태 데이터로 이상을 먼저 찾아 원인 요약과 다음 조치를 함께 보냅니다. 등급별 SLA, 주말 · 공휴일 당번, 계정 · 결제 점검, 같은 양식의 조치 보고까지 한 화면에서 처리합니다."
-        sources={<><Src kind="PROPOSAL" page="p.43–50" /><Src kind="DEMO" /><span className="xs muted">데이터 기준 {fmtDateShort(data.today)} {String(data.currentHour).padStart(2, '0')}:30 · 수치 기준은 초기값 (온보딩 중 오탐률 보며 조정, p.44)</span></>}
+        sources={<><Src kind="PROPOSAL" page="p.43–50" /><Src kind="DEMO" /><span className="xs muted">데이터 기준 {dataAsOf(data).label} · 수치 기준은 초기값 (온보딩 중 오탐률 보며 조정, p.44)</span></>}
         actions={
           <>
             <Pill tone={regime.off ? 'dark' : 'neutral'} icon="calendar">
               {regime.off ? `주말 · 공휴일 체계 (${regime.label}) · 당번 ${nameOf(regime.duty?.role)}` : '평일 운영 체계'}
             </Pill>
-            <Button size="sm" icon="refresh" onClick={() => ctx.rescan()}>재스캔</Button>
+            <Button size="sm" icon="refresh" disabled={!ctx.perm.operate} title={ctx.perm.operateReason} onClick={() => ctx.rescan()}>재스캔</Button>
+            {!ctx.perm.operate ? <span className="xs muted">{ctx.perm.operateReason}</span> : null}
           </>
         }
       />
@@ -73,7 +74,7 @@ export default function View() {
 
 /** p.43 5단계 안전망 — 각 단계의 현재 상태를 함께 표시 */
 function SafetyStrip({ ctx, onTab }: { ctx: AlertCtx; onTab: (t: TabId) => void }) {
-  const { data, incidents, nowMs, toMs, state, cfg, tfNames } = ctx;
+  const { data, incidents, nowMs, toMs, state, cfg, tfNames, slaOff } = ctx;
   const blocks = useMemo(() => offBlocks(data.today, 120), [data.today]);
   const cur = blocks[0];
   const long = blocks.find((b) => b.days >= 3 && b.start > data.today);
@@ -81,7 +82,7 @@ function SafetyStrip({ ctx, onTab }: { ctx: AlertCtx; onTab: (t: TabId) => void 
   const fails = pre?.items.filter((i) => i.level === 'fail').length ?? 0;
   const open = incidents.filter((i) => i.status !== 'resolved');
   const p1 = open.filter((i) => i.severity === 'P1');
-  const urgent = [...p1].map((i) => ({ i, st: slaState(i, nowMs, toMs, state.offHoursMode) })).sort((a, b) => (a.st.remainingMin ?? 1e9) - (b.st.remainingMin ?? 1e9))[0];
+  const urgent = [...p1].map((i) => ({ i, st: slaState(i, nowMs, toMs, slaOff) })).sort((a, b) => (a.st.remainingMin ?? 1e9) - (b.st.remainingMin ?? 1e9))[0];
   const reportable = incidents.filter((i) => i.severity !== 'P3');
   const reported = reportable.filter((i) => (i as AlertIncident).sla?.reportAt).length;
   const ruleChanges = state.changes.filter((c) => c.kind === 'alert_rule');

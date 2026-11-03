@@ -5,7 +5,7 @@ import { AiInsight } from '@/ui/AiInsight';
 import { Icon } from '@/ui/Icon';
 import { Button, Card, CopyButton, Empty, Pill, Segmented, Src } from '@/ui/primitives';
 import {
-  canAct, caseReport, fmtStamp, incidentDraft, incidentFix, opsBrief, opsEvents, OPS_STAGES, STAGE_LABEL, stageCounts, type OpsCase, type OpsStage, type RequestDraft,
+  actionAllowed, actorLabel, canAct, caseReport, fmtStamp, incidentDraft, incidentFix, opsBrief, opsEvents, OPS_STAGES, STAGE_LABEL, stageCounts, type OpsCase, type OpsStage, type RequestDraft,
 } from './engine';
 import { STATUS_META } from './data';
 import { ChangeValue, StatusPill, settled } from './parts';
@@ -14,7 +14,7 @@ import { isExecuting } from './execution';
 import type { FlowCtx } from './useFlow';
 
 export function TimelineTab({ ctx, onOpen, onDraft }: { ctx: FlowCtx; onOpen: (id: string) => void; onDraft: (d: RequestDraft) => void }) {
-  const { cases, incidents, changes, clock, data, state } = ctx;
+  const { cases, incidents, changes, clock, data, actor } = ctx;
   const [stage, setStage] = useState<OpsStage | 'all'>('all');
   const [source, setSource] = useState<'all' | 'incident' | 'change'>('all');
   const [showDone, setShowDone] = useState(false);
@@ -79,14 +79,14 @@ export function TimelineTab({ ctx, onOpen, onDraft }: { ctx: FlowCtx; onOpen: (i
       </div>
 
       <AiInsight title="운영 프로세스 해석" sub="병목 단계 · SLA 리스크 · 승인 대기 연결" cta="해석 생성"
-        buildPrompt={() => `과제: 감지 → 배정 → 조치 → 보고 흐름에서 병목과 SLA 리스크를 판단하라. 현재 역할 ${state.role}.\n데이터(JSON):\n${JSON.stringify(cases.slice(0, 12).map((c) => ({ 등급: c.incident.severity, 이슈: c.incident.title, 단계: c.current, 단계기록: c.stages.map((s) => `${STAGE_LABEL[s.stage]}:${s.done ? fmtStamp(s.atMs ?? NaN) : '대기'} ${s.note}`), 연결요청: c.linked.map((l) => `${l.change.target} ${l.change.status}`) })))}`}
+        buildPrompt={() => `과제: 감지 → 배정 → 조치 → 보고 흐름에서 병목과 SLA 리스크를 판단하라. 현재 역할 ${actorLabel(actor)}.\n데이터(JSON):\n${JSON.stringify(cases.slice(0, 12).map((c) => ({ 등급: c.incident.severity, 이슈: c.incident.title, 단계: c.current, 단계기록: c.stages.map((s) => `${STAGE_LABEL[s.stage]}:${s.done ? fmtStamp(s.atMs ?? NaN) : '대기'} ${s.note}`), 연결요청: c.linked.map((l) => `${l.change.target} ${l.change.status}`) })))}`}
         fallback={() => opsBrief(data, incidents, changes, clock.toMs)} />
     </div>
   );
 }
 
 function CaseCard({ ctx, c, onOpen, onDraft }: { ctx: FlowCtx; c: OpsCase; onOpen: (id: string) => void; onDraft: (d: RequestDraft) => void }) {
-  const { data, changes, state, act, incidentStep, createRequest } = ctx;
+  const { data, changes, act, incidentStep, createRequest, actor, requestPerm, operatePerm } = ctx;
   const [note, setNote] = useState('');
   const i = c.incident;
   const fix = incidentFix(data, i, changes, ctx.incidents);
@@ -119,14 +119,17 @@ function CaseCard({ ctx, c, onOpen, onDraft }: { ctx: FlowCtx; c: OpsCase; onOpe
         <div className="stack-sm" style={{ gap: 4 }}>
           <div className="xs muted">조치 · 변경 요청</div>
           {c.linked.map(({ change: x, inferred }) => {
-            const ok = canAct(state.role, x.approver).ok;
+            // 데모: 승인 범위 · 서버: 전이별 권한(반영은 운영 권한도) — 서버가 거절할 버튼을 켜지 않는다
+            const ap = actionAllowed(actor, x.approver, 'approve');
+            const apl = actionAllowed(actor, x.approver, 'apply');
+            const ok = canAct(actor, x.approver).ok;
             return (
               <div key={x.id} className="flow-link-row">
                 <button type="button" className="flow-link-main" onClick={() => onOpen(x.id)}>
                   <StatusPill status={x.status} /><ExecBadge c={x} /><strong className="small">{x.target}</strong><ChangeValue c={x} />{inferred ? <span className="xs muted">관련 추정</span> : null}
                 </button>
-                {x.status === 'pending' ? <Button size="sm" variant="primary" disabled={!ok} title={ok ? '승인' : '현재 역할 승인 범위 밖'} onClick={settled(() => act(x, 'approve'))}>승인</Button> : null}
-                {x.status === 'approved' ? <Button size="sm" variant="accent" disabled={!ok || isExecuting(x)} title={isExecuting(x) ? '매체 반영이 진행 중입니다' : ok ? '반영' : '현재 역할 승인 범위 밖'} onClick={settled(() => act(x, 'apply'))}>{isExecuting(x) ? '반영 중' : '반영'}</Button> : null}
+                {x.status === 'pending' ? <Button size="sm" variant="primary" disabled={!ap.ok} title={ap.ok ? '승인' : ok ? ap.reason : '현재 역할 승인 범위 밖'} onClick={settled(() => act(x, 'approve'))}>승인</Button> : null}
+                {x.status === 'approved' ? <Button size="sm" variant="accent" disabled={!apl.ok || isExecuting(x)} title={isExecuting(x) ? '매체 반영이 진행 중입니다' : apl.ok ? '반영' : ok ? apl.reason : '현재 역할 승인 범위 밖'} onClick={settled(() => act(x, 'apply'))}>{isExecuting(x) ? '반영 중' : '반영'}</Button> : null}
               </div>
             );
           })}
@@ -137,14 +140,14 @@ function CaseCard({ ctx, c, onOpen, onDraft }: { ctx: FlowCtx; c: OpsCase; onOpe
           c.next.needsNote ? (
             <>
               <input className="input" style={{ maxWidth: 320 }} aria-label="1차 조치 내용" placeholder="1차 조치 내용 (예: 자동 조정 보류 유지 · 픽셀 점검 요청)" value={note} onChange={(e) => setNote(e.target.value)} />
-              <Button size="sm" variant="primary" disabled={!note.trim()} onClick={() => { incidentStep(i, 'action', note); setNote(''); }}>{c.next.label}</Button>
+              <Button size="sm" variant="primary" disabled={!note.trim() || !operatePerm.ok} title={!operatePerm.ok ? operatePerm.reason : undefined} onClick={() => { incidentStep(i, 'action', note); setNote(''); }}>{c.next.label}</Button>
             </>
-          ) : <Button size="sm" variant="primary" icon={c.next.id === 'ack' ? 'users' : 'report'} onClick={() => incidentStep(i, c.next!.id)}>{c.next.label}</Button>
+          ) : <Button size="sm" variant="primary" icon={c.next.id === 'ack' ? 'users' : 'report'} disabled={!operatePerm.ok} title={!operatePerm.ok ? operatePerm.reason : undefined} onClick={() => incidentStep(i, c.next!.id)}>{c.next.label}</Button>
         ) : c.current !== 'done' ? <span className="xs muted">해결 · 재발 방지 기록은 MILDO Alert에서</span> : null}
         {fix ? (
           fix.state
             ? <Pill tone="outline" icon="check">요청됨 · {STATUS_META[fix.state.status].label}</Pill>
-            : <Button size="sm" icon="send" onClick={() => createRequest({ ...fix.input, reason: `${fix.input.reason} · 이슈 ${i.id}` })}>{fix.label}</Button>
+            : <Button size="sm" icon="send" disabled={!requestPerm.ok} title={!requestPerm.ok ? requestPerm.reason : undefined} onClick={() => createRequest({ ...fix.input, reason: `${fix.input.reason} · 이슈 ${i.id}` })}>{fix.label}</Button>
         ) : null}
         <Button size="sm" variant="ghost" icon="edit" onClick={() => onDraft(incidentDraft(data, i))}>조치 요청 작성</Button>
       </div>

@@ -205,6 +205,7 @@
 .flow-exec-panel[data-exec='dry_run'] { box-shadow: inset 3px 0 0 var(--warning); }
 .flow-exec-panel[data-exec='live'] { box-shadow: inset 3px 0 0 var(--good); }
 .flow-exec-panel[data-exec='live_failed'] { box-shadow: inset 3px 0 0 var(--critical); }
+.flow-exec-panel[data-exec='held'] { box-shadow: inset 3px 0 0 var(--critical); }
 .flow-exec-req summary { cursor: pointer; color: var(--ink-2); }
 .flow-exec-pre {
   margin: 6px 0 0; padding: 8px; max-height: 240px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm);

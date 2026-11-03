@@ -5,7 +5,7 @@ import { fmt, fmtDate } from '@/core/util';
 import { Button, Callout, Card, type Column, DataTable, NumberInput, Pill, ProgressBar, Src } from '@/ui/primitives';
 import { LAB_DEFAULT_CRITERIA } from './data';
 import {
-  bulkCheck, canApprove, decisionPayload, groupPools, INTENT_NAME, isRegistration, KW_VERDICT_META, pipelineSummary, registrationPayload, relatedCandidatesFor, SOURCE_LABEL,
+  bulkCheck, decisionPayload, groupPools, INTENT_NAME, isRegistration, KW_VERDICT_META, pipelineSummary, registrationPayload, relatedCandidatesFor, SOURCE_LABEL,
   type LabCriteria, type PipelineItem,
 } from './engine';
 import { setLab } from './store';
@@ -35,7 +35,8 @@ const APPROVER_SHORT = (a: string) => (a === 'PM' ? 'PM' : a === 'CLIENT' ? '수
 
 function ItemCard({ i, m, guard }: { i: PipelineItem; m: LabModel; guard: ReturnType<typeof useClickGuard> }) {
   const j = i.judgement;
-  const { actions, state } = m;
+  const { actions, state, perms } = m;
+  const req = perms.request;
   const canDecide = i.step >= 3 && !active(i.decision) && i.source !== 'request';
   const related = j.verdict === 'expand' && i.source !== 'request' ? relatedCandidatesFor(i.phrase, m.disc.all, 3) : [];
   return (
@@ -67,7 +68,7 @@ function ItemCard({ i, m, guard }: { i: PipelineItem; m: LabModel; guard: Return
           <span className="lab-sub">연관 키워드 추가 발굴 · 같은 토픽 미등록 후보</span>
           <div className="row lab-related" style={{ gap: 4 }}>
             {related.map((c) => (
-              <Button key={c.id} size="sm" icon="plus" title={`${SOURCE_LABEL[c.source]} · ${c.score}점 · 테스트 그룹 등록 요청`}
+              <Button key={c.id} size="sm" icon="plus" disabled={!req.ok} title={req.ok ? `${SOURCE_LABEL[c.source]} · ${c.score}점 · 테스트 그룹 등록 요청` : req.reason}
                 onClick={guard(() => { const p = registrationPayload(c, state.role); actions.addChange(p); actions.toast({ tone: 'good', title: `연관 후보 등록 요청 · ${c.phrase}`, body: `${APPROVER_SHORT(p.approver)} 승인 대기`, route: 'flow' }); })}>
                 {c.phrase} · {c.score}점
               </Button>
@@ -83,7 +84,7 @@ function ItemCard({ i, m, guard }: { i: PipelineItem; m: LabModel; guard: Return
         </div>
       ) : null}
       {canDecide ? (
-        <Button size="sm" variant={i.step === 4 ? 'primary' : 'default'} icon="send"
+        <Button size="sm" variant={i.step === 4 ? 'primary' : 'default'} icon="send" disabled={!req.ok} title={req.ok ? undefined : req.reason}
           onClick={guard(() => {
             const p = decisionPayload(i, state.role);
             actions.addChange(p);
@@ -95,7 +96,8 @@ function ItemCard({ i, m, guard }: { i: PipelineItem; m: LabModel; guard: Return
 }
 
 export function PipelineTab({ m }: { m: LabModel }) {
-  const { pipeline, crit, disc, state, actions, d } = m;
+  const { pipeline, crit, disc, state, actions, d, perms } = m;
+  const req = perms.request;
   const [confirmBulk, setConfirmBulk] = useState(false);
   const guard = useClickGuard();
   const s = useMemo(() => pipelineSummary(pipeline), [pipeline]);
@@ -109,6 +111,7 @@ export function PipelineTab({ m }: { m: LabModel }) {
 
   const bulkRequest = guard((force = false) => {
     if (bc.level === 'block') return false;
+    if (!req.ok) { actions.toast({ tone: 'warning', title: '변경 요청 권한이 없습니다', body: req.reason }); return false; }
     if (bc.level === 'warn' && !force) { setConfirmBulk(true); return false; }
     for (const i of decidable) {
       const p = decisionPayload(i, state.role);
@@ -155,7 +158,7 @@ export function PipelineTab({ m }: { m: LabModel }) {
               <span className="lab-item-title">{c.phrase}</span>
               <span className="lab-sub">추천 · {SOURCE_LABEL[c.source]} · {INTENT_NAME(c.intent)} · 입찰 상한 {fmt.won(c.bidCap)}</span>
               <ScoreBar score={c.score} />
-              <Button size="sm" icon="plus" onClick={guard(() => { const p = registrationPayload(c, state.role); actions.addChange(p); actions.toast({ tone: 'good', title: `등록 요청 · ${c.phrase}`, body: `${APPROVER_SHORT(p.approver)} 승인 대기`, route: 'flow' }); })}>등록 요청</Button>
+              <Button size="sm" icon="plus" disabled={!req.ok} title={req.ok ? undefined : req.reason} onClick={guard(() => { const p = registrationPayload(c, state.role); actions.addChange(p); actions.toast({ tone: 'good', title: `등록 요청 · ${c.phrase}`, body: `${APPROVER_SHORT(p.approver)} 승인 대기`, route: 'flow' }); })}>등록 요청</Button>
             </div>
           ))}
           {!by(1).length && !recos.length ? <span className="lab-sub">등록 대기 항목이 없습니다</span> : null}
@@ -178,17 +181,23 @@ export function PipelineTab({ m }: { m: LabModel }) {
         <div className="lab-col">
           <div className="lab-col-head"><span className="lab-col-title">STEP 4 · 판정 · 반영 <Pill tone={decidable.length ? 'accent' : 'neutral'}>{by(4).length}</Pill></span><span className="lab-sub">자동 판정 → 담당자 승인 후 일괄 반영</span></div>
           {decidable.length ? (
-            <Button size="sm" variant="primary" icon="send" disabled={bc.level === 'block'} title={bc.reason} onClick={() => bulkRequest()}>판정 {decidable.length}건 일괄 승인 요청</Button>
+            <Button size="sm" variant="primary" icon="send" disabled={bc.level === 'block' || !req.ok} title={req.ok ? bc.reason : req.reason} onClick={() => bulkRequest()}>판정 {decidable.length}건 일괄 승인 요청</Button>
           ) : null}
-          {approvedDecisions.length ? (
-            <Button size="sm" variant="accent" icon="check" onClick={guard(() => {
-              let n = 0;
-              for (const c of approvedDecisions) {
-                if (canApprove(m.state.role, c.approver).ok) { actions.updateChange(c.id, { status: 'applied' }, '일괄 반영'); n += 1; }
-              }
-              actions.toast({ tone: n ? 'good' : 'warning', title: n ? `승인된 판정 ${n}건 반영` : '반영 권한이 없습니다', body: n ? undefined : `현재 역할 ${m.state.role}` });
-            })}>승인된 {approvedDecisions.length}건 일괄 반영</Button>
-          ) : null}
+          {approvedDecisions.length ? (() => {
+            // 데모: 승인 범위 안의 건, 서버: 반영 권한(승인 + 운영)이 있는 건만 — 없으면 비활성 + 이유
+            const applicable = approvedDecisions.filter((c) => perms.check(c.approver, 'apply').ok);
+            const why = applicable.length ? undefined : perms.check(approvedDecisions[0].approver, 'apply').reason || `현재 역할 ${perms.roleLabel}`;
+            return (
+              <Button size="sm" variant="accent" icon="check" disabled={perms.server && !applicable.length} title={perms.server ? why : undefined} onClick={guard(() => {
+                let n = 0;
+                for (const c of approvedDecisions) {
+                  if (perms.check(c.approver, 'apply').ok) { actions.updateChange(c.id, { status: 'applied' }, '일괄 반영'); n += 1; }
+                }
+                if (perms.server && n) actions.toast({ tone: 'info', title: `승인된 판정 ${n}건 반영 요청을 보냈습니다`, body: '서버 실행 점검 · 매체 반영 결과는 MILDO Flow에서 이어서 알립니다', route: 'flow' });
+                else actions.toast({ tone: n ? 'good' : 'warning', title: n ? `승인된 판정 ${n}건 반영` : '반영 권한이 없습니다', body: n ? undefined : `현재 역할 ${m.state.role}` });
+              })}>승인된 {approvedDecisions.length}건 일괄 반영</Button>
+            );
+          })() : null}
           {confirmBulk ? (
             <Callout tone="warning" title="일괄 요청 — 한 번 더 확인">
               <div className="stack-sm"><span>{bc.reason}</span><span className="row" style={{ gap: 6 }}><Button size="sm" variant="primary" onClick={() => bulkRequest(true)}>확정</Button><Button size="sm" onClick={() => setConfirmBulk(false)}>취소</Button></span></div>

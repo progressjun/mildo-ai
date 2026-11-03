@@ -63,6 +63,7 @@ export const ACTION_LABEL: Record<string, string> = {
   'auth.password_change': '비밀번호 변경',
   'auth.password_change_failed': '비밀번호 변경 실패 (현재 비밀번호 불일치)',
   'auth.password_reset_request': '비밀번호 재설정 메일 요청',
+  'auth.password_reset_issue': '비밀번호 재설정 링크 발급 (운영자 CLI)',
   'auth.password_reset': '비밀번호 재설정 완료',
   'auth.session_revoke': '접속 세션 종료',
   'auth.sessions_revoke_others': '다른 기기 세션 모두 종료',
@@ -76,6 +77,7 @@ export const ACTION_LABEL: Record<string, string> = {
   'member.enable': '계정 재활성화',
   'member.remove': '구성원 제외',
   'member.leave': '워크스페이스 나가기',
+  'member.password_reset_issue': '비밀번호 재설정 링크 발급 (관리자)',
   'audit.export': '감사 로그 CSV 내보내기',
   // 아래는 다른 도메인 서버 코드가 실제로 남기는 작업 코드 (server/src/<domain> audit 호출 기준). 모르는 코드는 도메인 이름 + 원문으로 보인다
   'change.create': '변경 요청 생성',
@@ -135,7 +137,7 @@ export function actionLabel(action: string): string {
 
 /** 보안상 눈여겨볼 작업 (화면 강조 · 브리프) */
 export function isSensitive(action: string): boolean {
-  return /^(auth\.login_(failed|locked)|auth\.password_|member\.(role_change|disable|remove)|invite\.create|connection\.(write_mode|delete)|audit\.export|change\.(apply|rollback))/.test(action);
+  return /^(auth\.login_(failed|locked)|auth\.password_|member\.(role_change|disable|remove|password_reset_issue)|invite\.create|connection\.(write_mode|delete)|audit\.export|change\.(apply|rollback))/.test(action);
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;

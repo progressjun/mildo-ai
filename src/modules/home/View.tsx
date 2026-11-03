@@ -32,8 +32,11 @@ export default function View() {
   const spark = (field: 'cost' | 'revenue' | 'roas' | 'cpa') => dailySeries(d, r30.from, r30.to, field).map((p) => p.value);
   const salesSpark = d.dates.filter((x) => x >= r30.from && x <= r30.to).map((date) => sum(d.salesDaily.filter((r) => r.date === date), (r) => r.revenue));
   const y = s.h.yesterday;
-  const merY = s.h.salesYesterday / (y.cost || 1);
-  const merP = s.h.salesDayBefore / (s.h.dayBefore.cost || 1);
+  const c = s.cov;
+  // 광고비가 0이거나 데이터가 없으면 배수를 내지 않는다 ('0.0배'라고 하지 않게)
+  const merY = c.salesYesterday && y.cost > 0 ? s.h.salesYesterday / y.cost : NaN;
+  const merP = c.salesDayBefore && s.h.dayBefore.cost > 0 ? s.h.salesDayBefore / s.h.dayBefore.cost : NaN;
+  const vsDay = (has: boolean, prev: boolean) => <span className="muted">{!has ? '데이터 없음' : !prev ? '전날 데이터 없음' : '전날 대비'}</span>;
   // 제출 마감 D-day는 전담 TF · RFP 커버리지 화면과 같은 계산(달력일 기준)을 써서 화면 간 숫자를 맞춘다
   const deadline = rfpSchedule(d.today, d.currentHour).deadline;
 
@@ -48,12 +51,15 @@ export default function View() {
       />
 
       <section className="grid g-5 home-kpis" aria-label="어제 핵심 지표">
-        <Card><Stat label="어제 광고비" value={`${fmt.krw(y.cost)}`} delta={s.costDelta} invert foot={<span className="muted">전날 대비</span>} spark={<Sparkline values={spark('cost')} ariaLabel="최근 30일 광고비" />} /></Card>
-        <Card><Stat label="광고 ROAS" value={fmt.roas(y.roas)} delta={s.roasDelta} foot={<span className="muted">매출 {fmt.krw(y.revenue)}</span>} spark={<Sparkline values={spark('roas')} colorVar="--series-3" ariaLabel="최근 30일 ROAS" />} /></Card>
-        <Card><Stat label="판매 채널 실매출" value={fmt.krw(s.h.salesYesterday)} delta={s.salesDelta} foot={<span className="muted">광고비 대비 {merY.toFixed(1)}배 (전날 {merP.toFixed(1)}배)</span>} spark={<Sparkline values={salesSpark} colorVar="--series-7" ariaLabel="최근 30일 실매출" />} /></Card>
-        <Card><Stat label="CPA (최근 7일)" value={fmt.won(s.h.last7.cpa)} delta={metrics.pctChange(s.h.last7.cpa, s.h.prev7.cpa)} invert foot={<span className="muted">직전 7일 대비</span>} spark={<Sparkline values={spark('cpa')} colorVar="--series-2" ariaLabel="최근 30일 CPA" />} /></Card>
-        <Card><Stat label="신규 고객 CAC (7일)" value={fmt.won(s.h.last7.cac)} delta={metrics.pctChange(s.h.last7.cac, s.h.prev7.cac)} invert foot={<><span className="muted">신규 {fmt.int(s.h.last7.newCustomers)}명</span><Src kind="DEMO" /></>} /></Card>
+        <Card><Stat label="어제 광고비" value={c.mediaYesterday ? fmt.krw(y.cost) : '—'} delta={s.costDelta} invert foot={vsDay(c.mediaYesterday, c.mediaDayBefore)} spark={<Sparkline values={spark('cost')} ariaLabel="최근 30일 광고비" />} /></Card>
+        <Card><Stat label="광고 ROAS" value={c.mediaYesterday ? fmt.roas(y.roas) : '—'} delta={s.roasDelta} foot={<span className="muted">{c.mediaYesterday ? `매출 ${fmt.krw(y.revenue)}` : '데이터 없음'}</span>} spark={<Sparkline values={spark('roas')} colorVar="--series-3" ariaLabel="최근 30일 ROAS" />} /></Card>
+        <Card><Stat label="판매 채널 실매출" value={c.salesYesterday ? fmt.krw(s.h.salesYesterday) : '—'} delta={s.salesDelta}
+          foot={<span className="muted">{c.salesYesterday ? `광고비 대비 ${Number.isFinite(merY) ? `${merY.toFixed(1)}배` : '—'} (전날 ${Number.isFinite(merP) ? `${merP.toFixed(1)}배` : '—'})` : '데이터 없음'}</span>} spark={<Sparkline values={salesSpark} colorVar="--series-7" ariaLabel="최근 30일 실매출" />} /></Card>
+        <Card><Stat label="CPA (최근 7일)" value={c.media7 ? fmt.won(s.h.last7.cpa) : '—'} delta={s.cpa7Delta} invert foot={<span className="muted">{!c.media7 ? '데이터 없음' : !c.mediaPrev7 ? '직전 7일 데이터 없음' : '직전 7일 대비'}</span>} spark={<Sparkline values={spark('cpa')} colorVar="--series-2" ariaLabel="최근 30일 CPA" />} /></Card>
+        <Card><Stat label="신규 고객 CAC (7일)" value={c.media7 ? fmt.won(s.h.last7.cac) : '—'} delta={s.cac7Delta} invert foot={<><span className="muted">{c.media7 ? `신규 ${fmt.int(s.h.last7.newCustomers)}명` : '데이터 없음'}</span><Src kind="DEMO" /></>} /></Card>
       </section>
+      {c.none ? <div className="xs muted home-kpi-note">연결된 데이터 출처가 없습니다 — 07 관리 · 연동 → 데이터 연결에서 매체 · 판매 채널 API를 연결하거나 CSV를 올리세요.</div> : null}
+      {c.notes.map((n) => <div key={n} className="xs ink2 home-kpi-note">{n}</div>)}
 
       <section className="grid g-3">
         <Card title="지금 처리할 것" sub="등급 · SLA 순으로 정렬" className="span-2" actions={<Src kind="PROPOSAL" page="p.44 · p.49" />}>

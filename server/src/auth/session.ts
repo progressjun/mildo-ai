@@ -1,7 +1,11 @@
-/** 세션: 랜덤 토큰(쿠키) → SHA-256 저장. CSRF 토큰은 세션마다 별도. */
+/**
+ * 세션: 랜덤 토큰(쿠키) → SHA-256 저장. CSRF 토큰은 세션마다 별도.
+ * 세션을 지우면 접근 변경 신호(events/hub publishAccessChange)를 보낸다 — 그 세션으로 열린 SSE(/events)가 바로 닫힌다.
+ */
 import type { Queryable } from '../db/pool';
 import { one } from '../db/pool';
 import { randomToken, sha256 } from '../lib/ids';
+import { publishAccessChange } from '../events/hub';
 
 export interface SessionUser {
   id: string;
@@ -54,10 +58,12 @@ export async function loadSession(q: Queryable, token: string | undefined): Prom
 }
 
 export async function destroySession(q: Queryable, sessionId: string): Promise<void> {
-  await q.query('DELETE FROM sessions WHERE id = $1', [sessionId]);
+  const r = await q.query<{ user_id: string }>('DELETE FROM sessions WHERE id = $1 RETURNING user_id', [sessionId]);
+  for (const userId of new Set(r.rows.map((x) => x.user_id))) await publishAccessChange(q, userId);
 }
 
 export async function destroyUserSessions(q: Queryable, userId: string, exceptSessionId?: string): Promise<number> {
   const r = await q.query('DELETE FROM sessions WHERE user_id = $1 AND ($2::text IS NULL OR id <> $2)', [userId, exceptSessionId ?? null]);
+  if (r.rowCount) await publishAccessChange(q, userId);
   return r.rowCount;
 }

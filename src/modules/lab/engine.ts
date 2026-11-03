@@ -8,6 +8,7 @@
  */
 import type { ApprovalLevel, ChangeKind, ChangeRequest, Dataset, IntentId, Keyword, Product, Promotion } from '@/core/types';
 import type { Brief } from '@/ai/prompts';
+import { changeActionCheck, isMemberActor, requestCheck, type Actor, type ChangeAction } from '@/core/permissions';
 import { AD_PILOT, INTENT_IDS, REVIEW_RULES, SA_CAMPAIGNS, SKU_EXPANSION } from '@/data/constants';
 import { addDays, clamp, fmt, fmtDate, isOffDay, parseDate, twoProportionZ, weekday } from '@/core/util';
 import {
@@ -80,10 +81,25 @@ const liftOf = (v: number, c: number) => (finite(v) && finite(c) && c !== 0 ? ((
 
 /** 승인 권한 — AE는 AE건, PM은 AE·PM건, 수면밀도는 전부 (SPEC §4 flow) */
 export const APPROVER_LABEL: Record<ApprovalLevel, string> = { AE: '담당 AE', PM: 'PM', CLIENT: '수면밀도 승인' };
-export function canApprove(role: string, approver: ApprovalLevel): { ok: boolean; reason: string } {
+export function canApprove(role: Actor, approver: ApprovalLevel): { ok: boolean; reason: string } {
+  // 서버 모드: 멤버십 역할 — 서버와 같은 권한표 (열람자는 승인 불가, 소유자는 CLIENT 건까지)
+  if (isMemberActor(role)) return changeActionCheck(role.member, approver, 'approve');
   const r = role === '수면밀도' ? 3 : role === 'PM' ? 2 : role === '담당 AE' ? 1 : 0;
   const need = approver === 'CLIENT' ? 3 : approver === 'PM' ? 2 : 1;
   return r >= need ? { ok: true, reason: '' } : { ok: false, reason: `${APPROVER_LABEL[approver]} 권한 필요 · 현재 역할 ${role || '미지정'}` };
+}
+
+/**
+ * 단계별 권한 — 데모: 승인 주체 범위(canApprove) 하나로 승인 · 반려 · 반영 (기존 그대로).
+ * 서버: 서버 checkActionPermission과 같은 판정 — 반영은 승인 권한 + 운영 권한(광고주 담당자는 승인 · 반려까지).
+ */
+export function labPermission(role: Actor, approver: ApprovalLevel, action: ChangeAction): { ok: boolean; reason: string } {
+  if (isMemberActor(role)) return changeActionCheck(role.member, approver, action);
+  return canApprove(role, approver);
+}
+/** 변경 요청 만들기 — 데모: 시연 역할 모두, 서버: 'request' 권한 (열람자 불가) */
+export function labCanRequest(role: Actor): { ok: boolean; reason: string } {
+  return isMemberActor(role) ? requestCheck(role.member) : { ok: true, reason: '' };
 }
 
 /* ================================================================== */

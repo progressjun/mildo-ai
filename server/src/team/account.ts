@@ -1,7 +1,10 @@
 /**
  * 계정 보안 (docs/SAAS_SPEC.md §6 team)
  *   POST   /api/auth/password { current, next }                로그인 → { ok, revokedSessions }  (다른 세션 모두 종료)
- *   POST   /api/auth/password-reset { email }                  -      → { ok } (항상 200 · 계정 존재 여부를 알리지 않음, IP당 분당 5회)
+ *   POST   /api/auth/password-reset { email }                  -      → { ok, mail: { configured } } (항상 200 · 계정 존재 여부를 알리지 않음, IP당 분당 5회)
+ *          mail.configured = 이 서버에 메일 발송(SMTP)이 설정되어 있는지 — 서버 전역 사실이라 계정 존재 여부와 무관하다.
+ *          false면 메일을 보낼 수 없으므로 링크를 만들지 않는다(관리자가 발급한 링크를 다른 사람이 무효로 만들지 못하게).
+ *          화면은 '메일을 보냈다'고 안내하지 않고 관리자의 재설정 링크 발급(POST /w/:ws/members/:userId/password-reset)을 안내한다.
  *   POST   /api/auth/password-reset/check { token }            -      → { valid, reason?, email? (가린 형태) }  (토큰을 URL 경로에 넣지 않는다 — 요청 로그에 남지 않게)
  *   POST   /api/auth/password-reset/confirm { token, password } -     → { ok, revokedSessions } (1회용 · 1시간, 모든 세션 종료)
  *   GET    /api/auth/sessions                                  로그인 → { sessions } (내 세션만, current 표시)
@@ -14,13 +17,15 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z, parseBody } from '../lib/validate';
 import { one } from '../db/pool';
-import { randomToken, sha256 } from '../lib/ids';
+import { sha256 } from '../lib/ids';
 import { hashPassword, passwordProblem, verifyPassword } from '../lib/crypto';
+import { mailConfigured } from '../lib/mailer';
 import { HttpError, notFound } from '../lib/errors';
 import { audit } from '../audit/audit';
 import { destroySession, destroyUserSessions } from '../auth/session';
 import {
-  RESET_MAX_PER_15MIN, RESET_TTL_MINUTES, TOKEN_RE, clearSessionCookies, mailBody, normalizeEmail, publicSessionId, rateLimitKey, resetLink, sendMailWithin,
+  RESET_MAX_PER_15MIN, RESET_TTL_MINUTES, TOKEN_RE, clearSessionCookies, issueResetToken, mailBody, normalizeEmail, publicSessionId, rateLimitKey, recentResetCount,
+  resetMail, sendMailWithin,
 } from './service';
 import type { AppConfig } from '../config';
 
@@ -76,35 +81,23 @@ export const accountRoutes: FastifyPluginAsync = async (app) => {
   app.post('/auth/password-reset', { config: { rateLimit: { max: 5, timeWindow: '1 minute', keyGenerator } } }, async (req) => {
     const body = parseBody(ResetBody, req.body);
     const email = normalizeEmail(body.email);
+    const canMail = mailConfigured(config);
     const u = await one<{ id: string; name: string; email: string; status: string }>(db, 'SELECT id, name, email, status FROM users WHERE lower(email) = $1', [email]);
     if (u && u.status === 'active') {
-      const recent = await one<{ n: number }>(
-        db, `SELECT count(*)::int AS n FROM password_resets WHERE user_id = $1 AND created_at > now() - interval '15 minutes'`, [u.id],
-      );
-      if ((recent?.n ?? 0) < RESET_MAX_PER_15MIN) {
-        const token = randomToken(32);
-        await db.tx(async (q) => {
-          // 새 링크만 유효 (이전에 보낸 링크는 무효)
-          await q.query('UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [u.id]);
-          await q.query(
-            `INSERT INTO password_resets (token_hash, user_id, expires_at, ip) VALUES ($1, $2, now() + ($3 || ' minutes')::interval, $4)`,
-            [sha256(token), u.id, String(RESET_TTL_MINUTES), req.ip],
-          );
+      if (!canMail) {
+        // 보낼 수 없는 메일의 링크는 만들지 않는다 — 기록만 남겨 관리자가 감사 로그에서 요청을 볼 수 있게
+        await audit(db, { workspaceId: null, userId: u.id, actor: u.name, action: 'auth.password_reset_request', ip: req.ip, detail: { delivered: false, reason: 'smtp_not_configured' } });
+      } else if ((await recentResetCount(db, u.id)) < RESET_MAX_PER_15MIN) {
+        const { token } = await db.tx(async (q) => {
+          const issued = await issueResetToken(q, u.id, req.ip); // 새 링크만 유효 (이전에 보낸 링크는 무효)
           await audit(q, { workspaceId: null, userId: u.id, actor: u.name, action: 'auth.password_reset_request', ip: req.ip });
+          return issued;
         });
-        const { text, html } = mailBody(
-          [
-            `${u.name}님, MILDO OS 비밀번호 재설정을 요청하셨습니다.`,
-            `아래 링크에서 새 비밀번호를 정해 주세요. 링크는 ${RESET_TTL_MINUTES}분 동안 한 번만 쓸 수 있습니다.`,
-            '요청한 적이 없다면 이 메일을 무시해 주세요. 비밀번호는 바뀌지 않습니다.',
-          ],
-          { href: resetLink(config, token), label: '비밀번호 재설정' },
-        );
         // 응답 시간으로 계정 존재 여부가 드러나지 않게 발송을 기다리지 않는다
-        void sendMailWithin(config, { to: u.email, subject: '[MILDO OS] 비밀번호 재설정', text, html });
+        void sendMailWithin(config, { to: u.email, ...resetMail(config, u.name, token) });
       }
     }
-    return { ok: true };
+    return { ok: true, mail: { configured: canMail } };
   });
 
   app.post('/auth/password-reset/check', { config: { rateLimit: { max: 30, timeWindow: '1 minute', keyGenerator } } }, async (req) => {

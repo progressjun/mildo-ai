@@ -8,6 +8,9 @@
 .conn-creds code { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-2); }
 .conn-write { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line); }
 .conn-actions { gap: 6px; }
+/* 권한이 없어 잠긴 쓰기 모드 선택지 — 사유는 title로 보인다 */
+.conn-seg button:disabled { cursor: not-allowed; color: var(--muted); }
+.conn-seg button:disabled[aria-pressed='true'] { color: var(--ink-2); }
 .conn-cat { gap: 10px; }
 .conn-issues { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .conn-issue { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); }

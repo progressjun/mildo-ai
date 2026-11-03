@@ -93,7 +93,7 @@ export function PromoCheckTab({ ctx, onOpen, onReport }: { ctx: FlowCtx; onOpen:
 }
 
 function CheckRow({ ctx, item, check, onOpen }: { ctx: FlowCtx; item: CheckItem; check: PromoCheck; onOpen: (id: string) => void }) {
-  const { createRequest } = ctx;
+  const { createRequest, requestPerm } = ctx;
   return (
     <div className={`flow-check lv-${item.level}`}>
       <LevelPill level={item.level} />
@@ -107,7 +107,7 @@ function CheckRow({ ctx, item, check, onOpen }: { ctx: FlowCtx; item: CheckItem;
           item.fixState ? (
             <Button size="sm" variant="ghost" icon="check" onClick={() => onOpen(item.fixState!.id)}>요청됨 · {STATUS_META[item.fixState.status].label}</Button>
           ) : (
-            <Button size="sm" icon="send" title={`승인 주체 ${APPROVER_LABEL[item.fix.input.approver]}`} onClick={() => createRequest({ ...item.fix!.input, reason: `${item.fix!.input.reason} · 프로모션 ${check.promotion.name} 체크리스트` })}>
+            <Button size="sm" icon="send" disabled={!requestPerm.ok} title={requestPerm.ok ? `승인 주체 ${APPROVER_LABEL[item.fix.input.approver]}` : requestPerm.reason} onClick={() => createRequest({ ...item.fix!.input, reason: `${item.fix!.input.reason} · 프로모션 ${check.promotion.name} 체크리스트` })}>
               {item.fix.label} <span className="muted">· {APPROVER_LABEL[item.fix.input.approver]}</span>
             </Button>
           )

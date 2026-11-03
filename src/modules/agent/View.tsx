@@ -4,26 +4,15 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useActions, useStore } from '@/core/store';
-import { navigate } from '@/core/router';
 import { useAi } from '@/ai/useAi';
 import { ANALYST_RULES } from '@/ai/prompts';
-import { AI_ERROR_COPY, AiError, BACKEND_LABEL, type Turn } from '@/ai/claude';
+import { AiError, type Turn } from '@/ai/claude';
 import { MODULE_BY_ID } from '@/modules/registry';
-import { Markdown } from '@/ui/Markdown';
-import { Button, Card, CopyButton, PageHeader, Pill, Src } from '@/ui/primitives';
+import { Button, Card, PageHeader, Pill, Src } from '@/ui/primitives';
 import { Icon } from '@/ui/Icon';
 import { collectTools, offlineAnswer, snapshot, TOOL_GUIDE } from './orchestrator';
+import { AssistantMessage, aiFailureAnswer, type Msg } from './messages';
 import './styles.css';
-
-interface Msg {
-  role: 'user' | 'assistant';
-  content: string;
-  tools?: string[];
-  via?: 'ai' | 'rule';
-  error?: string;
-  /** 에이전트가 navigate 도구로 제안한 화면 — 답변을 다 읽은 뒤 버튼으로 이동 */
-  nav?: string[];
-}
 
 /**
  * 대화 보관 — 다른 화면에 다녀와도 대화가 남는다 (새로고침 · '새 대화'에서만 지움).
@@ -146,7 +135,8 @@ export default function View() {
         if (!mounted.current) update(err.partial || lastText || '_(중지했습니다)_');
       } else if (live()) {
         const fb = offlineAnswer(question, ctx);
-        setMsgs([...history, { role: 'user', content: question }, { role: 'assistant', content: err.partial ? `${err.partial}\n\n---\n\n${fb.markdown}` : fb.markdown, tools: fb.used, via: 'rule', error: AI_ERROR_COPY[err.code] ?? err.message }]);
+        // Claude가 쓰다가 끊긴 부분은 AI 출처 배지로 따로, 규칙 엔진 결과는 그 아래 규칙 엔진 배지로 (AI 해석과 규칙 결과를 섞지 않는다)
+        setMsgs([...history, { role: 'user', content: question }, aiFailureAnswer(err, fb, used)]);
       }
     } finally {
       if (live()) {
@@ -177,7 +167,7 @@ export default function View() {
         eyebrow="AI AGENT · 신규 기능"
         title="MILDO Agent"
         sub="질문하면 Board · AD Pilot · Alert · Lab · GEO · 매출 성장 엔진을 직접 조회해, 확정 팩트와 반복 관측 패턴과 AI 해석을 나눠 답합니다. 판단에는 항상 전제 조건 · 수치 기준 · 반례가 붙습니다."
-        sources={<><Pill tone={ai.connected ? 'good' : 'neutral'} icon={ai.connected ? 'check' : 'zap'}>{ai.backend === 'checking' ? '확인 중' : BACKEND_LABEL[ai.backend]}</Pill><Src kind="DEMO" /></>}
+        sources={<><Pill tone={ai.connected ? 'good' : ai.note ? 'warning' : 'neutral'} icon={ai.connected ? 'check' : 'zap'} title={ai.note?.long}>{ai.backend === 'checking' ? '확인 중' : ai.label}</Pill><Src kind="DEMO" /></>}
         actions={msgs.length ? <Button size="sm" icon="refresh" onClick={newChat}>새 대화</Button> : null}
       />
       <div className="agent-layout">
@@ -191,7 +181,13 @@ export default function View() {
                   </button>
                 ))}
               </div>
-              {!ai.connected ? <div className="xs muted">AI 미연결: 규칙 엔진이 질문 키워드와 맞는 모듈 브리프로 답합니다. claude.ai에서 열거나 설정에서 API 키를 넣으면 도구를 쓰는 Claude 에이전트로 동작합니다.</div> : null}
+              {!ai.connected ? (
+                <div className="xs muted">
+                  {ai.note
+                    ? `AI 미연결: ${ai.note.long} 지금은 규칙 엔진이 질문 키워드와 맞는 모듈 브리프로 답합니다.`
+                    : 'AI 미연결: 규칙 엔진이 질문 키워드와 맞는 모듈 브리프로 답합니다. claude.ai에서 열거나 설정에서 API 키를 넣으면 도구를 쓰는 Claude 에이전트로 동작합니다.'}
+                </div>
+              ) : null}
             </Card>
           ) : null}
           <div className="chat" aria-live="polite">
@@ -199,26 +195,8 @@ export default function View() {
               m.role === 'user' ? (
                 <div key={i} className="msg user">{m.content}</div>
               ) : (
-                <div key={i} className="msg assistant">
-                  <div className="row-between">
-                    <div className="row" style={{ gap: 6 }}>
-                      {m.via === 'rule' ? <Pill tone="neutral" icon="zap" title="규칙 엔진 결과">규칙 엔진</Pill> : <Src kind="AI" title="Claude 생성" />}
-                      {(m.tools ?? []).map((t, k) => <span key={k} className="tool-chip"><Icon name="zap" size={10} />{t}</span>)}
-                    </div>
-                    {m.content ? <CopyButton text={m.content} /> : null}
-                  </div>
-                  {m.content ? <Markdown text={m.content} /> : (
-                    <div className="small muted">
-                      {busy ? `분석 중…${liveTools.length ? ` 조회한 도구: ${liveTools.join(', ')}` : ' 필요한 데이터를 고르고 있습니다.'}` : ''}
-                    </div>
-                  )}
-                  {m.error ? <div className="xs muted">{m.error} — 규칙 엔진 결과를 표시했습니다.</div> : null}
-                  {m.nav?.length ? (
-                    <div className="row" style={{ gap: 6 }}>
-                      {m.nav.map((r) => <Button key={r} size="sm" icon="chevron" onClick={() => navigate(r)}>{MODULE_BY_ID[r]?.title ?? r} 화면 열기</Button>)}
-                    </div>
-                  ) : null}
-                </div>
+                <AssistantMessage key={i} m={m}
+                  waiting={busy ? `분석 중…${liveTools.length ? ` 조회한 도구: ${liveTools.join(', ')}` : ' 필요한 데이터를 고르고 있습니다.'}` : ''} />
               )
             ))}
             <div ref={endRef} />

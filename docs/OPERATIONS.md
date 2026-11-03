@@ -178,7 +178,11 @@ docker compose -f docker-compose.yml -f docker-compose.managed-db.yml --profile 
 
 ### AI 호출 운영 메모
 
-서버 측 폴백(거절 시 기본 폴백 모델로 재시도)은 `ANTHROPIC_MODEL`이 claude-fable-5-1 · claude-mythos-5-1 · claude-fable-5 · claude-opus-5-5 · claude-opus-5 · claude-sonnet-5-5 · claude-haiku-5-5 중 하나일 때만 요청에 실린다. 그 밖의 모델은 폴백 없이 호출된다. 사용자가 중간에 취소한 호출과 스트림이 끊긴 호출은 끊기기 전까지 받은 사용량만 기록되므로 출력 토큰이 실제보다 적게 잡힐 수 있다(월 한도 판정도 같은 값을 쓴다). 월 한도는 호출 직전에 확인하는 방식이라 동시에 시작한 요청이 한도를 요청 1건 분량만큼 넘길 수 있다.
+서버 측 폴백(거절 시 기본 폴백 모델로 재시도)은 `ANTHROPIC_MODEL`이 claude-fable-5-1 · claude-mythos-5-1 · claude-fable-5 · claude-opus-5-5 · claude-opus-5 · claude-sonnet-5-5 · claude-haiku-5-5 중 하나일 때만 요청에 실린다. 그 밖의 모델은 폴백 없이 호출된다. 사용자가 중간에 취소한 호출과 스트림이 끊긴 호출은 Anthropic이 최종 출력 토큰 수를 보내기 전에 끝나므로, 끊기기 전까지 받은 출력(텍스트 · thinking · 도구 입력) 길이로 출력 토큰을 **추정**해 기록한다(UTF-8 3바이트 ≈ 1토큰, 적게 세지 않는 쪽 — 실제 청구와 다를 수 있다. 사용량 화면의 집계 기준에도 적혀 있다). 월 한도는 호출 직전에 확인하는 방식이라 동시에 시작한 요청이 한도를 요청 1건 분량만큼 넘길 수 있다.
+
+- 화면의 AI 상태(상단 바 · MILDO Agent · GEO)는 `GET /api/w/<ws>/ai/usage`의 `available` · `unavailableReason`으로 실제 사유를 보여 준다: 서버 키 미설정(`ai_not_configured` — `ANTHROPIC_API_KEY`), AI 꺼짐(`ai_disabled` — 워크스페이스 설정), 읽기 전용(`workspace_locked`), 열람자(`forbidden` — viewer는 AI를 호출할 수 없다), 이번 달 한도 도달(`budget_exceeded`). 설정이 바뀌면(다른 세션에서 AI를 끄거나 한도를 바꿈) 열린 화면이 새로고침 없이 다시 확인한다.
+- 설정의 'API 키'(개인 키로 브라우저가 api.anthropic.com을 직접 호출) 방식은 기본 CSP(`connect-src 'self'`)에서 브라우저가 막는다. 서버 모드 화면은 이 선택지를 끄고 이유를 보여 준다(`/ai/usage`의 `browserDirect`). 꼭 써야 하면 `CSP_CONNECT_SRC_EXTRA=https://api.anthropic.com`을 넣는다 — 이때 키는 각 사용자 브라우저에만 저장되고 서버의 월 한도 · 사용량 집계에는 잡히지 않는다. 보통은 'MILDO 서버 (조직 키)'를 쓴다.
+- AI 상류 오류 로그(`ai upstream error`)는 `requestId`(이 HTTP 요청 — 응답 헤더 `x-request-id`)와 `upstreamRequestId`(Anthropic 요청 id — Anthropic 지원 문의용)를 따로 남긴다.
 
 ---
 
@@ -194,7 +198,14 @@ docker compose run --rm --no-deps app node server/dist/cli.mjs seed
 - 시연용으로 TEST DATA가 필요하면 한 번만 `-e SEED_DEMO_DATA=true`를 붙인다. 데모 커넥션이 만들어지고 워커가 120일치 테스트 데이터를 채운다. 화면에는 TEST DATA로 표시된다.
 - 로그인한 뒤 비밀번호를 바꾸고(비밀번호 변경 API `POST /api/auth/password` — team 도메인), `.env`의 `SEED_OWNER_PASSWORD`를 지운다.
 - 나머지 구성원은 화면의 '07 관리 · 연동 → 팀 · 권한'에서 초대한다(토큰 링크, `SMTP_HOST`가 없으면 화면에 링크가 표시된다). 역할 표는 `docs/SAAS_SPEC.md` §2.
-- CLI로 사용자를 바로 만들어야 할 때: `docker compose run --rm --no-deps app node server/dist/cli.mjs user <email> <이름> <역할> <비밀번호>`.
+- CLI로 사용자를 바로 만들어야 할 때: `docker compose run --rm --no-deps app node server/dist/cli.mjs user <email> <이름> <역할> <비밀번호>`. 이미 있는 계정의 비밀번호는 이 명령으로 바뀌지 않는다(이름 · 역할만 갱신) — 아래 계정 복구를 쓴다.
+
+### 계정 복구 (비밀번호를 잊음)
+
+- `SMTP_HOST`가 있으면 사용자가 로그인 화면의 '비밀번호 재설정 메일 받기'로 직접 복구한다(링크 60분 · 1회용, 이전 링크 무효).
+- `SMTP_HOST`가 없으면 그 화면은 메일을 보냈다고 하지 않고 '메일 발송이 설정되어 있지 않다'고 안내한다(`POST /api/auth/password-reset` 응답 `mail.configured: false` — 서버 전역 설정이라 계정 존재 여부는 드러나지 않는다). 이때는 링크도 만들지 않는다.
+- 워크스페이스 소유자 · 관리자는 '07 관리 · 연동 → 팀 · 권한 → 구성원'에서 구성원의 **재설정 링크**를 발급한다. SMTP가 있으면 본인 메일로만 보내고 링크는 화면에 보이지 않는다. 없으면 화면에 복사할 링크가 나오므로 본인에게 직접 전달한다(감사 `member.password_reset_issue`, 링크는 감사 · 로그에 남지 않는다). 계정 비활성화와 같은 범위만 허용한다: 자기 자신 · 비활성 계정 · 관리 범위 밖 다른 워크스페이스에도 소속된 계정은 안 되고, 소유자 계정은 소유자만 발급한다. 같은 계정에 15분 안에 3번까지.
+- 소유자 · 관리자가 모두 로그인할 수 없거나 범위 밖 계정이면 운영자가 CLI로 발급한다: `docker compose run --rm --no-deps app node server/dist/cli.mjs reset-link <email>` → 표준 출력에 링크(감사 `auth.password_reset_issue`, actor `cli`). 개발 환경은 `npx tsx server/src/db/cli.ts reset-link <email>`. 본인 확인 뒤 본인에게만 전달한다. DB에 직접 토큰을 넣지 않는다.
 
 ---
 
@@ -475,7 +486,9 @@ curl -s http://127.0.0.1:8080/api/ready                                # ready �
 **사용자가 로그인 잠김 (429 login_locked)**
 - 같은 이메일로 15분 안에 10회 실패하면 잠긴다(감사 로그 `auth.login_locked`, `detail.scope`가 account면 계정 전체 기준 · ip면 그 IP 기준). 창이 지나면 자동으로 풀린다.
 - 비밀번호 재설정을 마치면(감사 `auth.password_reset`) 실패 수를 새로 센다 — 본인이면 재설정을 안내한다. 최근 30일 안에 로그인에 성공한 IP(평소 쓰는 사무실 · 집)에서는 다른 곳에서 쌓인 실패로 잠기지 않는다(그 IP의 실패만 센다). 그래서 남이 일부러 실패를 쌓아도 본인은 평소 장소에서 로그인할 수 있다.
-- 급히 풀어야 하면 본인 확인 뒤 비밀번호 재설정 메일을 보낸다(재설정을 마치면 바로 풀린다). 감사 로그를 지워서 풀지 않는다.
+- 급히 풀어야 하면 본인 확인 뒤 비밀번호 재설정 링크를 보낸다(재설정을 마치면 바로 풀린다 — 위 '계정 복구': 로그인 화면의 재설정 메일 · 팀 화면의 재설정 링크 · CLI `reset-link`). 감사 로그를 지워서 풀지 않는다.
+- 가입된 계정의 잠금 기록에는 user_id가 남으므로 워크스페이스 관리자도 '감사 로그 → 구성원 로그인 · 로그인 실패 · 비밀번호 · 세션 종료 기록 포함'에서 본다(`로그인 잠금 (실패 반복)`).
+- 같은 IP에서 1분 안에 로그인을 10번 넘게 시도하면(여러 이메일) 잠금과 별도로 라우트 속도 제한 429 `rate_limited`('로그인 시도가 너무 많습니다. N초 후 다시 시도해 주세요')가 난다. 같은 이메일로 10번 실패한 다음 시도는 속도 제한보다 잠금 판정이 먼저라 잠금 안내(대기 시간 · 재설정 안내)를 받는다.
 - 반복되면 표적 공격일 수 있다: `mpsql -c "SELECT at, ip, actor FROM audit_log WHERE action IN ('auth.login_failed','auth.login_locked') AND at > now() - interval '1 day' ORDER BY at DESC LIMIT 50"`로 IP를 보고 앞단에서 막는다.
 
 **ENCRYPTION_KEY 분실 · 불일치**
@@ -483,6 +496,7 @@ curl -s http://127.0.0.1:8080/api/ready                                # ready �
 
 **화면이 실시간으로 갱신되지 않음 (SSE)**
 - 프록시가 응답을 버퍼링하면 이벤트가 늦게 온다. Caddy 설정은 `flush_interval -1`. nginx면 `proxy_buffering off`. 회사 방화벽이 긴 연결을 끊으면 브라우저가 자동으로 다시 붙는다(25초마다 ping).
+- 열린 SSE는 세션 · 멤버십을 계속 다시 확인한다: 로그아웃 · 세션 강제 종료 · 비밀번호 변경/재설정 · 계정 비활성화 · 멤버십 제외 때(PostgreSQL NOTIFY `mildo_auth`) 바로, 그리고 이벤트를 보내기 전 · 25초 ping마다. 유효하지 않으면 스트림을 닫아 그 뒤 이벤트는 전달되지 않고, 브라우저는 다시 붙다가 401/404를 받아 로그인 화면으로 넘어간다. DB에서 세션을 직접 지운 경우에도 다음 이벤트 전에 닫힌다.
 
 **숫자가 이상함 (고객 문의)**
 - 화면 출처 표시가 TEST DATA인지 LIVE DATA인지 먼저 본다. 데모 커넥션이 남아 실데이터 없는 매체에 테스트 데이터가 섞여 있을 수 있다.

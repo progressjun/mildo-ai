@@ -48,3 +48,39 @@ describe('p.23 작동 시나리오 승인 요청', () => {
     expect(scenarioPending([mk('approved')])).toBe(false);
   });
 });
+
+describe('KPI 증감 근거 (QA 회귀 — 출처 없음에서 0.0%를 내지 않는다)', () => {
+  it('데이터 출처가 하나도 없으면 증감은 NaN(화면 —), 브리프는 데이터 없음 안내', async () => {
+    const { operatingSummary, morningBrief } = await import('./engine');
+    const empty = { ...DEMO, mediaDaily: [], salesDaily: [], mediaHourly: [], keywords: [], campaigns: [], accounts: [], searchTerms: [], products: [], promotions: [], brandSearchDaily: [] };
+    const s = operatingSummary(empty, [], []);
+    expect(s.cov.none).toBe(true);
+    for (const v of [s.costDelta, s.roasDelta, s.salesDelta, s.cpa7Delta, s.cac7Delta]) expect(Number.isNaN(v)).toBe(true);
+    const b = morningBrief(empty, [], [], 0);
+    expect(b.facts[0]).toContain('연결된 데이터 출처가 없어');
+    expect(b.facts.join(' ')).not.toMatch(/0\.0%|NaN|Infinity/);
+  });
+
+  it('데모(모든 매체 · 채널 데이터)는 예전 계산과 같은 증감', async () => {
+    const { operatingSummary } = await import('./engine');
+    const { headline } = await import('@/core/selectors');
+    const { metrics } = await import('@/core/util');
+    const s = operatingSummary(DEMO, [], []);
+    const h = headline(DEMO);
+    expect(s.cov.none).toBe(false);
+    expect(s.cov.notes).toEqual([]);
+    expect(s.costDelta).toBe(metrics.pctChange(h.yesterday.cost, h.dayBefore.cost));
+    expect(s.roasDelta).toBe(metrics.pctChange(h.yesterday.roas, h.dayBefore.roas));
+    expect(s.salesDelta).toBe(metrics.pctChange(h.salesYesterday, h.salesDayBefore));
+    expect(s.cpa7Delta).toBe(metrics.pctChange(h.last7.cpa, h.prev7.cpa));
+    expect(s.cac7Delta).toBe(metrics.pctChange(h.last7.cac, h.prev7.cac));
+  });
+
+  it('최근 7일만 올린 매체는 7일 CPA 증감에서 빼고 기준 문구를 남긴다 (Board와 같은 기준)', async () => {
+    const { operatingSummary } = await import('./engine');
+    const d = { ...DEMO, mediaDaily: DEMO.mediaDaily.filter((r) => r.media !== 'google' || r.date >= '2026-10-24') };
+    const s = operatingSummary(d, [], []);
+    expect(s.cov.notes.join(' ')).toContain('Google(10/24부터)');
+    expect(Number.isFinite(s.cpa7Delta)).toBe(true);
+  });
+});

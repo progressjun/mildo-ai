@@ -10,8 +10,11 @@ import { TYPE_LABEL } from './data';
 import { CauseList, ChangeStatusPill, EvidenceTable, krwOrDash, MediaTag, mediaName, SevLabel, SlaTimer, StatusPill } from './parts';
 import { canApprove, type AlertCtx } from './hooks';
 
+/** 서버 모드 결과 보고 기록 — 서버는 이슈 보고서를 발송하지 않는다(보고서는 화면에서 복사 · 내려받기). 보내지 않은 발송을 기록하지 않는다. */
+export const REPORT_ACTION_SERVER = '결과 보고 · 이슈 보고서 작성 (p.49 양식 · 공유는 복사 · .md 내려받기)';
+
 export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string; onClose: () => void }) {
-  const { incidents, state, actions, nowMs, toMs, nameOf, clockIso, act, data, cfg } = ctx;
+  const { incidents, state, actions, nowMs, toMs, nameOf, clockIso, act, data, cfg, slaOff, perm, server } = ctx;
   const inc = incidents.find((i) => i.id === id);
   const [assignRole, setAssignRole] = useState<string>('');
   const [actionNote, setActionNote] = useState('');
@@ -22,7 +25,11 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
   if (!inc) {
     return <Drawer title="이슈 없음" onClose={onClose}><div className="small muted">이슈를 찾지 못했습니다 (초기화되었을 수 있음).</div></Drawer>;
   }
-  const st = slaState(inc, nowMs, toMs, state.offHoursMode);
+  const st = slaState(inc, nowMs, toMs, slaOff);
+  // 서버 모드 권한 (§2): 이슈 처리 = operate, 연결 요청 = request — 막힌 버튼은 사유를 title · 문구로 보여 준다
+  const op = perm.operate;
+  const opWhy = perm.operateReason;
+  const reqWhy = perm.requestReason;
   const sla = inc.sla ?? {};
   const resolved = inc.status === 'resolved';
   const report = () => incidentReport(inc, { nowMs, toMs, nameOf });
@@ -50,6 +57,7 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
     setFpArmed(false);
   };
   const requestChange = (c: Omit<ChangeRequest, 'id' | 'createdAt' | 'history' | 'status' | 'module' | 'requestedBy'>, msg: string) => {
+    if (!perm.request) return;
     actions.addChange({ ...c, module: 'alert', requestedBy: state.role });
     actions.toast({ tone: 'info', title: msg, body: `승인 주체: ${c.approver === 'CLIENT' ? '수면밀도' : c.approver} · MILDO Flow에서 처리`, route: 'flow' });
   };
@@ -106,14 +114,15 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
         </div>
         {!resolved ? (
           <div className="stack">
+            {!op ? <div className="xs muted" role="note"><Icon name="shield" size={12} /> {opWhy} — 처리 단계는 볼 수만 있습니다</div> : null}
             <div className="row">
-              <Button size="sm" variant={!sla.ackAt ? 'primary' : 'default'} icon="check" disabled={!!sla.ackAt}
+              <Button size="sm" variant={!sla.ackAt ? 'primary' : 'default'} icon="check" disabled={!!sla.ackAt || !op} title={opWhy}
                 onClick={() => act(inc, { status: inc.status === 'open' ? 'ack' : inc.status, sla: { ...sla, ackAt: clockIso() } }, '인지')}>인지</Button>
-              <select id={`assign-${inc.id}`} className="select" aria-label="배정할 TF 역할" style={{ width: 'auto' }} value={assignRole} onChange={(e) => setAssignRole(e.target.value)}>
+              <select id={`assign-${inc.id}`} className="select" aria-label="배정할 TF 역할" style={{ width: 'auto' }} disabled={!op} title={opWhy} value={assignRole} onChange={(e) => setAssignRole(e.target.value)}>
                 <option value="">TF 역할 선택</option>
                 {TF_ROLES.map((r) => <option key={r.id} value={r.id}>{nameOf(r.role)}</option>)}
               </select>
-              <Button size="sm" icon="users" disabled={!assignRole}
+              <Button size="sm" icon="users" disabled={!assignRole || !op} title={opWhy}
                 onClick={() => {
                   const b = backupOf(assignRole);
                   act(inc, { assignee: roleLabel(assignRole), backup: roleLabel(b), assigneeRoleId: assignRole, backupRoleId: b, status: inc.status === 'open' ? 'ack' : inc.status, sla: { ...sla, ackAt: sla.ackAt ?? clockIso(), assignedAt: clockIso() } }, `배정 · ${roleLabel(assignRole)} (백업 ${roleLabel(b)})`);
@@ -121,24 +130,24 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
                 }}>배정</Button>
             </div>
             <Field id={`act-${inc.id}`} label={`1차 조치 메모 · 권고: ${nextAction(inc.ruleId)}`}>
-              <textarea id={`act-${inc.id}`} className="textarea" rows={2} value={actionNote} onChange={(e) => setActionNote(e.target.value)} placeholder="조치 내용 · 완료 시각 · 확인 수치" />
+              <textarea id={`act-${inc.id}`} className="textarea" rows={2} disabled={!op} title={opWhy} value={actionNote} onChange={(e) => setActionNote(e.target.value)} placeholder="조치 내용 · 완료 시각 · 확인 수치" />
             </Field>
             <div className="row">
-              <Button size="sm" variant={sla.ackAt && !sla.actionAt ? 'primary' : 'default'} icon="zap" disabled={!actionNote.trim()}
+              <Button size="sm" variant={sla.ackAt && !sla.actionAt ? 'primary' : 'default'} icon="zap" disabled={!actionNote.trim() || !op} title={opWhy}
                 onClick={() => { act(inc, { status: 'action', actionNote: actionNote.trim(), sla: { ...sla, ackAt: sla.ackAt ?? clockIso(), actionAt: sla.actionAt ?? clockIso() } }, `1차 조치 · ${actionNote.trim().slice(0, 60)}`); setActionNote(''); }}>1차 조치 기록</Button>
-              <Button size="sm" icon="report" disabled={!sla.actionAt && inc.severity !== 'P3'} title={!sla.actionAt && inc.severity !== 'P3' ? '1차 조치 기록 후 보고' : undefined}
-                onClick={() => { act(inc, { sla: { ...sla, reportAt: sla.reportAt ?? clockIso() } }, '결과 보고 · 이슈 보고서 발송 (p.49 양식)'); setShowReport(true); }}>결과 보고</Button>
+              <Button size="sm" icon="report" disabled={(!sla.actionAt && inc.severity !== 'P3') || !op} title={opWhy ?? (!sla.actionAt && inc.severity !== 'P3' ? '1차 조치 기록 후 보고' : undefined)}
+                onClick={() => { act(inc, { sla: { ...sla, reportAt: sla.reportAt ?? clockIso() } }, server ? REPORT_ACTION_SERVER : '결과 보고 · 이슈 보고서 발송 (p.49 양식)'); setShowReport(true); }}>결과 보고</Button>
               <span className="xs muted">{inc.actionNote ? `기록된 조치: ${inc.actionNote}` : ''}</span>
             </div>
             <Field id={`prev-${inc.id}`} label="재발 방지 (탐지 기준 · 체크리스트 업데이트)">
-              <textarea id={`prev-${inc.id}`} className="textarea" rows={2} value={preventNote} onChange={(e) => setPreventNote(e.target.value)} placeholder={preventSuggestion(inc)} />
+              <textarea id={`prev-${inc.id}`} className="textarea" rows={2} disabled={!op} title={opWhy} value={preventNote} onChange={(e) => setPreventNote(e.target.value)} placeholder={preventSuggestion(inc)} />
             </Field>
             <div className="row">
-              <Button size="sm" icon="shield" onClick={() => { const n = preventNote.trim() || preventSuggestion(inc); act(inc, { preventNote: n, sla: { ...sla, preventAt: clockIso() } }, '재발 방지 기록'); setPreventNote(''); }}>{preventNote.trim() ? '재발 방지 기록' : '권고안으로 기록'}</Button>
-              <Button size="sm" variant="primary" icon="check" disabled={!sla.actionAt && inc.severity !== 'P3'} title={!sla.actionAt && inc.severity !== 'P3' ? '1차 조치 기록 후 해결 가능' : undefined}
+              <Button size="sm" icon="shield" disabled={!op} title={opWhy} onClick={() => { const n = preventNote.trim() || preventSuggestion(inc); act(inc, { preventNote: n, sla: { ...sla, preventAt: clockIso() } }, '재발 방지 기록'); setPreventNote(''); }}>{preventNote.trim() ? '재발 방지 기록' : '권고안으로 기록'}</Button>
+              <Button size="sm" variant="primary" icon="check" disabled={(!sla.actionAt && inc.severity !== 'P3') || !op} title={opWhy ?? (!sla.actionAt && inc.severity !== 'P3' ? '1차 조치 기록 후 해결 가능' : undefined)}
                 onClick={() => { act(inc, { status: 'resolved', sla: { ...sla, resolvedAt: clockIso() } }, '해결'); actions.toast({ tone: 'good', title: '이슈 해결', body: inc.title }); }}>해결</Button>
               {!fpArmed ? (
-                <Button size="sm" variant="ghost" icon="x" onClick={() => setFpArmed(true)}>오탐으로 종료</Button>
+                <Button size="sm" variant="ghost" icon="x" disabled={!op} title={opWhy} onClick={() => setFpArmed(true)}>오탐으로 종료</Button>
               ) : (
                 <span className="row" style={{ gap: 6 }}>
                   <input id={`fp-${inc.id}`} className="input" style={{ width: 200 }} value={fpReason} onChange={(e) => setFpReason(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) closeFalsePositive(); }} placeholder="오탐 사유 (예: 집계 지연 정상화)" aria-label="오탐 사유" autoFocus />
@@ -185,7 +194,7 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
         <span className="alert-section-label">연결 요청 · 화면 (승인은 MILDO Flow)</span>
         <div className="row">
           {inc.holdMedia && !resolved ? (
-            <Button size="sm" icon="play" disabled={!sla.actionAt || requested(`alert:${inc.id}:release`)} title={!sla.actionAt ? '1차 조치 기록 후 요청 가능' : undefined}
+            <Button size="sm" icon="play" disabled={!sla.actionAt || requested(`alert:${inc.id}:release`) || !perm.request} title={reqWhy ?? (!sla.actionAt ? '1차 조치 기록 후 요청 가능' : undefined)}
               onClick={() => requestChange({ kind: 'setting', target: `${mediaName(inc.holdMedia)} AD Pilot 자동 조정`, targetId: `alert:${inc.id}:release`, before: '보류', after: '재개', reason: `${inc.title} — 조치 완료 확인 후 자동 조정 재개`, approver: 'PM' }, '자동 조정 보류 해제 요청을 만들었습니다')}>
               {`자동 조정 보류 해제 요청${requested(`alert:${inc.id}:release`) ? '됨' : ''} (PM)`}
             </Button>
@@ -202,7 +211,7 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
             const prevAmt = prev ? Number(prev.after) - Number(prev.before) : NaN;
             const amt = prev && Number.isFinite(prevAmt) && prevAmt > 0 ? prevAmt : topup;
             return (
-              <Button size="sm" icon="wallet" disabled={topup <= 0 || requested(tid)} title={topup <= 0 ? `잔액이 이미 ${days}일치 이상` : requested(tid) ? '이 계정의 충전 요청이 이미 있습니다 (MILDO Flow)' : undefined}
+              <Button size="sm" icon="wallet" disabled={topup <= 0 || requested(tid) || !perm.request} title={reqWhy ?? (topup <= 0 ? `잔액이 이미 ${days}일치 이상` : requested(tid) ? '이 계정의 충전 요청이 이미 있습니다 (MILDO Flow)' : undefined)}
                 onClick={() => requestChange({ kind: 'setting', target: `${acc.name} 비즈머니 충전`, targetId: tid, before: balance, after: balance + topup, changePct: balance > 0 ? (topup / balance) * 100 : undefined, reason: `잔액 ${fmt.krw(balance)}원 < 일 평균 소진 ${fmt.krw(daily)}원 · 자동충전 ${acc.autoCharge === 'failed' || inc.title.includes('자동충전 실패') ? '실패' : acc.autoCharge} → 주말 · 연휴 대비 ${days}일치까지 ${fmt.krw(topup)}원 충전 요청 (p.50 결제 수단 수면밀도 · ${days}일치는 운영 가정)`, approver: 'CLIENT' }, '충전 요청을 만들었습니다')}>
                 {`충전 요청${prev ? '됨' : ''} ${fmt.krw(amt)}원 · ${days}일치 (수면밀도 승인)`}
               </Button>
@@ -213,14 +222,14 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
             const tid = acc ? `alert:account:${acc.id}:revoke` : `alert:${inc.id}:revoke`;
             const users = acc ? acc.permissions.filter((x) => !x.realName || dayDiff(data.today, x.lastLogin) > cfg.staleLoginDays).map((x) => `${x.user}(${x.role})`).join(', ') : '';
             return (
-              <Button size="sm" icon="shield" disabled={requested(tid)}
+              <Button size="sm" icon="shield" disabled={requested(tid) || !perm.request} title={reqWhy}
                 onClick={() => requestChange({ kind: 'setting', target: `${inc.target} 권한 회수`, targetId: tid, before: users || '관리자 권한 유지', after: '회수 · 실명 계정 대체', reason: '담당자 실명 계정 · 최소 권한 · 교체 시 즉시 회수 (p.50)', approver: 'PM' }, '권한 회수 요청을 만들었습니다')}>
                 {`권한 회수 요청${requested(tid) ? '됨' : ''} (PM → 수면밀도 통보)`}
               </Button>
             );
           })() : null}
           {inc.ruleId === 'soldout_landing' && !resolved ? (
-            <Button size="sm" icon="pause" disabled={requested(`alert:${inc.id}:pause`)}
+            <Button size="sm" icon="pause" disabled={requested(`alert:${inc.id}:pause`) || !perm.request} title={reqWhy}
               onClick={() => requestChange({ kind: 'status', target: `${inc.target} 키워드`, targetId: `alert:${inc.id}:pause`, before: 'on', after: 'off', reason: `${inc.title} — 재입고 시 재개`, approver: 'AE' }, '키워드 일시 중지 요청을 만들었습니다')}>
               {`키워드 일시 중지 요청${requested(`alert:${inc.id}:pause`) ? '됨' : ''} (담당 AE)`}
             </Button>
@@ -230,6 +239,7 @@ export function IncidentDrawer({ ctx, id, onClose }: { ctx: AlertCtx; id: string
           {inc.ruleId === 'brand_intrusion' ? <a className="btn sm" href="#watch">MILDO Watch 지면 점검</a> : null}
           <a className="btn sm" href="#flow">MILDO Flow 이력</a>
         </div>
+        {reqWhy && !resolved ? <div className="xs muted">{reqWhy}</div> : null}
         {linked.length ? (
           <div className="stack-sm" style={{ gap: 4 }}>
             {linked.map((c) => (

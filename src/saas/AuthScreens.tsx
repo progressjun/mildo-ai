@@ -61,6 +61,23 @@ export function authErrorMessage(e: unknown, kind: 'login' | 'invite' | 'reset' 
   return apiErrorMessage(e);
 }
 
+/* ---------- 비밀번호 재설정 요청 결과 ---------- */
+
+/**
+ * POST /api/auth/password-reset 응답 → 안내 종류. 서버는 계정 존재 여부와 무관하게 같은 응답을 주고,
+ * mail.configured(이 서버에 SMTP가 설정되어 있는지 — 서버 전역 사실)만 알린다. false면 메일을 보낼 수 없으므로 '보냈다'고 하지 않는다.
+ * 이전 서버(mail 필드 없음)는 기존처럼 요청 접수로 본다.
+ */
+export function forgotOutcome(r: { mail?: { configured?: boolean } } | null | undefined): 'requested' | 'no_mail' {
+  return r?.mail?.configured === false ? 'no_mail' : 'requested';
+}
+export const FORGOT_NOTICE: Record<'requested' | 'no_mail', string> = {
+  // 발송은 서버가 응답 뒤에 한다(응답 시간으로 계정 존재가 드러나지 않게) — 보낸 결과를 확인한 것처럼 말하지 않는다
+  requested: '요청을 접수했습니다. 가입된 활성 계정이면 재설정 링크를 메일로 보냅니다(링크는 60분 동안 한 번만 쓸 수 있습니다). 몇 분 안에 오지 않으면 스팸함을 확인하거나 워크스페이스 관리자에게 재설정 링크 발급을 요청해 주세요.',
+  no_mail: '이 서버에는 메일 발송(SMTP)이 설정되어 있지 않아 재설정 메일을 보낼 수 없습니다. 메일은 보내지 않았습니다. 워크스페이스 소유자 · 관리자에게 팀 · 권한 화면에서 재설정 링크 발급을 요청하거나, 서버 운영자에게 문의해 주세요.',
+};
+export const FORGOT_BUTTON: Record<'requested' | 'no_mail', string> = { requested: '요청했습니다', no_mail: '메일 발송 불가' };
+
 /* ---------- 공용 부품 ---------- */
 
 function FormError({ children }: { children: ReactNode }) {
@@ -110,7 +127,8 @@ export function LoginScreen({ initialView = 'login' }: { initialView?: 'login' |
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
+  /** 재설정 요청 결과 — requested: 서버가 메일 발송을 맡았다(계정이 있으면 보냄) · no_mail: 이 서버는 메일(SMTP)을 보낼 수 없다 */
+  const [sent, setSent] = useState<null | 'requested' | 'no_mail'>(null);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -141,8 +159,8 @@ export function LoginScreen({ initialView = 'login' }: { initialView?: 'login' |
     }
     setBusy(true);
     try {
-      await api('/api/auth/password-reset', { method: 'POST', body: { email: email.trim() }, silent: true });
-      setSent(true);
+      const r = await api<{ ok: boolean; mail?: { configured?: boolean } }>('/api/auth/password-reset', { method: 'POST', body: { email: email.trim() }, silent: true });
+      setSent(forgotOutcome(r));
     } catch (err) {
       setError(authErrorMessage(err, 'forgot'));
     } finally {
@@ -157,12 +175,10 @@ export function LoginScreen({ initialView = 'login' }: { initialView?: 'login' |
           <h1 id="forgot-title" className="auth-title">비밀번호 재설정 메일 받기</h1>
           <p className="small ink2">가입한 이메일로 재설정 링크를 보냅니다. 링크를 열어 새 비밀번호를 정하면 됩니다.</p>
           <FormError>{error}</FormError>
-          {sent ? (
-            <FormNotice tone="good">가입된 계정이면 재설정 링크를 메일로 보냈습니다. 메일이 오지 않으면 스팸함을 확인하거나 워크스페이스 관리자에게 문의해 주세요.</FormNotice>
-          ) : null}
+          {sent ? <FormNotice tone={sent === 'requested' ? 'good' : 'warning'}>{FORGOT_NOTICE[sent]}</FormNotice> : null}
           <TextField id="forgot-email" label="이메일" type="email" value={email} onChange={setEmail} autoComplete="email" autoFocus />
-          <Submit busy={busy} disabled={sent}>{sent ? '메일을 보냈습니다' : '재설정 링크 받기'}</Submit>
-          <button type="button" className="auth-link" onClick={() => { setView('login'); setError(null); setSent(false); }}>로그인 화면으로</button>
+          <Submit busy={busy} disabled={!!sent}>{sent ? FORGOT_BUTTON[sent] : '재설정 링크 받기'}</Submit>
+          <button type="button" className="auth-link" onClick={() => { setView('login'); setError(null); setSent(null); }}>로그인 화면으로</button>
         </form>
       </AuthFrame>
     );

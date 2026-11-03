@@ -15,7 +15,9 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   const { db, config } = app.ctx;
   const cookieOpts = { path: '/', sameSite: 'lax' as const, secure: config.secureCookies };
 
-  app.post('/auth/login', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+  // IP당 분당 10회. preHandler 단계에서 센다 — 보안 계층의 로그인 잠금 확인(http/security.ts, 전역 preHandler)이 먼저 돌아야
+  // 같은 이메일로 10회 실패한 다음 시도에 '요청이 너무 많습니다' 대신 잠금 안내(대기 시간 · 재설정 안내)가 나간다.
+  app.post('/auth/login', { config: { rateLimit: { max: 10, timeWindow: '1 minute', hook: 'preHandler' } } }, async (req, reply) => {
     const body = parseBody(LoginBody, req.body);
     const user = await one<{ id: string; name: string; password_hash: string | null; status: string }>(
       db, 'SELECT id, name, password_hash, status FROM users WHERE lower(email) = lower($1)', [body.email],
