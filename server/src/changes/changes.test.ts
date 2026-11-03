@@ -1057,6 +1057,11 @@ describe('값 · 단위 · 정직성 점검', () => {
     // dry_run은 매체에 보내지 않으므로 그대로 진행
     await t.db.query(`UPDATE connections SET write_mode = 'dry_run' WHERE id = $1`, [conn]);
     expect((await to(u.ae, c.id, 'applied', { action: '재실행 · 반영' })).json.change.execution).toMatchObject({ mode: 'dry_run', ok: true });
+    // dry_run으로 반영한 건의 롤백은 커넥션이 live + 연결 확인 전이어도 dry_run으로 기록 (매체 호출 없음)
+    await t.db.query(`UPDATE connections SET write_mode = 'live' WHERE id = $1`, [conn]);
+    const rb = await to(u.ae, c.id, 'rolled_back');
+    expect(rb.json.change).toMatchObject({ status: 'rolled_back', execution: { phase: 'rollback', mode: 'dry_run', ok: true } });
+    expect(calls.every((x) => x.dryRun)).toBe(true);
   });
 
   it('live 실행 기록에 실계정 검증 여부(verifiedLive)와 확인 필요 문구 · 커넥터에는 대상 엔티티(광고그룹 id) 전달', async () => {
@@ -1071,6 +1076,22 @@ describe('값 · 단위 · 정직성 점검', () => {
     // 롤백도 같은 엔티티 정보로
     await to(u.ae, c.id, 'rolled_back');
     expect((calls[1].change as any).entity?.adgroupId).toBe('grp-a001-01-000000000001');
+  });
+
+  it('요청 요약 문자열 안의 토큰 · 서명(URL 쿼리)도 저장 · 응답 · 감사 전에 가린다', async () => {
+    await saWithKeyword('live');
+    const c = await approved();
+    behavior = async (x) => ({
+      ok: true,
+      request: { steps: [{ method: 'POST', url: `https://graph.facebook.com/v21.0/123?access_token=EAABtokenvalue123456&appsecret_proof=deadbeefcafe0123&fields=id` }], note: 'Authorization: Bearer abcdefghijklmnop' },
+      response: { ok: true },
+      appliedValue: x.change.after,
+    });
+    const r = await to(u.ae, c.id, 'applied');
+    expect(r.json.change.status).toBe('applied');
+    const dump = JSON.stringify(r.json) + JSON.stringify((await u.viewer.get(base(`/${c.id}/executions`))).json) + JSON.stringify(await auditActions(c.id));
+    for (const secret of ['EAABtokenvalue123456', 'deadbeefcafe0123', 'abcdefghijklmnop']) expect(dump).not.toContain(secret);
+    expect(dump).toContain('fields=id');
   });
 
   it('일 누적 조정 폭은 첫 반영의 실행 계획 값(매체 현재 값 보정)을 시작 값으로 본다', async () => {

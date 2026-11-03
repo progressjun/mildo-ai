@@ -179,7 +179,10 @@ describe('반영 전 점검 (Flow executionCheck + 서버 점검)', () => {
   const data = generateDemoData('2026-11-02', 10);
   const base = { data, changes: [], incidents: [], today: '2026-11-02', todayAppliedBids: [], bulkIncidentStatus: new Map<string, string>() };
   it('일 조정 폭 상한 · 최대 입찰가 · 정상 통과', () => {
-    expect(evaluateGuards({ ...base, change: mk({ before: 270, after: 280, changePct: 3.7 }) }).ok).toBe(true);
+    const pass = evaluateGuards({ ...base, change: mk({ before: 270, after: 280, changePct: 3.7 }) });
+    expect(pass.ok).toBe(true);
+    expect(pass.passes.join(' ')).toMatch(/AD Pilot 실행 검증/);
+    expect([...pass.passes, ...pass.warnings].join(' ')).not.toMatch(/데모: 로컬 상태/);
     const cap = evaluateGuards({ ...base, change: mk({ before: 270, after: 340, changePct: 25.9 }) });
     expect(cap.ok).toBe(false);
     expect(cap.blocks.join(' ')).toMatch(/일 조정 폭 상한 20%/);

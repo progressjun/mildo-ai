@@ -176,6 +176,8 @@ export class Cafe24Client {
   get mallId(): string { return this.creds.mallId; }
   get shopNo(): number { return this.o.shopNo ?? 1; }
   get scopes(): string[] { return this.creds.scopes ?? []; }
+  /** 현재 자격증명 사본 (토큰 갱신 · 교환 후 값) */
+  get credentials(): Cafe24Credentials { return { ...this.creds }; }
   private now(): number { return (this.o.now ?? Date.now)(); }
   private key(): string { return createHash('sha256').update(`${this.ctx.connectionId}|${this.creds.mallId}|${this.creds.clientId}`).digest('hex'); }
 
@@ -339,4 +341,20 @@ export function findRows(data: unknown, required: string[]): Record<string, unkn
 
 export function _resetCafe24InflightForTest(): void {
   inflight.clear();
+}
+
+/**
+ * OAuth 콜백 라우트용: 방금 받은 인증 코드(1분 유효 · 1회용)를 바로 토큰으로 바꾸고 ctx.saveCredentials로 저장한다.
+ * 돌려주는 값은 저장된 자격증명(인증 코드 제외) — 호출한 쪽은 비밀값을 응답 · 로그 · 감사에 넣지 않는다.
+ */
+export async function exchangeCafe24AuthCode(
+  ctx: Pick<ConnectorContext, 'http' | 'connectionId' | 'saveCredentials'>,
+  creds: Pick<Cafe24Credentials, 'mallId' | 'clientId' | 'clientSecret'> & Partial<Cafe24Credentials>,
+  code: string,
+  redirectUri: string,
+  o: { now?: () => number; apiVersion?: string } = {},
+): Promise<Cafe24Credentials> {
+  const client = new Cafe24Client(ctx, { ...creds, authCode: code, redirectUri, accessToken: undefined, accessTokenExpiresAt: undefined }, o);
+  await client.accessToken(true);
+  return client.credentials;
 }

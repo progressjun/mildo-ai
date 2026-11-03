@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { connector, credentialsSchema, fetchCafe24 } from './index';
-import { Cafe24Client, _resetCafe24InflightForTest, cafe24AuthorizeUrl, describeCafe24Error, findRows } from './client';
+import { Cafe24Client, _resetCafe24InflightForTest, cafe24AuthorizeUrl, describeCafe24Error, exchangeCafe24AuthCode, findRows } from './client';
 import { cafe24OrderLine } from './normalize';
 import { CAFE24_CREDS, CAFE24_ORDERS, cafe24Handler, cafe24State, order } from './fixtures';
 import { combine, fakeCtx, handlerHttp, type Handler } from '../naver-commerce/sales-testkit';
@@ -122,6 +122,16 @@ describe('OAuth 2.0', () => {
 
     expect(describeCafe24Error(401, { error: 'invalid_client', error_description: 'x' })).toMatchObject({ kind: 'auth' });
     expect(describeCafe24Error(403, { error: { code: 403, message: 'scope' } })?.detail).toMatch(/권한 범위/);
+  });
+
+  it('OAuth 콜백용 교환 도우미: 갱신 토큰이 있어도 받은 코드를 먼저 교환하고 저장한다', async () => {
+    const st = cafe24State({ authCode: 'callback-code' });
+    const { saved, ctx } = setup({ state: st });
+    const next = await exchangeCafe24AuthCode(ctx, CAFE24_CREDS, 'callback-code', 'https://app.mildo.kr/api/oauth/cafe24/callback', { now: () => NOW });
+    expect(st.tokenCalls.map((c) => c.body)).toEqual([{ grant_type: 'authorization_code', code: 'callback-code', redirect_uri: 'https://app.mildo.kr/api/oauth/cafe24/callback' }]);
+    expect(next).toMatchObject({ accessToken: 'c24-access-1001', refreshToken: 'c24-refresh-1001', redirectUri: 'https://app.mildo.kr/api/oauth/cafe24/callback' });
+    expect(next).not.toHaveProperty('authCode');
+    expect(saved).toEqual([next]);
   });
 
   it('인증 코드 요청 URL (문서 형식: response_type · client_id · state · redirect_uri · scope 공백 구분)', () => {

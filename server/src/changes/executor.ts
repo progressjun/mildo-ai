@@ -58,6 +58,9 @@ export interface GuardResult {
   bulkIncidents: AlertIncident[];
 }
 
+/** 화면(데모) 엔진 문구 중 서버 실행에 맞지 않는 꼬리표 '(데모: 로컬 상태 …)'를 뺀다 — 서버는 실제 커넥터 · dry_run 기록으로 반영한다 */
+export const serverText = (t: string): string => t.replace(/\s*\(데모: 로컬 상태[^)]*\)/g, '').trim();
+
 /** 동기 함수 — withWorkspaceConfig 안에서 호출한다 */
 export function evaluateGuards(g: GuardInput): GuardResult {
   const blocks: string[] = [];
@@ -83,9 +86,9 @@ export function evaluateGuards(g: GuardInput): GuardResult {
       warnings.push(`실행 점검 계산 실패 — 데이터 기반 점검을 건너뜀 (${(err as Error).message})`);
     }
     if (ex) {
-      blocks.push(...ex.blocks);
-      warnings.push(...ex.warnings);
-      passes.push(...ex.passes.filter((p) => !/데모: 로컬 상태 반영/.test(p)));
+      blocks.push(...ex.blocks.map(serverText));
+      warnings.push(...ex.warnings.map(serverText));
+      passes.push(...ex.passes.filter((p) => !/데모: 로컬 상태 반영/.test(p)).map(serverText));
     }
   } else {
     warnings.push(`데이터셋을 만들 수 없어 데이터 기반 점검(성과 급변 · 전환 추적 단절 · 계정 잔액 · AD Pilot 보류)을 건너뜀${g.dataError ? ` — ${g.dataError}` : ''}`);
@@ -218,7 +221,7 @@ const SIMULATED_PROVIDERS = new Set(['demo']);
  * 실행 모드: off · 비활성 → 보류, 하나라도 live가 아니면 전체 dry_run, 데모 커넥터는 항상 dry_run(시뮬레이션 — 'live 반영됨'으로 보이지 않게),
  * live인데 연결 확인 전(pending — 새 커넥션 · 자격증명 교체 뒤 미확인) 커넥션이 있으면 보류.
  */
-function modeOf(conns: ConnectionRow[]): { mode: 'dry_run' | 'live'; notes: string[] } | { blocked: string } {
+function modeOf(conns: ConnectionRow[], opts: { dryRunOnly?: boolean } = {}): { mode: 'dry_run' | 'live'; notes: string[] } | { blocked: string } {
   for (const c of conns) {
     if (c.status === 'disabled') return { blocked: `대상 커넥션 '${c.label}'이(가) 비활성 상태입니다 — 데이터 연결 화면에서 활성화 후 재실행` };
     if (c.write_mode === 'off') return { blocked: `대상 커넥션 '${c.label}'의 쓰기 모드가 꺼져 있습니다(off) — dry_run 또는 live로 바꾼 뒤 재실행` };
@@ -229,6 +232,8 @@ function modeOf(conns: ConnectionRow[]): { mode: 'dry_run' | 'live'; notes: stri
     if (simulated.some((c) => c.write_mode === 'live')) notes.push('데모 커넥터(TEST DATA)는 실제 매체가 없어 live 설정이어도 dry_run 시뮬레이션으로 기록합니다');
     return { mode: 'dry_run', notes };
   }
+  // dry_run으로만 실행할 계획(dry_run 반영의 롤백)은 매체에 보내지 않으므로 live 전용 점검(연결 확인 전)을 하지 않는다
+  if (opts.dryRunOnly) return { mode: 'dry_run', notes };
   if (conns.some((c) => c.write_mode !== 'live')) {
     if (conns.some((c) => c.write_mode === 'live')) notes.push('커넥션 쓰기 모드가 섞여 있어 전체를 dry_run으로 실행합니다');
     return { mode: 'dry_run', notes };
@@ -425,7 +430,7 @@ export async function resolveRollbackPlan(rc: ResolveCtx, ws: string, c: ChangeR
     bindings.set(conn.id, b);
     conns.push(conn);
   }
-  const m = modeOf(conns);
+  const m = modeOf(conns, { dryRunOnly: applyExec.mode === 'dry_run' });
   if ('blocked' in m) return { kind: 'blocked', reason: m.blocked };
   if (applyExec.mode === 'live' && m.mode !== 'live') {
     return { kind: 'blocked', reason: 'live로 반영된 변경입니다 — 커넥션 쓰기 모드가 live가 아니어서 매체 값을 되돌릴 수 없습니다 (live로 바꾼 뒤 롤백)' };
