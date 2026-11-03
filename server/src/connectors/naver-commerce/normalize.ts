@@ -18,7 +18,7 @@
  */
 import type { Product, Promotion } from '@/core/types';
 import type { NaverChannelProduct, NaverOptionCombination, NaverOriginProduct, NaverProductOrderContent } from './client';
-import { fillTemplate, kstDateOf, krw, num, promotionStatus } from './sales-shared';
+import { fillTemplate, kstDateOf, krw, num, promotionStatus, safeLanding } from './sales-shared';
 
 export const EXCLUDED_ORDER_STATUSES = new Set(['CANCELED', 'RETURNED', 'CANCELED_BY_NOPAYMENT', 'PAYMENT_WAITING']);
 
@@ -105,8 +105,9 @@ export function naverProduct(
   return { id: productEntityId(originProductNo), name, options, landing: o.landing };
 }
 
+/** 랜딩: 템플릿(https만) → 채널 URL(채널 정보 API) 순. https가 아니면 빈 값 */
 export function landingOf(template: string | undefined, channelUrl: string | undefined, cp: NaverChannelProduct, originProductNo: number | string): string {
-  return fillTemplate(template, { channelProductNo: cp.channelProductNo ?? '', originProductNo, id: cp.channelProductNo ?? originProductNo }, channelUrl ?? '');
+  return safeLanding(fillTemplate(template, { channelProductNo: cp.channelProductNo ?? '', originProductNo, id: cp.channelProductNo ?? originProductNo }, safeLanding(channelUrl)));
 }
 
 /**

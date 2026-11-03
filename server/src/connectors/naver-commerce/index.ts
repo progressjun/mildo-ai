@@ -25,7 +25,7 @@ import type { ConnectorContext, ConnectorDef, DateRange, NormalizedBatch } from 
 import type { Product, Promotion } from '@/core/types';
 import { addDaysStr, dateRange, kstToday, nowMs } from '../../lib/time';
 import {
-  ConfigError, MAX_PAGES, SalesAcc, SalesApiError, clampRange, funnelUnavailable, kstDayEnd, kstDayStart, softPart, testOutcome, warn, wantsSnapshot,
+  ConfigError, MAX_PAGES, SalesAcc, SalesApiError, clampRange, funnelUnavailable, httpsUrlTemplate, kstDayEnd, kstDayStart, softPart, testOutcome, warn, wantsSnapshot,
 } from './sales-shared';
 import { NAVER_COMMERCE_LABEL, NaverCommerceClient, type NaverChannelProduct, type NaverCommerceCredentials, type NaverOriginProduct } from './client';
 import { isLine, landingOf, naverOrderLine, naverProduct, naverPromotion, pickChannelProduct } from './normalize';
@@ -55,7 +55,7 @@ export const settingsSchema = z.object({
   /** 옵션 · 재고 · 즉시 할인을 보려고 원상품을 조회할 최대 상품 수 (상품당 1회 호출) */
   optionDetailLimit: z.number().int().min(0).max(1000).default(100),
   /** 상품 랜딩 URL 템플릿 — 예: https://brand.naver.com/mildo/products/{channelProductNo} (없으면 채널 URL) */
-  productUrlTemplate: z.string().url().optional(),
+  productUrlTemplate: httpsUrlTemplate.optional(),
 });
 export type NaverCommerceSettings = z.infer<typeof settingsSchema>;
 

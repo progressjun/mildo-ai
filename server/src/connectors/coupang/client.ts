@@ -51,11 +51,15 @@ export function coupangAuthorization(c: Pick<CoupangCredentials, 'accessKey' | '
   return `CEA algorithm=HmacSHA256, access-key=${c.accessKey}, signed-date=${dt}, signature=${coupangSignature(c.secretKey, dt, method, path, query)}`;
 }
 
-/** 쿼리 문자열 (undefined 제외, URLSearchParams 인코딩 — 문서 Python 예제의 urlencode와 같은 규칙: '+' → %2B, ':' → %3A) */
+/**
+ * 쿼리 문자열 (undefined 제외). 발주서 문서의 예시 엔드포인트 · 파라미터 설명이 정한 형태
+ * `createdAtFrom=2025-07-15%2B09:00` 그대로 — '+'는 %2B로, ':'는 인코딩하지 않는다. 나머지는 URLSearchParams 규칙.
+ * 서명(message)과 전송 URL에 같은 문자열을 쓰므로 서명 · 전송이 어긋나지 않는다.
+ */
 export function coupangQuery(params: Record<string, string | number | boolean | undefined>): string {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') qs.append(k, String(v));
-  return qs.toString();
+  return qs.toString().replace(/%3A/gi, ':');
 }
 
 /** 금액: { units, nanos } 객체(v5) 또는 숫자 → 원 */

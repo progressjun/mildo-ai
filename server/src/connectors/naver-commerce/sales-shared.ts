@@ -7,6 +7,7 @@
  *  - 금액은 원 단위 정수, 날짜는 KST(YYYY-MM-DD). 주문 시각(ISO 8601, 오프셋 포함)은 KST 날짜로 바꿔 묶는다.
  *  - 판매 채널 일별(salesDaily)은 요청 기간의 모든 날짜를 채운다 — 주문이 없는 날은 0행(수집 누락과 구분).
  */
+import { z } from 'zod';
 import type { ConnectorContext, ConnectorHttp, DateRange, NormalizedBatch } from '../types';
 import type { Promotion, SalesChannelId } from '@/core/types';
 import { addDaysStr, dateRange, kstParts, kstToday } from '../../lib/time';
@@ -185,7 +186,8 @@ export function wantsSnapshot(range: DateRange, opts: { intradayDate?: string } 
 
 /* ---------------- 판매 채널 일별 합산 ---------------- */
 
-export interface FunnelValues { visitors?: number; detailViews?: number; carts?: number }
+/** 날짜별 방문 · 상세 조회 · 장바구니 · 광고 경유 매출(추정 — 채널 통계 API가 따로 줄 때만) */
+export interface FunnelValues { visitors?: number; detailViews?: number; carts?: number; adRevenue?: number }
 
 /** 날짜별 주문 수(주문번호 중복 제거) · 매출 · 광고 경유 매출 */
 export class SalesAcc {
@@ -202,12 +204,15 @@ export class SalesAcc {
     return dateRange(r.from, r.to).map((date) => {
       const e = this.m.get(date);
       const f = funnel?.get(date) ?? {};
+      const revenue = e ? Math.max(0, Math.round(e.revenue)) : 0;
+      // 광고 경유 매출은 매출을 넘을 수 없다 (채널 통계와 주문 API의 집계 기준 차이 — Board 품질 검사 기준과 같게 매출로 자른다)
+      const ad = f.adRevenue !== undefined ? Math.round(num(f.adRevenue)) : e ? Math.round(e.ad) : 0;
       return {
         date, channel,
-        visitors: Math.round(num(f.visitors)), detailViews: Math.round(num(f.detailViews)), carts: Math.round(num(f.carts)),
+        visitors: Math.max(0, Math.round(num(f.visitors))), detailViews: Math.max(0, Math.round(num(f.detailViews))), carts: Math.max(0, Math.round(num(f.carts))),
         orders: e ? e.orders.size : 0,
-        revenue: e ? Math.round(e.revenue) : 0,
-        adAttributedRevenue: e ? Math.round(e.ad) : 0,
+        revenue,
+        adAttributedRevenue: Math.min(revenue, Math.max(0, ad)),
       };
     });
   }
@@ -232,6 +237,31 @@ export function promotionStatus(start: string, end: string, today = kstToday()):
 export function fillTemplate(tpl: string | undefined, vars: Record<string, string | number>, fallback = ''): string {
   if (!tpl) return fallback;
   return tpl.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? encodeURIComponent(String(vars[k])) : m));
+}
+
+/**
+ * 상품 랜딩 URL 템플릿 설정 — https 주소만 받는다. 랜딩은 화면에서 링크(href)로 열리므로 javascript: · data: · http: 주소를 막는다
+ * (zod url()은 javascript: 도 통과시킨다).
+ */
+export const httpsUrlTemplate = z.string().trim().max(500).refine((v) => {
+  try {
+    const u = new URL(v.replace(/\{(\w+)\}/g, 'x'));
+    return u.protocol === 'https:' && !!u.hostname && !u.username && !u.password;
+  } catch {
+    return false;
+  }
+}, { message: '상품 URL 템플릿은 https:// 로 시작하는 전체 주소입니다 (예: https://brand.naver.com/mildo/products/{channelProductNo})' });
+
+/** API 응답 · 템플릿에서 온 랜딩 주소 — https가 아니면 빈 값(링크로 쓰지 않는다) */
+export function safeLanding(v: unknown): string {
+  const s = typeof v === 'string' ? v.trim() : '';
+  if (!s) return '';
+  try {
+    const u = new URL(s);
+    return u.protocol === 'https:' && !u.username && !u.password ? s : '';
+  } catch {
+    return '';
+  }
 }
 
 /* ---------------- 경고 · 부가 수집 ---------------- */
@@ -262,6 +292,21 @@ export function funnelUnavailable(batch: NormalizedBatch, label: string, metrics
     'funnel_unavailable',
     `${label} API는 ${metrics.join(' · ')} 지표를 제공하지 않아 0으로 저장했습니다 — 이 지표가 필요하면 판매 채널 일별 CSV 템플릿(sales_daily)에 같은 날짜 · 채널의 전체 지표(주문 · 매출 포함)를 담아, 우선순위를 이 커넥션보다 높게 둔 CSV 커넥션으로 올려 주세요. Dataset은 날짜 × 채널마다 우선순위가 가장 높은 출처의 행 하나를 씁니다`,
     { metrics },
+  );
+}
+
+/**
+ * 할인율(%)로 나타낼 수 없는 혜택(정액 쿠폰 · 사은품 · 배송비 할인 등)은 프로모션 일정에 넣지 않는다 —
+ * Promotion.discountRate는 판매가 대비 %이고, Flow 점검은 0%를 '할인율 확인' 실패로 판정하므로 0으로 넣으면 거짓 경보가 된다.
+ */
+export function promotionsSkipped(batch: NormalizedBatch, label: string, skipped: string[]): void {
+  if (!skipped.length) return;
+  const shown = skipped.slice(0, 5).join(', ');
+  warn(
+    batch,
+    'promotions_skipped',
+    `${label}: 할인율(%)로 나타낼 수 없는 혜택 ${skipped.length}건(${shown}${skipped.length > 5 ? ' 외' : ''})은 프로모션 일정에 넣지 않았습니다 — 정액 · 사은품 · 배송비 혜택은 판매가 대비 할인율이 없어 Flow 할인율 대조에서 0%로 잘못 판정되기 때문입니다`,
+    { count: skipped.length },
   );
 }
 
