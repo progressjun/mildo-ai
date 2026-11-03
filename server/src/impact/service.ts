@@ -9,8 +9,13 @@ import { loadImpactConfig, toEntry, workspaceDataMode, type LedgerRow } from './
 
 export interface LedgerQuery { month?: string; type?: SourceType; status?: LedgerStatus; limit?: number }
 
-export async function listEntries(q: Queryable, wsId: string, f: LedgerQuery = {}): Promise<LedgerEntry[]> {
-  const limit = Math.min(Math.max(f.limit ?? 500, 1), 2000);
+/** 화면 · CSV 목록 상한 */
+export const LIST_MAX = 2000;
+/** 월간 요약은 그 달 장부 전체로 계산한다 (목록 상한에 잘려 합계가 줄지 않게) — 이 값은 비정상 증가 방어용 */
+const SUMMARY_MAX = 100_000;
+
+export async function listEntries(q: Queryable, wsId: string, f: LedgerQuery = {}, max = LIST_MAX): Promise<LedgerEntry[]> {
+  const limit = Math.min(Math.max(f.limit ?? 500, 1), max);
   const rows = (await q.query<LedgerRow>(
     `SELECT id, source_type, source_id, label, occurred_at, window_days, status, baseline, observed, control, estimate, measured_at, month, detail
        FROM impact_ledger
@@ -22,7 +27,7 @@ export async function listEntries(q: Queryable, wsId: string, f: LedgerQuery = {
 }
 
 export async function summaryFor(q: Queryable, wsId: string, month: string): Promise<{ summary: ImpactSummary; entries: LedgerEntry[] }> {
-  const [cfg, entries, mode] = await Promise.all([loadImpactConfig(q, wsId), listEntries(q, wsId, { month, limit: 2000 }), workspaceDataMode(q, wsId)]);
+  const [cfg, entries, mode] = await Promise.all([loadImpactConfig(q, wsId), listEntries(q, wsId, { month, limit: SUMMARY_MAX }, SUMMARY_MAX), workspaceDataMode(q, wsId)]);
   const summary = buildSummary(entries, cfg, month, { generatedAt: new Date(nowMs()).toISOString(), dataMode: mode });
   return { summary, entries };
 }

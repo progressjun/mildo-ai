@@ -4,7 +4,8 @@
  */
 import { api, wsPath } from '@/saas/api';
 import type { WorkspaceConfig } from '@/data/config';
-import type { ConfigState, HistoryEntry, OnboardingState, SaveResult } from './model';
+import { fetchServerAiUsage, serverAiWorkspace } from '@/ai/claude';
+import type { ConfigState, HistoryEntry, OnboardingState, SaveResult, ServerAiUsage } from './model';
 import { setWorkspaceSnapshot } from './live';
 
 const silent = { silent: true } as const;
@@ -38,4 +39,16 @@ export async function reviewConfig(ws: string, note?: string): Promise<Onboardin
   const r = await api<{ onboarding: OnboardingState }>(wsPath(ws, '/config/review'), { method: 'POST', body: { note }, ...silent });
   setWorkspaceSnapshot(ws, { onboarding: r.onboarding });
   return r.onboarding;
+}
+
+/**
+ * 이번 달 AI 사용량 (ai 도메인 GET /api/w/:ws/ai/usage). fetchServerAiUsage(@/ai/claude)를 먼저 쓰고,
+ * 플랫폼이 연결한 AI 워크스페이스가 이 화면의 워크스페이스와 다르거나 아직 없으면(null) 같은 경로를 직접 읽는다.
+ */
+export async function fetchAiUsage(ws: string): Promise<ServerAiUsage> {
+  if (serverAiWorkspace() === ws) {
+    const viaAi = await fetchServerAiUsage().catch(() => null);
+    if (viaAi && typeof viaAi.month === 'string') return viaAi;
+  }
+  return api<ServerAiUsage>(wsPath(ws, '/ai/usage'), silent);
 }

@@ -8,7 +8,7 @@ import { renderToString } from 'react-dom/server';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { mergeConfig, DEFAULT_CONFIG, type WorkspaceConfig } from '@/data/config';
-import { demoHistory, demoOnboarding, demoState, type ConfigState, type OnboardingState } from './model';
+import { demoAiUsage, demoHistory, demoOnboarding, demoState, type AiUsageState, type ConfigState, type OnboardingState } from './model';
 import type { WorkspaceHandlers, WorkspaceScreenProps, WsTab } from './View';
 
 const mem: Record<string, string> = {};
@@ -39,6 +39,7 @@ async function screen(extra: Partial<WorkspaceScreenProps> & { tab?: WsTab } = {
   return wrap(h(WorkspaceScreen, {
     mode: 'server', workspaceName: '수면밀도 퍼포먼스', state: serverState(saved), draft: saved, canConfigure: true,
     history: demoHistory(), hasMoreHistory: false, onboarding: { ...demoOnboarding(), firstRun: false }, busy: null, error: null, serverIssues: [], remoteChanged: false,
+    aiUsage: { status: 'ok', usage: { ...demoAiUsage(), month: '2026-11', basis: '집계 기준: KST 2026-11-01 00:00부터' } },
     handlers: HANDLERS, initialTab: extra.tab, ...extra,
   }));
 }
@@ -93,8 +94,10 @@ describe('워크스페이스 설정 화면', () => {
       targets: ['목표 ROAS', 'SAFETY', '대량 변경 차단'],
       approval: ['위임 범위', '일 예산 ±10% 이내 · 상태 점검', '광고주 승인'],
       timetable: ['데이터 시간표', '전일 데이터 수집·검증 완료', 'SLA (분)', 'P1 인지'],
-      detect: ['이상 징후 기준', '공휴일', '당번 순번 대상', 'TF 역할'],
-      modules: ['사용 모듈', 'MILDO Board', '항상 표시', 'AI 월 사용 한도', '월 구독료'],
+      detect: ['이상 징후 기준', '공휴일', '당번 순번 대상', 'TF 역할', '주말 · 공휴일 당번 체계 강제 (평일 포함)', '꺼짐 · 평일은 담당 AE + 백업'],
+      modules: ['사용 모듈', 'MILDO Board', '항상 표시'],
+      ai: ['2026-11 AI 사용량', 'LIVE', '서버 키 연결됨', '745만 토큰 / 3,000만 토큰', '24.8% 사용', '용도별', 'MILDO Agent 대화', '최근 7일', '사용자별', 'AI 월 사용 한도', 'AI 사용', '집계 기준: KST'],
+      impact: ['성과 증명 기준', '월 구독료 (회수 배수 분모)', '공헌이익률', '시간당 인건비', '회수 배수 = (측정 증분 이익', '12,500,000원', '125.0시간', '가정값'],
       history: ['변경 이력', '목표 · 예산 확인', '일 조정 폭 상한: 15% → 20% (기본값으로)'],
     };
     for (const [tab, list] of Object.entries(expectByTab) as [WsTab, string[]][]) {
@@ -143,6 +146,81 @@ describe('워크스페이스 설정 화면', () => {
     expect(later).toContain('다른 사용자가 설정을 저장했습니다');
     expect(later).toContain('저장된 값 중 1개 항목을 무시하고 기본값을 쓰는 중입니다');
     expect(later).not.toContain('시작하기 · ');
+  });
+});
+
+describe('AI 사용량 · 한도 · 성과 증명 기준', () => {
+  it('데모 모드: 예시 사용량(TEST DATA) · 읽기 전용', async () => {
+    const { WorkspaceScreen } = await import('./View');
+    const html = await wrap(h(WorkspaceScreen, {
+      mode: 'demo', workspaceName: '예시', state: demoState(), draft: {}, canConfigure: false, history: demoHistory(), hasMoreHistory: false,
+      onboarding: demoOnboarding(), busy: null, error: null, serverIssues: [], remoteChanged: false, aiUsage: { status: 'demo', usage: demoAiUsage() }, handlers: HANDLERS, initialTab: 'ai',
+    }));
+    expect(html).toContain('TEST DATA');
+    expect(html).toContain('예시(TEST DATA)입니다');
+    expect(html).toContain('2026-10 AI 사용량');
+    expect(html).not.toContain('<input');
+    expect(html).not.toMatch(/NaN|undefined|Infinity/);
+  });
+
+  it('편집 중인 한도가 이번 달 사용량 이하이면 저장 전에 경고 · 한도 도달 · 불러오기 실패 · 불러오는 중', async () => {
+    const low = await screen({ tab: 'ai', state: serverState({}), draft: { ai: { monthlyTokenLimit: 5_000_000 } } });
+    expect(low).toContain('저장 전 한도 500만 토큰 기준 사용률 149%');
+    expect(low).toContain('새 한도가 이번 달 사용량 이하입니다');
+    const high = await screen({ tab: 'ai', state: serverState({}), draft: { ai: { monthlyTokenLimit: 50_000_000 } } });
+    expect(high).toContain('저장하면 남은 토큰이');
+    const over: AiUsageState = { status: 'ok', usage: { ...demoAiUsage(), limit: 7_000_000, remaining: 0, usedRatio: 1.06, budgetExceeded: true, enabled: true } };
+    const ex = await screen({ tab: 'ai', aiUsage: over });
+    expect(ex).toContain('한도 도달');
+    expect(ex).toContain('기준: 입력 + 출력 토큰 ≥ 월 한도');
+    const off = await screen({ tab: 'ai', aiUsage: { status: 'ok', usage: { ...demoAiUsage(), enabled: false, configured: false } } });
+    expect(off).toContain('AI 사용 꺼짐');
+    expect(off).toContain('서버 키 미설정');
+    const err = await screen({ tab: 'ai', aiUsage: { status: 'error', usage: null, error: '권한이 없습니다' } });
+    expect(err).toContain('사용량을 불러오지 못했습니다');
+    expect(err).toContain('권한이 없습니다');
+    expect(await screen({ tab: 'ai', aiUsage: { status: 'loading', usage: null } })).toContain('사용량을 불러오는 중입니다');
+  });
+
+  it('성과 증명 기준: 바꾼 값으로 1배 회수 조건을 다시 계산 · 탭 배지', async () => {
+    const html = await screen({ tab: 'impact', state: serverState({}), draft: { billing: { monthlyFee: 6_000_000 }, impact: { contributionMargin: 0.3 } } });
+    expect(html).toContain('20,000,000원');
+    expect(html).toContain('150.0시간');
+    expect(html).toContain('워크스페이스 값');
+    expect(html).toMatch(/성과 증명 기준<span class="pill[^"]*"[^>]*>2</);
+  });
+});
+
+describe('소유자 전용 · 브랜드 불일치 · 공휴일 입력', () => {
+  it('월 구독료는 소유자만 입력 — PM(설정 권한)은 읽기 전용 표시, 다른 성과 증명 입력은 편집 가능', async () => {
+    const pm = await screen({ tab: 'impact', state: serverState({}), draft: {}, canOwner: false });
+    expect(pm).not.toMatch(/<input[^>]*id="ws-billing-monthlyFee"/);
+    expect(pm).toContain('소유자만 바꿀 수 있어 읽기 전용입니다');
+    expect(pm).toMatch(/<input[^>]*id="ws-impact-hourlyCost"/);
+    const owner = await screen({ tab: 'impact', state: serverState({}), draft: {}, canOwner: true });
+    expect(owner).toMatch(/<input[^>]*id="ws-billing-monthlyFee"/);
+    expect(owner).not.toContain('소유자만 바꿀 수 있어 읽기 전용입니다');
+  });
+
+  it('워크스페이스 브랜드와 설정 브랜드명이 다르면 안내 + 한 번에 맞추기(설정 권한), 같으면 안내 없음 · 데모는 안내 없음', async () => {
+    const diff = await screen({ tab: 'brand', state: serverState({}), draft: {}, workspaceBrand: '바른잠' });
+    expect(diff).toContain('설정의 브랜드명(수면밀도 · 기본값)이 워크스페이스 브랜드(바른잠)와 다릅니다');
+    expect(diff).toMatch(/브랜드명을 (&#x27;|')바른잠(&#x27;|')\(으\)로/);
+    const ro = await screen({ tab: 'brand', state: serverState({}), draft: {}, workspaceBrand: '바른잠', canConfigure: false });
+    expect(ro).toContain('워크스페이스 브랜드(바른잠)와 다릅니다');
+    expect(ro).not.toMatch(/브랜드명을 (&#x27;|')바른잠/);
+    expect(await screen({ tab: 'brand', state: serverState({}), draft: { brand: { name: '바른잠' } }, workspaceBrand: '바른잠' })).not.toContain('워크스페이스 브랜드(');
+    expect(await screen({ tab: 'brand', state: serverState({}), draft: {}, workspaceBrand: '수면밀도' })).not.toContain('워크스페이스 브랜드(');
+  });
+
+  it('브랜드명 · 제품군 · 목표 CPA · 시간표 안내는 실제로 쓰는 곳만 말한다', async () => {
+    const brand = await screen({ tab: 'brand', state: serverState({}), draft: {} });
+    expect(brand).toContain('판정에는 쓰지 않습니다');
+    const targets = await screen({ tab: 'targets', state: serverState({}), draft: {} });
+    expect(targets).toContain('리포트 판정은 ROAS 기준이라 이 값을 쓰지 않습니다');
+    const tt = await screen({ tab: 'timetable', state: serverState({}), draft: {} });
+    expect(tt).toContain('기본 시각(07:00 · 14:00) 기준');
+    expect(tt).not.toContain('MILDO Board 수집 기준 시각 표기');
   });
 });
 

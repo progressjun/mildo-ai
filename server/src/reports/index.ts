@@ -24,6 +24,7 @@ import { parseBody, z } from '../lib/validate';
 import { addDaysStr, kstParts, kstToday, nowMs } from '../lib/time';
 import { withWorkspaceConfig } from '@/data/config';
 import { loadWorkspaceConfig } from '../settings/service';
+import { measureWorkspace } from '../impact/measure';
 import { deliverReport, syncDelivered } from './deliver';
 import { generateAndStore, getReport, REPORT_COLS, SERVER_REPORT_TYPES, toDto, type ReportRow, type ServerReportType } from './generate';
 import { isMonthlySendDay, isWeeklySendDay, monthlyTargetFor, upcomingRuns, weeklyPeriodFor } from './schedule';
@@ -143,26 +144,32 @@ export function jobs(reg: JobRegistry): void {
     if (!ctx.workspaceId) return { skipped: '워크스페이스 없음' };
     const p = parseBody(JobPayload, ctx.payload);
     const scheduled = p.trigger !== 'manual';
+    // 예약 가치 리포트: 06:00 측정이 밀렸거나(워커 재시작 · 대기열) 빠졌어도 최신 장부로 쓰도록 먼저 측정한다 (실패해도 기존 장부로 생성)
+    if (p.type === 'value' && scheduled) {
+      try { await measureWorkspace(ctx.db, ctx.workspaceId); } catch (e) { ctx.log(`가치 리포트 전 측정 실패 — 기존 장부로 생성: ${(e as Error).message}`); }
+    }
     const { row, created } = await generateAndStore(ctx.db, ctx.workspaceId, {
       type: p.type, periodStart: p.periodStart, month: p.month, incidentId: p.incidentId, trigger: p.trigger, dedupe: scheduled, actor: 'system',
     }, ctx.config.appUrl);
-    let delivered = 0;
     if (created) {
       await audit(ctx.db, {
         workspaceId: ctx.workspaceId, actor: 'system', action: 'report.generate', targetType: 'report', targetId: row.id,
         detail: { type: row.type, periodStart: row.period_start, periodEnd: row.period_end, dataMode: row.data_mode, trigger: p.trigger },
       });
-      if (p.deliver) {
-        const d = await deliverReport(ctx.db, ctx.config, ctx.workspaceId, row.id, 'system');
-        delivered = d.records.filter((x) => x.status === 'queued' || x.status === 'sent').length;
-        await audit(ctx.db, {
-          workspaceId: ctx.workspaceId, actor: 'system', action: 'report.deliver', targetType: 'report', targetId: row.id,
-          detail: { type: row.type, channels: d.records.length, results: d.records.map((x) => ({ channel: x.channelName, type: x.channelType, via: x.via, status: x.status })) },
-        });
-      }
-      await ctx.publish(ctx.workspaceId, { type: 'report', id: row.id });
     }
-    return { reportId: row.id, type: row.type, created, delivered };
+    // 재시도: 이전 시도가 리포트만 저장하고 발송 전에 실패했으면(발송 기록이 하나도 없음) 이번 시도에서 보낸다 — 이미 보낸(건너뜀 포함) 리포트는 다시 보내지 않는다
+    const unsent = !created && scheduled && (!Array.isArray(row.delivered) || row.delivered.length === 0);
+    let delivered = 0;
+    if (p.deliver && (created || unsent)) {
+      const d = await deliverReport(ctx.db, ctx.config, ctx.workspaceId, row.id, 'system');
+      delivered = d.records.filter((x) => x.status === 'queued' || x.status === 'sent').length;
+      await audit(ctx.db, {
+        workspaceId: ctx.workspaceId, actor: 'system', action: 'report.deliver', targetType: 'report', targetId: row.id,
+        detail: { type: row.type, channels: d.records.length, retry: unsent || undefined, results: d.records.map((x) => ({ channel: x.channelName, type: x.channelType, via: x.via, status: x.status })) },
+      });
+    }
+    if (created || (p.deliver && unsent)) await ctx.publish(ctx.workspaceId, { type: 'report', id: row.id });
+    return { reportId: row.id, type: row.type, created, delivered, ...(unsent && p.deliver ? { resumedDelivery: true } : {}) };
   });
 
   // 일간 — 매일 08:00 · 전일 성과

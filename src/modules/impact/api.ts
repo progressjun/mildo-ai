@@ -53,7 +53,8 @@ export async function fetchSummary(ws: string, month: string): Promise<ImpactSum
 }
 
 export async function fetchLedger(ws: string, month?: string): Promise<LedgerEntry[]> {
-  const q = month ? `?month=${encodeURIComponent(month)}` : '';
+  // 월별 장부는 서버 목록 상한(2,000행)까지 — 기본 500행에 잘려 요약 건수와 어긋나지 않게
+  const q = month ? `?month=${encodeURIComponent(month)}&limit=2000` : '';
   const r = await api<{ entries: LedgerEntry[] }>(wsPath(ws, `/impact/ledger${q}`), silent);
   setImpactSnapshot(ws, { entries: r.entries, month });
   return r.entries;

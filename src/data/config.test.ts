@@ -7,7 +7,7 @@ import {
 } from './constants';
 import {
   activeWorkspaceConfig, applyWorkspaceConfig, configFieldLabel, DEFAULT_CONFIG, delegationRanges, diffConfig, effectiveConfig, formatConfigValue,
-  isEmptyConfig, KNOWN_MODULE_IDS, leafPaths, MEDIA_ID_LIST, mergeConfig, minutesLabel, NUMBER_FIELDS, parseWorkspaceConfig, removeOverride,
+  isEmptyConfig, isOwnerOnlyPath, KNOWN_MODULE_IDS, leafPaths, MEDIA_ID_LIST, mergeConfig, minutesLabel, NUMBER_FIELDS, parseWorkspaceConfig, removeOverride,
   setOverride, TIMETABLE_KEYS, TIMETABLE_LABEL, withWorkspaceConfig, type WorkspaceConfig,
 } from './config';
 import { KR_HOLIDAYS, isOffDay } from '@/core/util';
@@ -17,17 +17,21 @@ import { BOARD_RULES } from '@/modules/board/data';
 import { LAB_DEFAULT_CRITERIA } from '@/modules/lab/data';
 import { ON_DUTY_POOL } from '@/modules/alert/data';
 import { ON_DUTY_POOL as OPS_POOL } from '@/modules/ops/data';
-import { defaultConfig as alertDefaultConfig, onDutyFor } from '@/modules/alert/engine';
+import { backupOf, defaultConfig as alertDefaultConfig, onDutyFor, slaTargets } from '@/modules/alert/engine';
+import { impactConfig } from '@/modules/impact/engine';
 import { resolveWatchConfig } from '@/modules/watch/engine';
+import { normalizeShares, PROPOSAL_SHARES } from '@/modules/growth/engine';
 
 /** 설정이 건드리는 모든 내보낸 값의 사진 */
 function snapshot(): string {
   return JSON.stringify({
     RFP, AD_PILOT, ADPILOT_DEFAULTS, BOARD_RULES, LAB_DEFAULT_CRITERIA, MEDIA, GFA_DELEGATION: GFA_DELEGATION.map((g) => ({ ...g, maxPct: String(g.maxPct) })),
     DATA_TIMETABLE, SLA, ANOMALY_THRESHOLDS, KR_HOLIDAYS: Object.entries(KR_HOLIDAYS).sort(), SKU_EXPANSION, ON_DUTY_POOL, OPS_POOL, TF_ROLES, REVIEW_RULES,
+    PROPOSAL_SHARES,
   });
 }
 const PRISTINE = snapshot();
+const ORIGINAL_DEV_BACKUP = TF_ROLES.find((r) => r.id === 'dev')!.backup;
 
 afterEach(() => applyWorkspaceConfig(null));
 
@@ -226,6 +230,28 @@ describe('applyWorkspaceConfig — constants 제자리 갱신', () => {
     expect(MEDIA.naver_sa.annualBudget).toBe(2_150_000_000);
   });
 
+  it('예산 배분 → 매출 성장 엔진의 배분 가안(모듈 로드 시 복사본 PROPOSAL_SHARES)도 제자리에서 바뀌고 null이면 p.37로', () => {
+    const ref = PROPOSAL_SHARES;
+    expect(PROPOSAL_SHARES.naver_sa).toBe(0.43);
+    applyWorkspaceConfig({ budget: { allocation: { naver_sa: 0.5, naver_gfa: 0.11 } } });
+    expect(PROPOSAL_SHARES).toBe(ref);
+    expect(PROPOSAL_SHARES).toMatchObject({ naver_sa: 0.5, naver_gfa: 0.11, google: 0.12 });
+    // 입력이 비면 가안으로 되돌리는 엔진 함수도 워크스페이스 배분을 쓴다
+    expect(normalizeShares({}).naver_sa).toBe(0.5);
+    applyWorkspaceConfig(null);
+    expect(PROPOSAL_SHARES).toMatchObject({ naver_sa: 0.43, naver_gfa: 0.18 });
+    expect(withWorkspaceConfig({ budget: { allocation: { naver_sa: 0.38, naver_gfa: 0.23 } } }, () => PROPOSAL_SHARES.naver_gfa)).toBe(0.23);
+    expect(PROPOSAL_SHARES.naver_gfa).toBe(0.18);
+  });
+
+  it('소유자 전용 항목: billing.* 만 (월 구독료 = 회수 배수의 분모)', () => {
+    expect(isOwnerOnlyPath('billing')).toBe(true);
+    expect(isOwnerOnlyPath('billing.monthlyFee')).toBe(true);
+    expect(isOwnerOnlyPath('impact.contributionMargin')).toBe(false);
+    expect(isOwnerOnlyPath('billingX')).toBe(false);
+    expect(isOwnerOnlyPath('ai.monthlyTokenLimit')).toBe(false);
+  });
+
   it('브랜드 · 경쟁사(검수 규칙 포함) · 시간표 · SLA · 이상 징후 · 공휴일 · SKU · 당번 · TF 백업', () => {
     applyWorkspaceConfig({
       brand: { name: '밀도 테스트', competitors: ['시몬스', '에이스(침대)'] },
@@ -277,6 +303,73 @@ describe('applyWorkspaceConfig — constants 제자리 갱신', () => {
     applyWorkspaceConfig({});
     expect(snapshot()).toBe(PRISTINE);
     warn.mockRestore();
+  });
+});
+
+describe('교차 요청 — 다른 도메인이 읽는 값', () => {
+  it('changes: 일 조정 폭 상한 → AD Pilot 엔진 DEFAULT_CONFIG · officialConfig(executionCheck · bulkGuard 기준)에 반영, null이면 20으로', () => {
+    expect(ADPILOT_DEFAULTS.dailyChangeCapPct).toBe(20);
+    applyWorkspaceConfig({ safety: { dailyChangeCapPct: 12, bulkWarnCount: 7, bulkBlockCount: 20 } });
+    expect(ADPILOT_DEFAULTS.dailyChangeCapPct).toBe(12);
+    expect(officialConfig([]).dailyChangeCapPct).toBe(12);
+    expect(officialConfig(undefined).dailyChangeCapPct).toBe(12);
+    expect(ADPILOT_DEFAULTS).toMatchObject({ bulkWarnCount: 7, bulkBlockCount: 20 });
+    expect(checkBulk([{ kind: 'bid', changePct: 13 }]).level).toBe('block');
+    expect(checkBulk([{ kind: 'bid', changePct: 11 }]).level).toBe('ok');
+    applyWorkspaceConfig(null);
+    expect(ADPILOT_DEFAULTS.dailyChangeCapPct).toBe(20);
+    expect(officialConfig([]).dailyChangeCapPct).toBe(20);
+    expect(ADPILOT_DEFAULTS).toMatchObject({ bulkWarnCount: 5, bulkBlockCount: 15 });
+    expect(snapshot()).toBe(PRISTINE);
+  });
+
+  it('changes: GFA_DELEGATION 배열 · 원소가 제자리에서 바뀐다 (같은 객체 참조 — 서버 routeApprover가 import한 값)', () => {
+    const arr = GFA_DELEGATION;
+    const first = GFA_DELEGATION[0];
+    withWorkspaceConfig({ delegation: { aeMaxPct: 5, pmMaxPct: 25 } }, () => {
+      expect(GFA_DELEGATION).toBe(arr);
+      expect(GFA_DELEGATION[0]).toBe(first);
+      expect(GFA_DELEGATION.map((g) => g.maxPct)).toEqual([5, 25, Infinity]);
+      expect(routeByPct(6).approver).toBe('PM');
+      expect(routeByPct(26).approver).toBe('CLIENT');
+    });
+    expect(GFA_DELEGATION.map((g) => g.maxPct)).toEqual([10, 30, Infinity]);
+  });
+
+  it('alerts: SLA 목표 · 당번 순번 · TF 백업이 Alert 엔진 계산(slaTargets · onDutyFor · backupOf)에 그대로 쓰인다', () => {
+    const weekday = Date.parse('2026-11-04T10:00:00+09:00'); // 수요일
+    expect(slaTargets('P1', weekday).ackMin).toBe(15);
+    const inside = withWorkspaceConfig({ sla: { P1: { ackMin: 10, actionMin: 20 }, P2: { reportMin: 600 } }, onDuty: { pool: ['dev'] }, tf: { backups: { dev: 'analyst' } } }, () => ({
+      p1: slaTargets('P1', weekday), p2: slaTargets('P2', weekday), duty: onDutyFor('2026-11-07'), backup: backupOf('dev'),
+    }));
+    expect(inside.p1).toMatchObject({ ackMin: 10, actionMin: 20, ack: '10분', action: '20분' });
+    expect(inside.p2).toMatchObject({ reportMin: 600, report: '10시간' });
+    expect(inside.duty).toMatchObject({ roleId: 'dev', backupId: 'analyst' });
+    expect(inside.backup).toBe('analyst');
+    expect(slaTargets('P1', weekday)).toMatchObject({ ackMin: 15, actionMin: 30 });
+    expect(backupOf('dev')).toBe(ORIGINAL_DEV_BACKUP);
+  });
+
+  it('alerts: offHoursMode(최상위 boolean) — 스키마가 보존하고 기본값은 꺼짐', () => {
+    expect(DEFAULT_CONFIG.offHoursMode).toBe(false);
+    expect(parseWorkspaceConfig({ offHoursMode: true })).toEqual({ config: { offHoursMode: true }, errors: [] });
+    expect(parseWorkspaceConfig({ offHoursMode: 'yes' }).errors).toEqual([{ path: 'offHoursMode', message: '켜기 · 끄기 값이어야 합니다' }]);
+    expect(effectiveConfig({ offHoursMode: true }).offHoursMode).toBe(true);
+    expect(configFieldLabel('offHoursMode')).toContain('당번 체계');
+    expect(formatConfigValue('offHoursMode', true)).toBe('켜짐');
+  });
+
+  it('ai · reports-impact: ai.enabled · ai.monthlyTokenLimit · billing.monthlyFee · impact.* 를 스키마가 지우지 않고 impact 엔진이 같은 키로 읽는다', () => {
+    const input = { ai: { enabled: false, monthlyTokenLimit: 1_000_000 }, billing: { monthlyFee: 7_000_000 }, impact: { contributionMargin: 0.35, hourlyCost: 55_000 } };
+    const r = parseWorkspaceConfig(input);
+    expect(r.errors).toEqual([]);
+    expect(r.config).toEqual(input);
+    const ic = impactConfig(r.config);
+    expect(ic).toMatchObject({ monthlyFee: 7_000_000, margin: 0.35, hourlyCost: 55_000, sources: { monthlyFee: 'workspace', margin: 'workspace', hourlyCost: 'workspace' } });
+    const d = impactConfig(DEFAULT_CONFIG);
+    expect(d).toMatchObject({ monthlyFee: DEFAULT_CONFIG.billing.monthlyFee, margin: DEFAULT_CONFIG.impact.contributionMargin, hourlyCost: DEFAULT_CONFIG.impact.hourlyCost });
+    expect(parseWorkspaceConfig({ impact: { contributionMargin: 1.5 } }).errors[0].path).toBe('impact.contributionMargin');
+    expect(parseWorkspaceConfig({ ai: { monthlyTokenLimit: -1 } }).errors[0].path).toBe('ai.monthlyTokenLimit');
   });
 });
 

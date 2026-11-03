@@ -9,7 +9,12 @@ import { loadEffectiveConfig, loadWorkspaceConfig } from './service';
 import { DEFAULT_AI_MONTHLY_TOKENS, DEFAULT_CONFIG, withWorkspaceConfig } from '@/data/config';
 import { DEFAULT_MONTHLY_TOKEN_LIMIT, monthlyTokenLimit } from '../ai/service';
 import { AD_PILOT, SLA } from '@/data/constants';
-import { resolveConfig } from '@/modules/adpilot/engine';
+import { officialConfig, resolveConfig } from '@/modules/adpilot/engine';
+import { aiEnabled } from '../ai/service';
+import { routeApprover } from '../changes/policy';
+import { evaluateGuards } from '../changes/executor';
+import { impactConfig } from '@/modules/impact/engine';
+import type { ChangeRequest } from '@/core/types';
 
 let t: TestApp;
 let W: (p?: string) => string;
@@ -180,6 +185,59 @@ describe('PUT /config — 저장 · 감사 · 이벤트', () => {
   });
 });
 
+describe('PUT /config — 소유자 전용 항목 · CSRF · 본문 오염', () => {
+  it('billing.monthlyFee(회수 배수의 분모)는 owner만 바꾼다 — pm · admin은 403(dryRun 포함) · 저장 · 감사 없음, 값을 그대로 두면 다른 항목은 저장', async () => {
+    await resetStored();
+    const n0 = (await auditRows()).rows.length;
+    for (const role of ['pm', 'admin'] as const) {
+      const c = await as(role);
+      const r = await c.put(W(), { config: { billing: { monthlyFee: 2_000_000 }, targets: { roas: 450 } } });
+      expect(r.status, role).toBe(403);
+      expect(r.json.error.code).toBe('forbidden');
+      expect(r.json.error.message).toContain('소유자만');
+      expect(r.json.error.detail.paths).toEqual(['billing.monthlyFee']);
+      expect((await c.put(W(), { config: { billing: { monthlyFee: 2_000_000 } }, dryRun: true })).status, `${role} dryRun`).toBe(403);
+    }
+    expect((await t.db.query(`SELECT config FROM workspaces WHERE id = $1`, [t.ws])).rows[0].config).toEqual({});
+    expect((await auditRows()).rows.length).toBe(n0);
+
+    const owner = await as('owner');
+    const o = await owner.put(W(), { config: { billing: { monthlyFee: 7_000_000 } } });
+    expect(o.status).toBe(200);
+    expect(o.json.effective.billing.monthlyFee).toBe(7_000_000);
+    const pm = await as('pm');
+    // 저장된 구독료를 그대로 두면 다른 항목은 저장된다
+    const keep = await pm.put(W(), { config: { billing: { monthlyFee: 7_000_000 }, targets: { roas: 450 } } });
+    expect(keep.status).toBe(200);
+    expect(keep.json.changes.map((x: { path: string }) => x.path)).toEqual(['targets.roas']);
+    // 구독료 덮어쓰기를 지우는 저장(전체 기본값 포함)도 바꾸는 것이다
+    const drop = await pm.put(W(), { config: { targets: { roas: 450 } } });
+    expect(drop.status).toBe(403);
+    expect((await pm.put(W(), { config: {} })).status).toBe(403);
+    expect((await pm.get(W())).json.config).toEqual({ billing: { monthlyFee: 7_000_000 }, targets: { roas: 450 } });
+    await resetStored();
+  });
+
+  it('x-csrf-token이 쿠키와 다르면 403 · 저장 안 함', async () => {
+    await resetStored();
+    const pm = await as('pm');
+    const r = await pm.raw({ method: 'PUT', url: W(), payload: { config: { targets: { roas: 555 } } }, headers: { 'x-csrf-token': 'forged-token' } });
+    expect(r.status).toBe(403);
+    expect((await t.db.query(`SELECT config FROM workspaces WHERE id = $1`, [t.ws])).rows[0].config).toEqual({});
+  });
+
+  it('__proto__ · constructor.prototype 키가 든 본문은 거부되고 저장 · 전역 오염이 없다', async () => {
+    await resetStored();
+    const pm = await as('pm');
+    for (const body of ['{"config":{"__proto__":{"polluted":1}}}', '{"config":{"targets":{"constructor":{"prototype":{"polluted":1}}}}}']) {
+      const r = await pm.raw({ method: 'PUT', url: W(), payload: body, headers: { 'content-type': 'application/json' } });
+      expect(r.status, body).toBe(400);
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect((await t.db.query(`SELECT config FROM workspaces WHERE id = $1`, [t.ws])).rows[0].config).toEqual({});
+  });
+});
+
 describe('PUT /config — 입력 검증', () => {
   it('항목별 사유와 함께 400 · 저장 안 함', async () => {
     await resetStored();
@@ -316,9 +374,11 @@ describe('온보딩 · 목표 확인', () => {
     o = (await viewer.get(W('/onboarding'))).json.onboarding;
     expect(o.steps.find((s: { id: string }) => s.id === 'notify').done).toBe(true);
 
-    // 목표 · 예산 확인: ae는 403, pm은 기록
-    const ae = await as('ae');
-    expect((await ae.post(W('/review'), {})).status).toBe(403);
+    // 목표 · 예산 확인: ae · client · viewer는 403, 다른 워크스페이스는 404, pm은 기록
+    for (const role of ['ae', 'client', 'viewer'] as const) expect((await (await as(role)).post(W('/review'), {})).status, role).toBe(403);
+    expect((await (await as('pm')).post(`/api/w/${otherWs}/config/review`, {})).status).toBe(404);
+    expect((await (await as('pm')).post(W('/review'), { note: 'x'.repeat(301) })).status).toBe(400);
+    expect((await auditRows()).rows.filter((x) => x.action === 'config.review')).toHaveLength(0);
     const pm = await as('pm');
     const rv = await pm.post(W('/review'), { note: '제안서 기준 그대로 운영' });
     expect(rv.status).toBe(200);
@@ -366,6 +426,71 @@ describe('엔진 연동 · 계약', () => {
     expect((await pm.put(W(), { config: { ai: { monthlyTokenLimit: 5_000_000 } } })).status).toBe(200);
     const raw = (await t.db.query<{ config: Record<string, unknown> }>(`SELECT config FROM workspaces WHERE id = $1`, [t.ws])).rows[0].config;
     expect(monthlyTokenLimit(raw)).toBe(5_000_000);
+    await resetStored();
+  });
+
+  it('ai: ai.enabled=false · 한도를 PUT이 지우지 않고 ai 도메인(aiEnabled · monthlyTokenLimit)이 읽는다', async () => {
+    await resetStored();
+    const owner = await as('owner');
+    const r = await owner.put(W(), { config: { ai: { enabled: false, monthlyTokenLimit: 2_000_000 } } });
+    expect(r.status).toBe(200);
+    expect(r.json.effective.ai).toEqual({ enabled: false, monthlyTokenLimit: 2_000_000 });
+    const raw = (await t.db.query<{ config: Record<string, unknown> }>(`SELECT config FROM workspaces WHERE id = $1`, [t.ws])).rows[0].config;
+    expect(raw.ai).toEqual({ enabled: false, monthlyTokenLimit: 2_000_000 });
+    expect(aiEnabled(raw)).toBe(false);
+    expect(monthlyTokenLimit(raw)).toBe(2_000_000);
+    // AI 사용량 API가 같은 한도를 보고한다
+    const u = await owner.get(`/api/w/${t.ws}/ai/usage`);
+    expect(u.status).toBe(200);
+    expect(u.json).toMatchObject({ limit: 2_000_000, enabled: false, available: false });
+    await resetStored();
+  });
+
+  it('alerts: offHoursMode(최상위 boolean)를 저장하면 loadWorkspaceConfig가 그대로 돌려준다 (scan.ts가 cfg.offHoursMode로 읽음) · 문자열은 400', async () => {
+    await resetStored();
+    const pm = await as('pm');
+    expect((await pm.put(W(), { config: { offHoursMode: 'on' } })).json.error.detail).toEqual([{ path: 'offHoursMode', message: '켜기 · 끄기 값이어야 합니다' }]);
+    const r = await pm.put(W(), { config: { offHoursMode: true } });
+    expect(r.status).toBe(200);
+    expect(r.json.changes).toEqual([expect.objectContaining({ path: 'offHoursMode', before: false, after: true })]);
+    const cfg = await loadWorkspaceConfig(t.db, t.ws);
+    expect((cfg as { offHoursMode?: unknown }).offHoursMode === true).toBe(true);
+    expect((await loadEffectiveConfig(t.db, t.ws)).offHoursMode).toBe(true);
+    await resetStored();
+    expect((await loadEffectiveConfig(t.db, t.ws)).offHoursMode).toBe(false);
+  });
+
+  it('reports-impact: billing.monthlyFee · impact.contributionMargin · impact.hourlyCost를 PUT이 보존하고 impact 엔진이 원본에서 같은 키로 읽는다', async () => {
+    await resetStored();
+    const owner = await as('owner');
+    const cfg = { billing: { monthlyFee: 8_000_000 }, impact: { contributionMargin: 0.32, hourlyCost: 60_000 } };
+    const r = await owner.put(W(), { config: cfg });
+    expect(r.status).toBe(200);
+    const raw = (await t.db.query<{ config: unknown }>(`SELECT config FROM workspaces WHERE id = $1`, [t.ws])).rows[0].config;
+    expect(raw).toEqual(cfg);
+    expect(impactConfig(raw)).toMatchObject({ monthlyFee: 8_000_000, margin: 0.32, hourlyCost: 60_000, sources: { monthlyFee: 'workspace', margin: 'workspace', hourlyCost: 'workspace' } });
+    expect((await owner.put(W(), { config: { impact: { contributionMargin: 0 } } })).status).toBe(400);
+    await resetStored();
+  });
+
+  it('changes: 저장한 위임 범위 · 일 조정 폭 상한을 서버 승인 라우팅(routeApprover) · 반영 전 점검(evaluateGuards)이 쓴다', async () => {
+    await resetStored();
+    const pm = await as('pm');
+    expect((await pm.put(W(), { config: { delegation: { aeMaxPct: 5, pmMaxPct: 15 }, safety: { dailyChangeCapPct: 10 } } })).status).toBe(200);
+    const cfg = await loadWorkspaceConfig(t.db, t.ws);
+    const budget = { kind: 'budget' as const, targetId: 'cmp_1', before: 100_000, after: 108_000, changePct: 8, approver: 'AE' as const };
+    expect(routeApprover(budget).approver).toBe('AE');
+    expect(withWorkspaceConfig(cfg, () => routeApprover(budget).approver)).toBe('PM');
+    expect(withWorkspaceConfig(cfg, () => routeApprover({ ...budget, after: 120_000, changePct: 20 }).approver)).toBe('CLIENT');
+    expect(withWorkspaceConfig(cfg, () => officialConfig([]).dailyChangeCapPct)).toBe(10);
+    const bid = {
+      id: 'chg_cap', module: 'adpilot', kind: 'bid', title: '입찰 +12%', targetId: 'kw_1', before: 1000, after: 1120, changePct: 12,
+      status: 'approved', approver: 'AE', requestedBy: 'AE', requestedAt: '2026-11-03T09:00:00+09:00', history: [],
+    } as unknown as ChangeRequest;
+    const guard = (c: ChangeRequest) => evaluateGuards({ change: c, changes: [], incidents: [], data: null, today: '2026-11-03', todayAppliedBids: [], bulkIncidentStatus: new Map() });
+    expect(guard(bid).blocks.some((b) => b.includes('일 조정 폭 상한'))).toBe(false);
+    const inside = withWorkspaceConfig(cfg, () => guard(bid));
+    expect(inside.blocks.some((b) => b.includes('일 조정 폭 상한 10%'))).toBe(true);
     await resetStored();
   });
 

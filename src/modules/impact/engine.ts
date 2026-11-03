@@ -338,11 +338,18 @@ export function estimateUplift(input: DidInput): UpliftEstimate {
     margin, granularity, confidence, confidenceBasis, assumptions, sufficiency: suff, iterations,
   };
 }
-/** 공헌이익률 m 기준 증분 이익 · 표준오차 (측정 뒤 설정이 바뀌어도 같은 매출 · 광고비 추정에서 다시 계산) */
-export function profitAt(u: Pick<UpliftEstimate, 'revenue' | 'cost' | 'se' | 'covRevCost'>, m: number): { profit: number; se: number } {
+/**
+ * 공헌이익률 m 기준 증분 이익 · 표준오차 (반올림하지 않은 값 — 합계를 낸 뒤 한 번만 반올림한다).
+ * 측정 당시와 같은 공헌이익률이면 장부에 저장된 증분 이익 · 이익 표준오차를 그대로 쓰고,
+ * 설정이 바뀌었으면 같은 매출 · 광고비 추정에서 다시 계산한다 (이익 = 매출 × m − 광고비, 분산 = m²·σ²매출 + σ²광고비 − 2m·공분산).
+ */
+export function profitAt(u: Pick<UpliftEstimate, 'revenue' | 'cost' | 'se' | 'covRevCost'> & Partial<Pick<UpliftEstimate, 'profit' | 'margin'>>, m: number): { profit: number; se: number } {
+  if (fin(u.margin) && Math.abs(u.margin - m) < 1e-9 && fin(u.profit)) {
+    return { profit: u.profit, se: fin(u.se.profit) ? u.se.profit : Math.sqrt(Math.max(0, m * m * u.se.revenue ** 2 + u.se.cost ** 2 - 2 * m * (fin(u.covRevCost) ? u.covRevCost : 0))) };
+  }
   const cov = fin(u.covRevCost) ? u.covRevCost : 0;
   const v = m * m * u.se.revenue ** 2 + u.se.cost ** 2 - 2 * m * cov;
-  return { profit: r0(u.revenue * m - u.cost), se: Math.sqrt(Math.max(0, v)) };
+  return { profit: u.revenue * m - u.cost, se: Math.sqrt(Math.max(0, v)) };
 }
 function ratioText(after: number, before: number): string {
   if (!(before > 0)) return '—';
@@ -376,6 +383,11 @@ export interface IncidentInputForImpact {
   resolvedAt?: string | null;
   isTest?: boolean;
   falsePositive?: boolean;
+  /**
+   * 서버 24시간 감지(alerts scan)가 만든 이슈인지 — false면(사람이 화면에서 등록) 발생 시각 · 추정 손실이 입력값이고
+   * 감지가 앞당긴 시간도 아니므로 손실 회피 추정에서 뺀다. 생략하면(데모 예시 · 이전 기록) 판정하지 않는다.
+   */
+  autoDetected?: boolean;
 }
 export interface LossEstimate {
   kind: 'loss';
@@ -395,21 +407,22 @@ export interface LossEstimate {
   confidenceBasis: string;
   assumptions: string[];
 }
-export type LossResult = { ok: true; estimate: LossEstimate } | { ok: false; status: 'excluded'; reason: string };
+export type LossResult = { ok: true; estimate: LossEstimate } | { ok: false; status: 'excluded'; reason: string; code: ExclusionCode };
 
 /**
  * 추정 손실 회피 = 이슈 추정 매출 손실 × (1 − 조치까지 걸린 시간 ÷ 자연 발견까지 걸린 시간).
  * 시간 기준점 = 발생 시각(없으면 감지 시각). 조치 시각 = 1차 조치 기록, 없으면 해결 시각.
  */
 export function estimateLossAvoided(i: IncidentInputForImpact): LossResult {
-  if (i.isTest) return { ok: false, status: 'excluded', reason: '테스트 데이터로 만든 이슈 (TEST DATA) — 성과 집계 제외' };
-  if (i.falsePositive) return { ok: false, status: 'excluded', reason: '오탐으로 종료된 이슈 — 막은 손실 없음' };
+  if (i.isTest) return { ok: false, status: 'excluded', code: 'test', reason: '테스트 데이터로 만든 이슈 (TEST DATA) — 성과 집계 제외' };
+  if (i.falsePositive) return { ok: false, status: 'excluded', code: 'false_positive', reason: '오탐으로 종료된 이슈 — 막은 손실 없음' };
+  if (i.autoDetected === false) return { ok: false, status: 'excluded', code: 'manual', reason: '사람이 화면에서 등록한 이슈 — 24시간 자동 감지가 앞당긴 시간이 아니고 발생 시각 · 추정 손실이 입력값이라 손실 회피 추정 제외' };
   const loss = fin(i.revenueLossEst) ? i.revenueLossEst : NaN;
-  if (!(loss > 0)) return { ok: false, status: 'excluded', reason: '추정 매출 손실(revenueLossEst)이 없는 이슈' };
+  if (!(loss > 0)) return { ok: false, status: 'excluded', code: 'no_time', reason: '추정 매출 손실(revenueLossEst)이 없는 이슈' };
   const occ = Date.parse(i.occurredAt ?? '') || Date.parse(i.detectedAt);
   const actionIso = i.actionAt ?? i.resolvedAt ?? null;
   const act = actionIso ? Date.parse(actionIso) : NaN;
-  if (!fin(occ) || !fin(act)) return { ok: false, status: 'excluded', reason: '발생 · 조치 시각 기록이 없어 시간 비교 불가' };
+  if (!fin(occ) || !fin(act)) return { ok: false, status: 'excluded', code: 'no_time', reason: '발생 · 조치 시각 기록이 없어 시간 비교 불가' };
   const nat = naturalDiscoveryMs(occ);
   const tNat = Math.max(0, nat - occ);
   const tAct = Math.max(0, act - occ);
@@ -551,9 +564,23 @@ export interface LedgerEntry {
     route?: string;
     mode?: string;
     test?: boolean;
+    /** 집계 제외 구분 (status = excluded) — not_applied: 매체 미반영(dry_run · 기록만) */
+    exclusion?: ExclusionCode;
+    /** 반영 · 롤백 시각 (change_requests.applied_at · rolled_back_at — 반영 전후 구분 기준) */
+    appliedAt?: string;
+    rolledBackAt?: string;
   };
   measuredAt: string | null;
 }
+
+export type ExclusionCode = 'not_applied' | 'apply_failed' | 'demo' | 'rolled_back' | 'unlinked' | 'test' | 'false_positive' | 'no_time' | 'manual';
+export const EXCLUSION_LABEL: Record<ExclusionCode, string> = {
+  not_applied: '매체 미반영', apply_failed: '반영 실패', demo: 'TEST DATA 반영', rolled_back: '관측 중 롤백', unlinked: '대상 연결 불가',
+  test: 'TEST DATA 이슈', false_positive: '오탐', no_time: '시각 기록 없음', manual: '수동 등록 이슈',
+};
+/** 장부 상태 표기 — 제외 행은 '집계 제외 · 매체 미반영'처럼 구분을 붙인다 */
+export const statusText = (e: Pick<LedgerEntry, 'status' | 'detail'>) =>
+  e.status === 'excluded' && e.detail.exclusion ? `${STATUS_LABEL.excluded} · ${EXCLUSION_LABEL[e.detail.exclusion]}` : STATUS_LABEL[e.status];
 
 export interface Interval { point: number; lo: number; hi: number; level: number }
 export interface ImpactComponent {
@@ -603,7 +630,7 @@ const isLoss = (e: LedgerEntry['estimate']): e is LossEstimate => !!e && e.kind 
 const isHours = (e: LedgerEntry['estimate']): e is HoursEstimate => !!e && e.kind === 'hours';
 export const krw = (n: number) => (fin(n) ? `${n < 0 ? '−' : ''}${fmt.krw(Math.abs(n))}원` : '—');
 export const krwFull = (n: number) => (fin(n) ? `${n < 0 ? '−' : ''}${fmt.int(Math.abs(n))}원` : '—');
-export const times = (n: number) => (fin(n) ? `${fmt.dec1(n)}배` : '—');
+export const times = (n: number) => (fin(n) ? `${n < 0 ? '−' : ''}${fmt.dec1(Math.abs(n))}배` : '—');
 export const hoursText = (h: number) => (fin(h) ? `${fmt.dec1(h)}시간` : '—');
 
 function combineConfidence(list: Confidence[]): Confidence | 'none' {
@@ -639,12 +666,16 @@ export function buildSummary(entries: readonly LedgerEntry[], cfg: ImpactConfig,
   for (const e of inMonth) counts[e.sourceType][e.status]++;
 
   const ups = inMonth.filter((e) => e.sourceType === 'change' && e.status === 'measured' && isUplift(e.estimate)).map((e) => e.estimate as UpliftEstimate);
+  const notApplied = inMonth.filter((e) => e.sourceType === 'change' && e.status === 'excluded' && e.detail.exclusion === 'not_applied').length;
   const seSq = (k: 'revenue' | 'cost') => Math.sqrt(ups.reduce((a, u) => a + u.se[k] ** 2, 0));
   const rev = iv(ups.reduce((a, u) => a + u.revenue, 0), seSq('revenue'));
   const cost = iv(ups.reduce((a, u) => a + u.cost, 0), seSq('cost'));
-  // 이익은 현재 설정 공헌이익률로 다시 계산 (측정 시점 설정과 달라도 같은 매출 · 광고비 추정을 쓴다)
+  // 이익은 현재 설정 공헌이익률로 (측정 시점 설정과 같으면 저장된 건별 이익, 다르면 같은 매출 · 광고비 추정에서 다시 계산).
+  // 반올림은 합계 · 회수 배수를 낸 마지막에 한 번만 한다 (건별 · 중간 반올림 오차가 쌓이지 않게).
   const pa = ups.map((u) => profitAt(u, cfg.margin));
-  const profit = iv(pa.reduce((a, x) => a + x.profit, 0), Math.sqrt(pa.reduce((a, x) => a + x.se ** 2, 0)));
+  const profitSum = pa.reduce((a, x) => a + x.profit, 0);
+  const profitSe = Math.sqrt(pa.reduce((a, x) => a + x.se ** 2, 0));
+  const profit = iv(profitSum, profitSe);
 
   const losses = inMonth.filter((e) => e.sourceType === 'incident' && e.status === 'measured' && isLoss(e.estimate)).map((e) => e.estimate as LossEstimate);
   const lossAvoided = r0(losses.reduce((a, l) => a + l.lossAvoided, 0));
@@ -654,10 +685,12 @@ export function buildSummary(entries: readonly LedgerEntry[], cfg: ImpactConfig,
 
   const lossKrw = lossAvoided * cfg.margin;
   const hoursKrw = hoursSaved * cfg.hourlyCost;
-  const value: Interval = { point: r0(profit.point + lossKrw + hoursKrw), lo: r0(profit.lo + lossKrw + hoursKrw), hi: r0(profit.hi + lossKrw + hoursKrw), level: CI_LEVEL };
+  // 반올림 전 값 (구간 = 측정 증분의 80% 구간만 · 손실 회피 · 절감 시간은 점추정)
+  const exact = { point: profitSum + lossKrw + hoursKrw, lo: profitSum - Z80 * profitSe + lossKrw + hoursKrw, hi: profitSum + Z80 * profitSe + lossKrw + hoursKrw };
+  const value: Interval = { point: r0(exact.point), lo: r0(exact.lo), hi: r0(exact.hi), level: CI_LEVEL };
   const fee = cfg.monthlyFee;
   const pb: Interval = fee > 0
-    ? { point: Math.round((value.point / fee) * 100) / 100, lo: Math.round((value.lo / fee) * 100) / 100, hi: Math.round((value.hi / fee) * 100) / 100, level: CI_LEVEL }
+    ? { point: r2(exact.point / fee), lo: r2(exact.lo / fee), hi: r2(exact.hi / fee), level: CI_LEVEL }
     : { point: NaN, lo: NaN, hi: NaN, level: CI_LEVEL };
   const anyData = ups.length + losses.length + hrs.length > 0;
   const src = (k: keyof ImpactConfig['sources']) => (cfg.sources[k] === 'workspace' ? '워크스페이스 설정' : '기본값 · 계약 시 확정 필요');
@@ -674,7 +707,7 @@ export function buildSummary(entries: readonly LedgerEntry[], cfg: ImpactConfig,
       conversion: `증분 이익 = 증분 매출 × 공헌이익률 ${fmt.pct(cfg.margin * 100, 0)} − 증분 광고비`,
       confidence: combineConfidence(ups.map((u) => u.confidence)),
       confidenceBasis: ups.length ? `측정 ${ups.length}건의 건별 신뢰도 종합 (높음 ${ups.filter((u) => u.confidence === 'high').length} · 보통 ${ups.filter((u) => u.confidence === 'medium').length} · 낮음 ${ups.filter((u) => u.confidence === 'low').length}) · 월 합계 구간은 건별 표준오차를 독립 가정으로 합산한 정규 근사` : '측정 완료된 변경이 없습니다',
-      sample: { ...counts.change, note: `표본 기준: 처리군 창마다 클릭 ${MIN_CLICKS} · 전환 ${MIN_CONVERSIONS} 이상 · 표본 부족 건은 합계에서 뺀다` },
+      sample: { ...counts.change, note: `표본 기준: 처리군 창마다 클릭 ${MIN_CLICKS} · 전환 ${MIN_CONVERSIONS} 이상 · 표본 부족 건은 합계에서 뺀다${notApplied ? ` · 매체 미반영(dry_run · 기록만) ${notApplied}건은 매체가 바뀌지 않아 추정 대상 아님` : ''}` },
       assumptions: [
         '대조군이 없었다면 처리군도 대조군과 같은 비율로 변했을 것 (평행 추세)',
         `공헌이익률 ${fmt.pct(cfg.margin * 100, 0)} (${src('margin')})`,
@@ -684,11 +717,11 @@ export function buildSummary(entries: readonly LedgerEntry[], cfg: ImpactConfig,
     {
       id: 'loss', label: '추정 손실 회피', valueKrw: r0(lossKrw), valueKrwInterval: null,
       raw: [{ label: '손실 회피 매출 (추정)', value: lossAvoided, unit: '원' }],
-      method: '해결된 사고마다 이슈 추정 매출 손실 × (1 − 조치까지 시간 ÷ 자연 발견까지 시간), 자연 발견 = 다음 영업일 09:30',
+      method: '서버 24시간 감지가 만든 해결된 사고마다 이슈 추정 매출 손실 × (1 − 조치까지 시간 ÷ 자연 발견까지 시간), 자연 발견 = 다음 영업일 09:30',
       conversion: `원 환산 = 손실 회피 매출 × 공헌이익률 ${fmt.pct(cfg.margin * 100, 0)}`,
       confidence: losses.length ? 'low' : 'none',
       confidenceBasis: losses.length ? `추정 ${losses.length}건 · 추정 손실 · 자연 발견 시각 모두 가정값 (추정임)` : '이 달에 해결된 추정 대상 사고가 없습니다',
-      sample: { ...counts.incident, note: '테스트 · 오탐 이슈는 제외 · 추정 손실 없는 이슈는 장부에 올리지 않는다' },
+      sample: { ...counts.incident, note: '서버 24시간 감지가 만든 이슈만 대상 · 테스트 · 오탐 · 수동 등록 이슈는 제외 · 추정 손실 없는 이슈는 장부에 올리지 않는다' },
       assumptions: ['손실은 시간에 비례해 쌓인다', '자연 발견 = 발생 후 처음 오는 영업일 09:30 아침 브리핑 (24시간 감지가 없을 때)'],
     },
     {
@@ -723,7 +756,7 @@ export function buildSummary(entries: readonly LedgerEntry[], cfg: ImpactConfig,
       `공헌이익률 ${fmt.pct(cfg.margin * 100, 0)} (${src('margin')}) — 광고비 차감 전 매출 대비 이익률`,
       `시간당 인건비 ${krwFull(cfg.hourlyCost)} (${src('hourlyCost')})`,
       `비교 창 반영 전 · 후 각 ${IMPACT_WINDOW_DAYS}일 · 표본 기준 클릭 ${MIN_CLICKS} · 전환 ${MIN_CONVERSIONS} 이상 · 구간 수준 ${CI_LEVEL * 100}%`,
-      '측정 대상: 매체에 실제(live) 반영된 입찰 · 예산 변경만 — dry_run(기록만) · 롤백 · 기록만 변경은 제외',
+      '측정 대상: 매체에 실제(live) 반영된 입찰 · 예산 변경만 — 매체 미반영(dry_run · 기록만) · 반영 실패 · 관측 중 롤백은 집계 제외 · 반영 전후 구분 = 서버 반영 시각(applied_at)',
     ],
     counterExamples: COUNTER_EXAMPLES,
   };
@@ -743,17 +776,24 @@ export function estimateText(e: LedgerEntry): string {
   return `${x.count}${AUTOMATION_UNITS.find((u) => u.id === x.unit)?.unitLabel ?? '건'} × ${fmt.dec1(x.minutesPerUnit)}분 = ${hoursText(x.hours)}`;
 }
 
-const csvEsc = (v: unknown) => {
-  const s = v === null || v === undefined ? '' : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-};
+/**
+ * CSV 셀 — 따옴표 · 쉼표 · 줄바꿈 이스케이프 + 수식 주입 방지(문자열이 = + - @ 탭 · CR로 시작하면 앞에 ' — 엑셀이 수식으로 실행하지 않게).
+ * 숫자(음수 포함)는 그대로 둔다 — 키워드 · 캠페인 이름 등 외부에서 온 문자열만 막는다.
+ */
+export function csvCell(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  let s = String(v);
+  if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+const csvEsc = csvCell;
 /** 장부 CSV (엑셀 한글 깨짐 방지 BOM) */
 export function ledgerCsv(entries: readonly LedgerEntry[]): string {
   const head = ['구분', '대상', '발생 · 반영 시각', '귀속 월', '상태', '사유', '반영 전 매출', '반영 후 매출', '반영 전 클릭', '반영 후 클릭', '대조군', '대조 전 매출', '대조 후 매출', '추정 방법', '증분 매출', '구간 하한', '구간 상한', '증분 광고비', '증분 이익', '손실 회피', '절감 시간', '신뢰도', '원천 id'];
   const rows = entries.map((e) => {
     const x = e.estimate;
     return [
-      SOURCE_LABEL[e.sourceType], e.label, e.occurredAt, e.month, STATUS_LABEL[e.status], [e.detail.reason, ...(e.detail.reasons ?? [])].filter(Boolean).join(' · '),
+      SOURCE_LABEL[e.sourceType], e.label, e.occurredAt, e.month, statusText(e), [e.detail.reason, ...(e.detail.reasons ?? [])].filter(Boolean).join(' · '),
       e.baseline?.revenue ?? '', e.observed?.revenue ?? '', e.baseline?.clicks ?? '', e.observed?.clicks ?? '',
       e.control ? `${e.control.label} (${e.control.units})` : '', e.control?.before?.revenue ?? '', e.control?.after?.revenue ?? '',
       x?.methodLabel ?? '', x?.kind === 'uplift' ? x.revenue : '', x?.kind === 'uplift' ? x.ci[0] : '', x?.kind === 'uplift' ? x.ci[1] : '',
@@ -796,13 +836,14 @@ export function buildValueReport(summary: ImpactSummary, entries: readonly Ledge
   const inc = inMonth.filter((e) => e.sourceType === 'incident' && e.status === 'measured' && isLoss(e.estimate));
   const auto = inMonth.filter((e) => e.sourceType === 'automation' && isHours(e.estimate));
   const c = summary.counts;
+  const notApplied = ch.filter((e) => e.status === 'excluded' && e.detail.exclusion === 'not_applied').length;
   const dataLabel = opts.dataLabel ?? (summary.dataMode === 'demo' ? 'TEST DATA (시연용 테스트 데이터 · 실제 성과 아님)' : summary.dataMode === 'mixed' ? '일부 TEST DATA 포함 (매체 · 채널별 출처 확인)' : '연동 데이터 (LIVE)');
 
   const facts = [
     `데이터: ${dataLabel}.`,
-    `변경 반영 장부 ${ch.length}건 — 측정 완료 ${c.change.measured} · 표본 부족 ${c.change.insufficient} · 관측 중 ${c.change.pending} · 집계 제외 ${c.change.excluded}.`,
+    `변경 반영 장부 ${ch.length}건 — 측정 완료 ${c.change.measured} · 표본 부족 ${c.change.insufficient} · 관측 중 ${c.change.pending} · 집계 제외 ${c.change.excluded}${notApplied ? ` (매체 미반영 ${notApplied}건 — dry_run · 기록만이라 매체가 바뀌지 않음)` : ''}.`,
     ...ups.slice(0, 6).map((e) => `${e.label}: 반영 전 ${IMPACT_WINDOW_DAYS}일 매출 ${krwFull(e.baseline?.revenue ?? NaN)} → 반영 후 ${krwFull(e.observed?.revenue ?? NaN)}${e.control?.before && e.control.after ? ` · 대조군(${e.control.label} ${e.control.units}개) ${krwFull(e.control.before.revenue)} → ${krwFull(e.control.after.revenue)}` : ''}.`),
-    `해결된 사고 중 손실 추정 대상 ${inc.length}건 (제외 ${c.incident.excluded}건: 테스트 · 오탐 · 시각 기록 없음).`,
+    `해결된 사고 중 손실 추정 대상 ${inc.length}건 (제외 ${c.incident.excluded}건: 테스트 · 오탐 · 수동 등록 · 시각 기록 없음).`,
     ...inc.slice(0, 4).map((e) => {
       const x = e.estimate as LossEstimate;
       return `${e.label}: 발생 ${kstStamp(Date.parse(x.occurredAt))} → 조치 ${kstStamp(Date.parse(x.actionAt))} (${fmt.minutes(x.minutesToAction)}) · 이슈 추정 손실 ${krwFull(x.revenueLossEst)}.`;

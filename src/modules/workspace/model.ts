@@ -7,6 +7,7 @@ import {
   type ConfigChangeRow, type ConfigIssue, type EffectiveConfig, type WorkspaceConfig,
 } from '@/data/config';
 import type { MediaId } from '@/core/types';
+import type { ServerAiUsage } from '@/ai/claude';
 
 /* ============================== API 형식 (server/src/settings) ============================== */
 
@@ -115,6 +116,96 @@ export function normalizeAllocation(alloc: Record<MediaId, number>, locked: Medi
   return out;
 }
 
+/* ============================== AI 사용량 · 한도 ============================== */
+
+export type { ServerAiUsage };
+/** 화면에 넘기는 사용량 상태 — demo = TEST DATA 예시 */
+export interface AiUsageState { status: 'loading' | 'ok' | 'error' | 'demo'; usage: ServerAiUsage | null; error?: string }
+
+export interface AiUsageView {
+  used: number;
+  limit: number;
+  /** 저장된 한도 기준 사용률 (0~) */
+  usedRatio: number;
+  /** 편집 중인 한도 (저장 전) — 저장된 한도와 같으면 null */
+  draftLimit: number | null;
+  draftRatio: number | null;
+  /** 편집 중인 한도가 이번 달 사용량 이하 → 저장하면 즉시 AI 호출이 막힌다 */
+  draftBlocksNow: boolean;
+  tone: 'accent' | 'warning' | 'critical';
+  /** 판정 문구 + 기준 */
+  verdict: string;
+  /** 용도별 · 비중 내림차순 */
+  purposes: { purpose: string; label: string; calls: number; tokens: number; share: number }[];
+  /** 최근 7일 */
+  recentDaily: { date: string; calls: number; tokens: number }[];
+  users: { name: string; calls: number; tokens: number }[];
+}
+
+const PURPOSE_LABEL: Record<string, string> = {
+  agent: 'MILDO Agent 대화', 'agent:chat': 'MILDO Agent 대화', chat: 'MILDO Agent 대화', brief: '브리프 · 요약', report: '리포트 문안', json: '구조화 분석',
+};
+export function purposeLabel(p: string): string {
+  if (PURPOSE_LABEL[p]) return PURPOSE_LABEL[p];
+  const [screen, kind] = p.split(':');
+  const kindLabel = kind ? PURPOSE_LABEL[kind] ?? kind : '';
+  return kindLabel ? `${screen} · ${kindLabel}` : p || '기타';
+}
+
+const ratio = (used: number, limit: number) => (limit > 0 ? used / limit : used > 0 ? Infinity : 0);
+
+export function aiUsageView(u: ServerAiUsage, draftLimit?: number | null): AiUsageView {
+  const used = Math.max(0, u.totalTokens ?? u.inputTokens + u.outputTokens);
+  const limit = Math.max(0, u.limit);
+  const usedRatio = ratio(used, limit);
+  const dl = typeof draftLimit === 'number' && Number.isFinite(draftLimit) && draftLimit !== limit ? Math.max(0, draftLimit) : null;
+  const draftRatio = dl === null ? null : ratio(used, dl);
+  const worst = Math.max(usedRatio, draftRatio ?? 0);
+  const tone = worst >= 1 ? 'critical' : worst >= 0.8 ? 'warning' : 'accent';
+  const verdict = !u.enabled
+    ? 'AI 사용 꺼짐 — 화면은 규칙 엔진 · 오프라인 브리프로 동작합니다 (기준: 워크스페이스 설정 ai.enabled)'
+    : u.budgetExceeded || usedRatio >= 1
+      ? '한도 도달 — 이번 달 남은 기간 서버 AI 호출이 막힙니다 (기준: 입력 + 출력 토큰 ≥ 월 한도)'
+      : usedRatio >= 0.8
+        ? '한도 80% 이상 — 남은 기간 사용량을 확인해 주세요 (기준: 사용률 ≥ 80%)'
+        : '여유 — 사용률 80% 미만 (기준: 입력 + 출력 토큰 ÷ 월 한도)';
+  const totalOf = (x: { inputTokens: number; outputTokens: number }) => x.inputTokens + x.outputTokens;
+  const purposeTotal = (u.byPurpose ?? []).reduce((s, x) => s + totalOf(x), 0);
+  const purposes = (u.byPurpose ?? [])
+    .map((x) => ({ purpose: x.purpose, label: purposeLabel(x.purpose), calls: x.calls, tokens: totalOf(x), share: purposeTotal > 0 ? totalOf(x) / purposeTotal : 0 }))
+    .sort((a, b) => b.tokens - a.tokens);
+  const recentDaily = [...(u.daily ?? [])].sort((a, b) => a.date.localeCompare(b.date)).slice(-7).map((d) => ({ date: d.date, calls: d.calls, tokens: totalOf(d) }));
+  const users = (u.byUser ?? []).map((x) => ({ name: x.name, calls: x.calls, tokens: totalOf(x) })).sort((a, b) => b.tokens - a.tokens);
+  return { used, limit, usedRatio, draftLimit: dl, draftRatio, draftBlocksNow: dl !== null && used >= dl, tone, verdict, purposes, recentDaily, users };
+}
+
+/** 비율 → '12.3%' (무한대 = 한도 0) */
+export const pctText = (r: number) => (Number.isFinite(r) ? `${(Math.round(r * 1000) / 10).toLocaleString('ko-KR')}%` : '한도 0');
+
+/* ============================== 성과 증명 기준 ============================== */
+
+export interface ImpactBasis {
+  monthlyFee: number;
+  margin: number;
+  hourlyCost: number;
+  /** 1배 회수에 필요한 월 가치 = 구독료 */
+  breakEvenValue: number;
+  /** 증분 이익만으로 1배를 채우려면 필요한 증분 매출 = 구독료 ÷ 공헌이익률 (계산값) */
+  breakEvenRevenue: number;
+  /** 절감 시간만으로 1배를 채우려면 필요한 시간 = 구독료 ÷ 시간당 인건비 (계산값) */
+  breakEvenHours: number | null;
+}
+export function impactBasis(e: EffectiveConfig): ImpactBasis {
+  const fee = e.billing.monthlyFee;
+  const margin = e.impact.contributionMargin;
+  const hourly = e.impact.hourlyCost;
+  return {
+    monthlyFee: fee, margin, hourlyCost: hourly, breakEvenValue: fee,
+    breakEvenRevenue: margin > 0 ? Math.round(fee / margin) : Infinity,
+    breakEvenHours: hourly > 0 ? Math.round((fee / hourly) * 10) / 10 : null,
+  };
+}
+
 /* ============================== 예시 상태 (데모 모드 · TEST DATA) ============================== */
 
 const DEMO_AT = '2026-11-02T00:10:00.000Z';
@@ -142,6 +233,33 @@ export function demoHistory(): HistoryEntry[] {
       ],
     },
   ];
+}
+
+/** 예시 AI 사용량 (TEST DATA — 실제 사용 기록 아님) */
+export function demoAiUsage(): ServerAiUsage {
+  const daily = ['2026-10-25', '2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29', '2026-10-30', '2026-10-31'].map((date, i) => ({
+    date, calls: [42, 55, 38, 61, 12, 9, 47][i], inputTokens: [410_000, 520_000, 360_000, 610_000, 90_000, 70_000, 450_000][i], outputTokens: [38_000, 51_000, 33_000, 58_000, 9_000, 6_000, 41_000][i],
+  }));
+  const inputTokens = 6_840_000;
+  const outputTokens = 612_000;
+  return {
+    month: '2026-10', inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, cacheReadTokens: 2_150_000, cacheCreationTokens: 340_000,
+    calls: 734, errors: 3, limit: DEFAULT_CONFIG.ai.monthlyTokenLimit, remaining: DEFAULT_CONFIG.ai.monthlyTokenLimit - inputTokens - outputTokens,
+    usedRatio: (inputTokens + outputTokens) / DEFAULT_CONFIG.ai.monthlyTokenLimit, budgetExceeded: false,
+    byPurpose: [
+      { purpose: 'agent', calls: 412, inputTokens: 4_120_000, outputTokens: 388_000 },
+      { purpose: 'adpilot:json', calls: 166, inputTokens: 1_480_000, outputTokens: 121_000 },
+      { purpose: 'reports:brief', calls: 98, inputTokens: 840_000, outputTokens: 72_000 },
+      { purpose: 'geo:json', calls: 58, inputTokens: 400_000, outputTokens: 31_000 },
+    ],
+    daily,
+    byUser: [
+      { userId: null, name: '총괄 PM (예시)', calls: 301, inputTokens: 3_020_000, outputTokens: 268_000 },
+      { userId: null, name: '담당 AE (예시)', calls: 433, inputTokens: 3_820_000, outputTokens: 344_000 },
+    ],
+    model: 'claude-opus-5-5', configured: true, enabled: true, canUse: true, available: true,
+    basis: '예시(TEST DATA) — 서버에 연결하면 KST 월 기준 실제 입력 + 출력 토큰 합계를 보여 줍니다.',
+  };
 }
 
 export function demoOnboarding(): OnboardingState {

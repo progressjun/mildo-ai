@@ -269,10 +269,10 @@ describe('GET /reports · /reports/:id — 보관함 · 격리', () => {
 
 /* ============================== 발송 ============================== */
 
-describe('POST /reports/:id/deliver — 채널 발송 · 기록', () => {
+describe('POST /reports/:id/deliver — 채널 발송 (fanOutGeneric → notify.send) · 기록', () => {
   beforeEach(resetOps);
 
-  it("'리포트 발송' 이벤트를 켠 채널만: Slack · 웹훅은 notify.send 잡, 메일은 마크다운 전문 직접 발송 → 결과 반영", async () => {
+  it("'리포트 발송' 이벤트를 켠 채널만: fanOutGeneric으로 채널마다 notify.send 잡 → 발송 결과 반영 (메일 포함)", async () => {
     const slack = await addChannel('slack', '운영 Slack', { webhookUrl: SLACK });
     const mail = await addChannel('email', '광고주 메일', { recipients: ['brand@client.test'] });
     const hook = await addChannel('webhook', '사내 웹훅', { url: HOOK });
@@ -280,34 +280,50 @@ describe('POST /reports/:id/deliver — 채널 발송 · 기록', () => {
     await addChannel('email', '꺼진 채널', { recipients: ['off@client.test'] }, ['report'], false);
     const gen = await op().post(W('/reports/generate'), { type: 'daily' });
     const id = gen.json.report.id;
-    const r = await op().post(W(`/reports/${id}/deliver`));
+    // alerts 도메인 fanOutGeneric을 실제로 거친다 (호출 인자 확인 후 원래 함수로)
+    const { fanOutGeneric } = await import('../alerts/deliver');
+    const calls: { event: string; refId?: string; title: string; text: string; link?: string }[] = [];
+    const restore = setReportDepsForTest({ fanOut: async (q, ws, o) => { calls.push(o); return fanOutGeneric(q, ws, o); } });
+    let r;
+    try {
+      r = await op().post(W(`/reports/${id}/deliver`));
+    } finally {
+      restore();
+    }
     expect(r.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ event: 'report', refId: id, link: 'https://os.mildo.test/#impact' });
+    expect(calls[0].title).toContain('[TEST DATA]');
+    expect(calls[0].text).toContain('[MILDO 일간]');
+    expect(calls[0].text).toContain('전문: 성과 증명 › 리포트 보관함 (일간 리포트 · 2026-11-01)');
+    expect(calls[0].text.length).toBeLessThan(2900);
     const byCh = Object.fromEntries(r.json.results.map((x: { channelId: string }) => [x.channelId, x]));
     expect(Object.keys(byCh).sort()).toEqual([slack, mail, hook].sort());
-    expect(byCh[slack]).toMatchObject({ via: 'notify.send', status: 'queued', channelType: 'slack' });
-    expect(byCh[hook]).toMatchObject({ via: 'notify.send', status: 'queued' });
-    expect(byCh[mail]).toMatchObject({ via: 'direct', status: 'sent' });
+    for (const ch of [slack, mail, hook]) expect(byCh[ch]).toMatchObject({ via: 'notify.send', status: 'queued' });
+    expect(byCh[slack].channelType).toBe('slack');
+    expect(byCh[mail].target).toBeTruthy();
     expect(r.json.report.status).toBe('delivered');
     // 비밀값(웹훅 경로 · 수신자 전체 주소)은 응답에 없다
     expect(r.body).not.toContain('reportsecretpath0001');
     expect(r.body).not.toContain('report-hook-secret-7788');
     expect(r.body).not.toContain('brand@client.test');
-    // 메일 = 마크다운 전문 + 보관함 링크
+    // notify.send 잡 계약 (spec §6) · 중복 방지 키
+    const jobs = (await t.db.query<{ dedupe_key: string; payload: { channelId: string; event: string; refId: string; payload: { title: string; text: string; link: string } } }>(`SELECT dedupe_key, payload FROM jobs WHERE type = 'notify.send' ORDER BY id`)).rows;
+    expect(jobs).toHaveLength(3);
+    for (const j of jobs) {
+      expect(j.payload).toMatchObject({ event: 'report', refId: id, payload: { link: 'https://os.mildo.test/#impact' } });
+      expect(j.dedupe_key).toBe(`notify:${j.payload.channelId}:report:${id}`);
+    }
+    await runJobs(['notify.send']);
+    expect(posts.map((p) => p.url).sort()).toEqual([HOOK, SLACK].sort());
+    expect(JSON.parse(posts.find((p) => p.url === HOOK)!.body)).toMatchObject({ event: 'report' });
+    // 메일 = 요약 + 보관함 링크 (notify.send 메시지 형식)
     const out = getTestOutbox();
     expect(out).toHaveLength(1);
     expect(out[0].to).toEqual(['brand@client.test']);
     expect(out[0].subject).toContain('일간 리포트');
-    expect(out[0].text).toContain(gen.json.report.markdown.slice(0, 200));
+    expect(out[0].text).toContain('[MILDO 일간]');
     expect(out[0].text).toContain('https://os.mildo.test/#impact');
-    // notify.send 잡 계약
-    const jobs = (await t.db.query<{ payload: { channelId: string; event: string; refId: string; payload: { title: string; text: string; link: string } } }>(`SELECT payload FROM jobs WHERE type = 'notify.send'`)).rows;
-    expect(jobs).toHaveLength(2);
-    for (const j of jobs) expect(j.payload).toMatchObject({ event: 'report', refId: id, payload: { link: 'https://os.mildo.test/#impact' } });
-    expect(jobs[0].payload.payload.text).toContain('[MILDO 일간]');
-    expect(jobs[0].payload.payload.title).toContain('[TEST DATA]');
-    await runJobs(['notify.send']);
-    expect(posts.map((p) => p.url).sort()).toEqual([HOOK, SLACK].sort());
-    expect(JSON.parse(posts.find((p) => p.url === HOOK)!.body)).toMatchObject({ event: 'report' });
     const after = await viewer.get(W(`/reports/${id}`));
     const st = Object.fromEntries(after.json.report.delivered.map((x: { channelId: string; status: string }) => [x.channelId, x.status]));
     expect(st).toEqual({ [slack]: 'sent', [mail]: 'sent', [hook]: 'sent' });
@@ -318,6 +334,23 @@ describe('POST /reports/:id/deliver — 채널 발송 · 기록', () => {
     expect(JSON.stringify(a.rows[0].detail)).not.toContain('reportsecretpath0001');
   });
 
+  it('발송 실패는 notify.send 결과(발송 이력)대로 보관함에 반영된다', async () => {
+    const hook = await addChannel('webhook', '사내 웹훅', { url: HOOK }, ['report']);
+    const id = (await op().post(W('/reports/generate'), { type: 'daily' })).json.report.id;
+    await op().post(W(`/reports/${id}/deliver`));
+    restoreAlerts();
+    restoreAlerts = setAlertDepsForTest({ poster: async () => ({ status: 410, body: 'gone', headers: {} }) });
+    try {
+      await runJobs(['notify.send']);
+    } finally {
+      restoreAlerts();
+      restoreAlerts = setAlertDepsForTest({ poster });
+    }
+    const rep = (await viewer.get(W(`/reports/${id}`))).json.report;
+    expect(rep.delivered.find((x: { channelId: string }) => x.channelId === hook)).toMatchObject({ status: 'failed' });
+    expect(rep.status).toBe('failed');
+  });
+
   it('같은 리포트를 대기 중에 다시 보내면 중복 잡을 만들지 않는다 · 큐가 없으면 바로 발송', async () => {
     const slack = await addChannel('slack', '운영 Slack', { webhookUrl: SLACK }, ['report']);
     const id = (await op().post(W('/reports/generate'), { type: 'daily' })).json.report.id;
@@ -326,12 +359,23 @@ describe('POST /reports/:id/deliver — 채널 발송 · 기록', () => {
     expect(again.json.results[0]).toMatchObject({ channelId: slack, status: 'skipped' });
     expect(again.json.report.status).toBe('delivered');
     expect(await count(`SELECT count(*) FROM jobs WHERE type = 'notify.send'`)).toBe(1);
+    // 큐가 없는 프로세스(notify.send 미등록): Slack · 웹훅은 같은 메시지 형식으로 바로, 메일은 마크다운 전문으로 바로
+    const mail = await addChannel('email', '광고주 메일', { recipients: ['brand@client.test'] }, ['report']);
     const sent: string[] = [];
-    const restore = setReportDepsForTest({ queueAvailable: () => false, directSender: async (_c, type, _cfg, msg) => { sent.push(`${type}:${msg.subject}`); return { status: 'sent', httpStatus: 200 }; } });
+    let fanned = 0;
+    const restore = setReportDepsForTest({
+      queueAvailable: () => false, fanOut: async () => { fanned++; return 0; },
+      directSender: async (_c, type, _cfg, msg) => { sent.push(`${type}:${msg.subject}`); return { status: 'sent', httpStatus: 200 }; },
+    });
     try {
       const d = await op().post(W(`/reports/${id}/deliver`));
-      expect(d.json.results[0]).toMatchObject({ via: 'direct', status: 'sent' });
+      const by = Object.fromEntries(d.json.results.map((x: { channelId: string }) => [x.channelId, x]));
+      expect(by[slack]).toMatchObject({ via: 'direct', status: 'sent' });
+      expect(by[mail]).toMatchObject({ via: 'direct', status: 'sent' });
+      expect(fanned).toBe(0);
       expect(sent[0]).toMatch(/^slack:\[MILDO OS\] 일간 리포트/);
+      const md = (await viewer.get(W(`/reports/${id}`))).json.report.markdown as string;
+      expect(getTestOutbox()[0].text).toContain(md.slice(0, 300));
       expect(await count(`SELECT count(*) FROM notifications WHERE event = 'report' AND channel_id = $1`, [slack])).toBe(1);
     } finally {
       restore();
@@ -353,7 +397,10 @@ describe('POST /reports/:id/deliver — 채널 발송 · 기록', () => {
     const r = await op().post(W('/reports/generate'), { type: 'weekly', deliver: true });
     expect(r.status).toBe(201);
     expect(r.json.report.status).toBe('delivered');
+    expect(r.json.report.delivered).toEqual([expect.objectContaining({ via: 'notify.send', status: 'queued' })]);
+    await runJobs(['notify.send']);
     expect(getTestOutbox()).toHaveLength(1);
+    expect(getTestOutbox()[0].subject).toContain('주간 리포트');
   });
 });
 
@@ -440,6 +487,58 @@ describe('예약 생성 · 자동 발송 (reports.generate 잡)', () => {
     expect(r[0]).toMatchObject({ ref_id: 'inc-live-1', trigger: 'incident' });
     await runScheduleNow('reports.issue', ctx());
     expect(await queued()).toHaveLength(0);
+  });
+
+  it('재시도: 이전 시도가 리포트만 저장하고 발송 전에 실패했으면 다음 시도가 보낸다 (리포트는 한 건)', async () => {
+    await addChannel('email', '광고주 메일', { recipients: ['brand@client.test'] }, ['report']);
+    setNowForTest(kst(TODAY, 8, 0));
+    await runScheduleNow('reports.daily', ctx());
+    const restore = setReportDepsForTest({ fanOut: async () => { throw new Error('일시적 DB 오류'); } });
+    try {
+      await runJobs(['reports.generate']);
+    } finally {
+      restore();
+    }
+    const myJob = `SELECT status, attempts, last_error, result FROM jobs WHERE type = 'reports.generate' AND workspace_id = $1`;
+    const j1 = (await t.db.query<{ status: string; attempts: number; last_error: string }>(myJob, [t.ws])).rows[0];
+    expect(j1).toMatchObject({ status: 'queued', attempts: 1 });
+    expect(j1.last_error).toContain('일시적 DB 오류');
+    const r1 = (await t.db.query<{ delivered: unknown[] }>(`SELECT delivered FROM reports WHERE workspace_id = $1`, [t.ws])).rows;
+    expect(r1).toHaveLength(1);
+    expect(r1[0].delivered).toEqual([]);
+    // 백오프 대기를 건너뛰고 재시도
+    await t.db.query(`UPDATE jobs SET run_at = now() WHERE type = 'reports.generate'`);
+    await runJobs(['reports.generate']);
+    const j2 = (await t.db.query<{ status: string; result: { created: boolean; delivered: number; resumedDelivery?: boolean } }>(myJob, [t.ws])).rows[0];
+    expect(j2.status).toBe('done');
+    expect(j2.result).toMatchObject({ created: false, delivered: 1, resumedDelivery: true });
+    const r2 = (await t.db.query<{ status: string; delivered: { status: string; via: string }[] }>(`SELECT status, delivered FROM reports WHERE workspace_id = $1`, [t.ws])).rows;
+    expect(r2).toHaveLength(1);
+    expect(r2[0].delivered).toEqual([expect.objectContaining({ via: 'notify.send', status: 'queued' })]);
+    await runJobs(['notify.send']);
+    expect(getTestOutbox()).toHaveLength(1);
+    // 이미 보낸 리포트는 다음 예약 잡이 다시 보내지 않는다
+    await runScheduleNow('reports.daily', ctx());
+    await runJobs();
+    expect(getTestOutbox()).toHaveLength(1);
+    expect(await count(`SELECT count(*) FROM audit_log WHERE action = 'report.deliver' AND workspace_id = $1`, [t.ws])).toBe(1);
+  });
+
+  it('예약 가치 리포트는 생성 전에 장부를 다시 측정한다 (06:00 측정이 빠져도 최신 장부)', async () => {
+    await t.db.query(`DELETE FROM impact_ledger WHERE workspace_id = $1`, [t.ws]);
+    await t.db.query(
+      `INSERT INTO incidents (id, workspace_id, rule_id, severity, status, doc, detected_at, resolved_at) VALUES ('inc-oct-scan', $1, 'budget_exhaust', 'P1', 'resolved', $2, '2026-10-13T14:05:00+09:00', '2026-10-13T15:00:00+09:00')`,
+      [t.ws, JSON.stringify({
+        id: 'inc-oct-scan', title: '예산 조기 소진', severity: 'P1', occurredAt: '2026-10-13T14:00:00+09:00', detectedAt: '2026-10-13T14:05:00+09:00', impact: { revenueLossEst: 1_000_000 },
+        sla: { ackAt: '2026-10-13T14:12:00+09:00', actionAt: '2026-10-13T14:30:00+09:00', resolvedAt: '2026-10-13T15:00:00+09:00' }, isTest: false, source: 'scan', status: 'resolved', timeline: [],
+      })],
+    );
+    setNowForTest(kst('2026-11-01', 9, 0));
+    await runScheduleNow('reports.value', ctx());
+    await runJobs(['reports.generate']);
+    expect(await count(`SELECT count(*) FROM impact_ledger WHERE workspace_id = $1 AND source_type = 'incident' AND source_id = 'inc-oct-scan' AND status = 'measured'`, [t.ws])).toBe(1);
+    const md = (await t.db.query<{ markdown: string }>(`SELECT markdown FROM reports WHERE type = 'value' AND workspace_id = $1`, [t.ws])).rows[0].markdown;
+    expect(md).toContain('해결된 사고 중 손실 추정 대상 1건');
   });
 
   it('잡 입력이 잘못되면 실패로 끝난다 (재시도 없이 사유 기록)', async () => {

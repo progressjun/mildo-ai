@@ -26,6 +26,7 @@ import { BOARD_RULES } from '@/modules/board/data';
 import { LAB_DEFAULT_CRITERIA } from '@/modules/lab/data';
 import { ON_DUTY_POOL as ALERT_DUTY_POOL } from '@/modules/alert/data';
 import { ON_DUTY_POOL as OPS_DUTY_POOL } from '@/modules/ops/data';
+import { PROPOSAL_SHARES as GROWTH_PLAN_SHARES } from '@/modules/growth/engine';
 
 /* ============================== 식별자 ============================== */
 
@@ -52,6 +53,12 @@ export const DEFAULT_MONTHLY_FEE = 5_000_000;
 /** 성과 증명 추정 입력 — src/modules/impact/engine.ts DEFAULT_MARGIN · DEFAULT_HOURLY_COST와 같은 값 (테스트로 확인) */
 export const DEFAULT_CONTRIBUTION_MARGIN = 0.4;
 export const DEFAULT_HOURLY_COST = 40_000;
+/**
+ * 소유자(owner 권한)만 바꿀 수 있는 설정 묶음 — 월 구독료는 계약 금액이자 성과 증명 회수 배수의 분모라서,
+ * 설정 권한(PM · 관리자)이 바꾸면 회수 배수가 부풀려질 수 있다. 서버 PUT이 403으로 막고 화면은 읽기 전용으로 보여 준다.
+ */
+export const OWNER_ONLY_SECTIONS = ['billing'] as const;
+export const isOwnerOnlyPath = (path: string): boolean => OWNER_ONLY_SECTIONS.some((s) => path === s || path.startsWith(`${s}.`));
 
 /* ============================== 원래 값 스냅샷 ============================== */
 
@@ -66,6 +73,8 @@ const ORIGINAL = structuredClone({
   boardRules: { ...BOARD_RULES } as Mutable<typeof BOARD_RULES>,
   labCriteria: { ...LAB_DEFAULT_CRITERIA },
   media: Object.fromEntries(MEDIA_IDS.map((id) => [id, { share: MEDIA[id].share, annualBudget: MEDIA[id].annualBudget }])) as Record<MediaId, { share: number; annualBudget: number }>,
+  /** 매출 성장 엔진이 모듈 로드 시 MEDIA 비중을 복사해 둔 배분 가안 (src/modules/growth/engine.ts PROPOSAL_SHARES) */
+  growthShares: { ...GROWTH_PLAN_SHARES } as Record<MediaId, number>,
   delegation: GFA_DELEGATION.map((g) => ({ ...g })),
   timetable: DATA_TIMETABLE.map((t) => t.time as string),
   sla: Object.fromEntries(SEVERITY_LIST.map((s) => [s, { ...SLA[s], label: { ...SLA[s].label } }])) as unknown as typeof SLA,
@@ -95,6 +104,11 @@ export interface EffectiveConfig {
   sku: { problems: string[]; situations: string[]; criteria: string[] };
   onDuty: { pool: TfRoleId[] };
   tf: { backups: Record<TfRoleId, TfRoleId> };
+  /**
+   * 주말 · 공휴일 당번 체계 강제 (평일 포함 — 연휴 전후 · 임시 휴무 · 비상 운영). 켜면 서버 24시간 감지가 새 이슈를
+   * 당번 순번으로 배정하고 전 등급 인지 30분(p.48) 규칙을 쓴다. server/src/alerts/scan.ts가 최상위 cfg.offHoursMode로 읽는다.
+   */
+  offHoursMode: boolean;
   /** null = 모든 모듈 */
   modules: string[] | null;
   ai: { monthlyTokenLimit: number; enabled: boolean };
@@ -141,6 +155,7 @@ export const DEFAULT_CONFIG: EffectiveConfig = deepFreeze({
   sku: { problems: [...ORIGINAL.sku.problems], situations: [...ORIGINAL.sku.situations], criteria: [...ORIGINAL.sku.criteria] },
   onDuty: { pool: [...ORIGINAL.alertPool] as TfRoleId[] },
   tf: { backups: { ...ORIGINAL.tfBackups } as Record<TfRoleId, TfRoleId> },
+  offHoursMode: false,
   modules: null,
   ai: { monthlyTokenLimit: DEFAULT_AI_MONTHLY_TOKENS, enabled: true },
   billing: { monthlyFee: DEFAULT_MONTHLY_FEE },
@@ -166,7 +181,7 @@ const NUM: NumberFieldMeta[] = [
   { path: 'budget.annual', label: '연 광고 예산', unit: '원', min: 1_000_000, max: 1_000_000_000_000, step: 100_000_000, int: true, source: 'RFP · 약 50억', hint: 'VAT · 수수료 별도. 매체별 연 예산 = 연 예산 × 배분 비중' },
   { path: 'targets.roas', label: '목표 ROAS', unit: '%', min: 50, max: 5000, step: 10, int: true, source: 'p.14 · 온보딩 중 확정' },
   { path: 'targets.brandRoas', label: '브랜드 목표 ROAS', unit: '%', min: 50, max: 10000, step: 50, int: true, source: 'p.14 브랜드 별도 기준' },
-  { path: 'targets.cpa', label: '목표 CPA', unit: '원', min: 100, max: 100_000_000, step: 1000, int: true, source: '선택 · 제안서 수치 없음', hint: '비워 두면 CPA 목표 없이 ROAS로 판정합니다. 리포트 · 에이전트 기준 표기에 쓰고, 입찰 엔진 판정에는 아직 쓰지 않습니다' },
+  { path: 'targets.cpa', label: '목표 CPA', unit: '원', min: 100, max: 100_000_000, step: 1000, int: true, source: '선택 · 제안서 수치 없음', hint: '비워 두면 CPA 목표 없음. 지금은 MILDO Agent 설정 요약에 기준으로만 표기하고, 입찰 · 감지 · 리포트 판정은 ROAS 기준이라 이 값을 쓰지 않습니다' },
   { path: 'targets.highEfficiencyRatio', label: '고효율 기준 (목표 대비 배수)', unit: '배', min: 1, max: 5, step: 0.05, source: 'p.14 · 130%' },
   { path: 'safety.dailyChangeCapPct', label: '일 조정 폭 상한', unit: '%', min: 1, max: 100, step: 1, source: 'p.14 SAFETY · 사전 합의' },
   { path: 'safety.minConversionsForDown', label: '입찰 하향 전 최소 전환', unit: '건', min: 0, max: 100, step: 1, int: true, source: 'p.14' },
@@ -177,7 +192,7 @@ const NUM: NumberFieldMeta[] = [
   { path: 'delegation.aeMaxPct', label: '담당 AE 위임 (일 예산 변경 폭)', unit: '±% 이내', min: 1, max: 100, step: 1, source: 'p.15 GFA_DELEGATION · 예시, 계약 시 확정' },
   { path: 'delegation.pmMaxPct', label: 'PM 승인 상한 (초과는 광고주 승인)', unit: '±% 이내', min: 2, max: 1000, step: 1, source: 'p.15 GFA_DELEGATION · 예시, 계약 시 확정' },
   { path: 'ai.monthlyTokenLimit', label: 'AI 월 사용 한도', unit: '토큰', min: 0, max: 10_000_000_000, step: 1_000_000, int: true, source: 'MILDO OS Cloud · 기본 3,000만', hint: '입력 + 출력 토큰 합계 · KST 월 기준. 한도에 닿으면 화면은 규칙 엔진으로 동작합니다' },
-  { path: 'billing.monthlyFee', label: '월 구독료 (회수 배수 분모)', unit: '원', min: 1, max: 10_000_000_000, step: 100_000, int: true, source: '계약 시 확정', hint: '성과 증명 화면의 구독료 대비 회수 배수 계산에 씁니다' },
+  { path: 'billing.monthlyFee', label: '월 구독료 (회수 배수 분모)', unit: '원', min: 1, max: 10_000_000_000, step: 100_000, int: true, source: '계약 시 확정', hint: '성과 증명 화면의 구독료 대비 회수 배수 계산에 씁니다. 회수 배수의 분모라 소유자만 바꿀 수 있습니다' },
   { path: 'impact.contributionMargin', label: '공헌이익률 (광고비 차감 전)', unit: '비율', min: 0.01, max: 1, step: 0.01, source: '성과 증명 추정 가정 · 광고주 확인 필요', hint: '증분 매출 → 증분 이익 환산 비율 (0.4 = 40%)' },
   { path: 'impact.hourlyCost', label: '시간당 인건비', unit: '원', min: 0, max: 10_000_000, step: 1000, int: true, source: '성과 증명 추정 가정', hint: '업무 절감 시간 → 금액 환산' },
 ];
@@ -267,6 +282,7 @@ export const WorkspaceConfigSchema = z.strictObject({
   })),
   onDuty: opt(z.strictObject({ pool: opt(uniqueList(TfEnum, 1, TF_ROLE_IDS.length)) })),
   tf: opt(z.strictObject({ backups: opt(z.partialRecord(TfEnum, TfEnum)) })),
+  offHoursMode: opt(z.boolean()),
   modules: opt(uniqueList(z.enum(KNOWN_MODULE_IDS), 0, KNOWN_MODULE_IDS.length).nullable()),
   ai: opt(z.strictObject({ monthlyTokenLimit: opt(n('ai.monthlyTokenLimit')), enabled: opt(z.boolean()) })),
   billing: opt(z.strictObject({ monthlyFee: opt(n('billing.monthlyFee')) })),
@@ -593,13 +609,13 @@ export const MEDIA_LABEL: Record<MediaId, string> = Object.fromEntries(MEDIA_ID_
 
 const SECTION_LABEL: Record<string, string> = {
   brand: '브랜드', brandKeywords: '브랜드 키워드', budget: '예산', targets: '목표', safety: 'SAFETY', delegation: '위임 범위', timetable: '데이터 시간표', sla: 'SLA',
-  anomalyThresholds: '이상 징후 기준', holidays: '공휴일', sku: 'SKU 진입점', onDuty: '당번', tf: 'TF 백업', modules: '사용 모듈', ai: 'AI', billing: '구독', impact: '성과 증명',
+  anomalyThresholds: '이상 징후 기준', holidays: '공휴일', sku: 'SKU 진입점', onDuty: '당번', tf: 'TF 백업', offHoursMode: '당번 체계 강제', modules: '사용 모듈', ai: 'AI', billing: '구독', impact: '성과 증명',
 };
 const FIXED_LABEL: Record<string, string> = {
   'brand.name': '브랜드명', 'brand.competitors': '경쟁사', 'brand.productLine': '제품군', brandKeywords: '브랜드 키워드',
   'budget.allocation': '매체 배분', 'holidays.extra': '추가 공휴일', 'holidays.exclude': '공휴일 제외(근무일)',
   'sku.problems': 'SKU 진입점 · 고객의 문제', 'sku.situations': 'SKU 진입점 · 구매 상황', 'sku.criteria': 'SKU 진입점 · 비교 기준',
-  'onDuty.pool': '주말 · 공휴일 당번 순번', modules: '사용 모듈', 'ai.enabled': 'AI 사용',
+  'onDuty.pool': '주말 · 공휴일 당번 순번', offHoursMode: '주말 · 공휴일 당번 체계 강제 (평일 포함)', modules: '사용 모듈', 'ai.enabled': 'AI 사용',
 };
 
 /** 설정 경로 → 사람이 읽는 이름 (화면 · 감사 이력 · 에이전트 공용) */
@@ -690,6 +706,7 @@ function restoreOriginal(): void {
   Object.assign(w(BOARD_RULES), ORIGINAL.boardRules);
   Object.assign(LAB_DEFAULT_CRITERIA, ORIGINAL.labCriteria);
   for (const id of MEDIA_IDS) Object.assign(MEDIA[id], ORIGINAL.media[id]);
+  Object.assign(GROWTH_PLAN_SHARES, ORIGINAL.growthShares);
   GFA_DELEGATION.forEach((g, i) => Object.assign(g, ORIGINAL.delegation[i]));
   DATA_TIMETABLE.forEach((t, i) => { w(t).time = ORIGINAL.timetable[i]; });
   for (const s of SEVERITY_LIST) Object.assign(SLA[s], { ...ORIGINAL.sla[s], label: { ...ORIGINAL.sla[s].label } });
@@ -725,6 +742,8 @@ function writeEffective(e: EffectiveConfig): void {
     if (share === D.budget.allocation[id] && e.budget.annual === D.budget.annual) continue;
     Object.assign(MEDIA[id], { share, annualBudget: Math.round(e.budget.annual * share) });
   }
+  // 매출 성장 배분 탭 · 균등화안의 기준(가안) = 워크스페이스 매체 배분
+  for (const id of MEDIA_ID_LIST) GROWTH_PLAN_SHARES[id] = e.budget.allocation[id];
   // 목표 · SAFETY → AD_PILOT + 엔진 기본값(모듈 로드 시 복사본)
   const ap = {
     targetRoas: e.targets.roas, brandTargetRoas: e.targets.brandRoas, highEfficiencyRoasRatio: e.targets.highEfficiencyRatio,

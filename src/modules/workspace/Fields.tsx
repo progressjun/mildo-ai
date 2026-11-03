@@ -8,6 +8,8 @@ export interface FormCtx {
   draft: WorkspaceConfig;
   defaults: EffectiveConfig;
   readOnly: boolean;
+  /** 소유자 전용 항목(billing.* — 월 구독료)을 바꿀 수 있는지 (서버가 owner 권한으로 다시 판정) */
+  canOwner?: boolean;
   issues: ConfigIssue[];
   set: (path: string, value: unknown) => void;
   reset: (path: string) => void;
@@ -79,9 +81,9 @@ export function NullableNumField({ ctx, path, label, emptyLabel, fallback }: { c
   );
 }
 
-export function TextField({ ctx, path, label, maxLength = 40, placeholder }: { ctx: FormCtx; path: string; label: ReactNode; maxLength?: number; placeholder?: string }) {
+export function TextField({ ctx, path, label, maxLength = 40, placeholder, hint }: { ctx: FormCtx; path: string; label: ReactNode; maxLength?: number; placeholder?: string; hint?: ReactNode }) {
   return (
-    <FieldRow ctx={ctx} path={path} label={label}>
+    <FieldRow ctx={ctx} path={path} label={label} hint={hint}>
       {(st, id) => ctx.readOnly
         ? <span className="ws-value">{String(st.value ?? '—')}</span>
         : <input id={id} className="input" value={String(st.value ?? '')} maxLength={maxLength} placeholder={placeholder} onChange={(e) => ctx.set(path, e.target.value)} style={{ maxWidth: 360 }} />}
@@ -120,9 +122,9 @@ export function TimeField({ ctx, path, label, hint }: { ctx: FormCtx; path: stri
   );
 }
 
-export function ToggleField({ ctx, path, label, onText, offText }: { ctx: FormCtx; path: string; label: ReactNode; onText: string; offText: string }) {
+export function ToggleField({ ctx, path, label, onText, offText, hint }: { ctx: FormCtx; path: string; label: ReactNode; onText: string; offText: string; hint?: ReactNode }) {
   return (
-    <FieldRow ctx={ctx} path={path} label={label}>
+    <FieldRow ctx={ctx} path={path} label={label} hint={hint}>
       {(st, id) => ctx.readOnly
         ? <span className="ws-value">{st.value ? onText : offText}</span>
         : <Toggle id={id} checked={!!st.value} onChange={(v) => ctx.set(path, v)} label={st.value ? onText : offText} />}

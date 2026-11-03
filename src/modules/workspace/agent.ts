@@ -1,9 +1,10 @@
 /**
  * 워크스페이스 설정 — MILDO Agent 도구 + 오프라인 브리프.
- * 값의 출처: 서버 모드에서 화면이 불러온 설정(live.ts)이 있으면 서버에서 다시 읽고, 없으면 지금 적용된 설정(activeWorkspaceConfig —
- * 서버 모드에서는 플랫폼이 워크스페이스 설정을 적용해 둔다, 데모 모드에서는 기본값)을 쓴다. 도구는 읽기 전용이다(저장은 사람이 화면에서).
+ * 값의 출처: 서버 모드(플랫폼이 연결한 워크스페이스 = serverAiWorkspace())면 그 워크스페이스 설정을 서버에서 읽고, 화면이 불러온 스냅샷(live.ts)은
+ * 같은 워크스페이스일 때만 쓴다(워크스페이스를 바꾼 뒤 이전 워크스페이스 값을 보고하지 않도록). 서버가 없으면 지금 적용된 설정
+ * (activeWorkspaceConfig — 데모 모드에서는 기본값)을 쓴다. 도구는 읽기 전용이다(저장은 사람이 화면에서).
  */
-import type { AgentTool } from '@/ai/claude';
+import { fetchServerAiUsage, serverAiWorkspace, type AgentTool } from '@/ai/claude';
 import type { Brief } from '@/ai/prompts';
 import {
   activeWorkspaceConfig, ANOMALY_LABEL, ANOMALY_METRICS, DEFAULT_CONFIG, delegationRanges, diffConfig, formatConfigValue, configFieldLabel, MEDIA_ID_LIST,
@@ -11,7 +12,7 @@ import {
 } from '@/data/config';
 import type { ModuleAgentKit, ToolContext } from '../types';
 import { getWorkspaceSnapshot } from './live';
-import { demoOnboarding, fmtKst, historyChangeText, HISTORY_ACTION_LABEL, type HistoryEntry, type OnboardingState } from './model';
+import { aiUsageView, demoOnboarding, fmtKst, historyChangeText, HISTORY_ACTION_LABEL, impactBasis, pctText, type HistoryEntry, type OnboardingState } from './model';
 
 interface ConfigData {
   source: 'LIVE' | '적용된 설정' | '기본값';
@@ -22,8 +23,17 @@ interface ConfigData {
   note?: string;
 }
 
-function configDataSync(): ConfigData {
+/** 지금 워크스페이스의 스냅샷만 (플랫폼이 다른 워크스페이스로 바꿨으면 null) */
+function currentSnapshot() {
   const s = getWorkspaceSnapshot();
+  const cur = serverAiWorkspace();
+  return s && (!cur || s.workspaceId === cur) ? s : null;
+}
+/** 서버에서 다시 읽을 워크스페이스 id — 플랫폼이 연결한 워크스페이스가 우선 */
+const liveWorkspaceId = (): string | null => serverAiWorkspace() || getWorkspaceSnapshot()?.workspaceId || null;
+
+function configDataSync(): ConfigData {
+  const s = currentSnapshot();
   if (s?.state) return { source: 'LIVE', effective: s.state.effective, version: s.state.version, updatedAt: s.state.updatedAt, updatedBy: s.state.updatedBy?.name ?? null };
   const active = activeWorkspaceConfig();
   if (active !== DEFAULT_CONFIG) return { source: '적용된 설정', effective: active, version: null, updatedAt: null, updatedBy: null, note: '워크스페이스 설정 화면을 열면 버전 · 변경자까지 확인합니다' };
@@ -34,11 +44,11 @@ function configDataSync(): ConfigData {
 }
 
 async function configData(): Promise<ConfigData> {
-  const s = getWorkspaceSnapshot();
-  if (s?.workspaceId) {
+  const id = liveWorkspaceId();
+  if (id) {
     try {
       const api = await import('./api');
-      const st = await api.fetchConfig(s.workspaceId);
+      const st = await api.fetchConfig(id);
       return { source: 'LIVE', effective: st.effective, version: st.version, updatedAt: st.updatedAt, updatedBy: st.updatedBy?.name ?? null };
     } catch {
       /* 네트워크 오류 — 마지막 값 */
@@ -47,7 +57,7 @@ async function configData(): Promise<ConfigData> {
   return configDataSync();
 }
 
-const SECTIONS = ['all', 'brand', 'budget', 'targets', 'safety', 'delegation', 'timetable', 'sla', 'detect', 'modules'] as const;
+const SECTIONS = ['all', 'brand', 'budget', 'targets', 'safety', 'delegation', 'timetable', 'sla', 'detect', 'modules', 'ai', 'impact'] as const;
 type Section = (typeof SECTIONS)[number];
 
 /** 전체 설정 → 도구 응답 (한국어 키, 기준 · 근거 포함) */
@@ -74,10 +84,18 @@ export function summarize(e: EffectiveConfig, section: Section = 'all'): Record<
     out.이상징후기준 = Object.fromEntries(ANOMALY_METRICS.map((m) => [ANOMALY_LABEL[m], `주의 ${e.anomalyThresholds[m].warnPct}% · 위험 ${e.anomalyThresholds[m].dangerPct}%`]));
     out.공휴일 = { 추가: e.holidays.extra, 제외: e.holidays.exclude };
     out.당번순번 = e.onDuty.pool.map((r) => TF_LABEL[r] ?? r);
+    out.당번체계강제 = e.offHoursMode ? '켜짐 — 평일에도 당번 순번 배정 · 전 등급 인지 30분' : '꺼짐 — 주말 · 공휴일에만 당번 체계';
   }
   if (pick('modules')) out.사용모듈 = e.modules ?? '모든 모듈';
-  if (section === 'all') out.AI = { 사용: e.ai.enabled, 월한도토큰: e.ai.monthlyTokenLimit };
-  if (section === 'all') out.성과증명입력 = { 월구독료원: e.billing.monthlyFee, 공헌이익률pct: Math.round(e.impact.contributionMargin * 100), 시간당인건비원: e.impact.hourlyCost, 기준: '회수 배수 추정용 가정값 (광고주 확인 필요)' };
+  if (pick('ai')) out.AI = { 사용: e.ai.enabled, 월한도토큰: e.ai.monthlyTokenLimit };
+  if (pick('impact')) {
+    const b = impactBasis(e);
+    out.성과증명입력 = {
+      월구독료원: e.billing.monthlyFee, 공헌이익률pct: Math.round(e.impact.contributionMargin * 100), 시간당인건비원: e.impact.hourlyCost,
+      일배회수필요증분매출원: Number.isFinite(b.breakEvenRevenue) ? b.breakEvenRevenue : null, 일배회수필요절감시간: b.breakEvenHours,
+      기준: '회수 배수 추정용 가정값 (광고주 확인 필요) · 1배 조건은 계산값',
+    };
+  }
   return out;
 }
 
@@ -110,12 +128,12 @@ function historyTool(): AgentTool {
     inputSchema: { type: 'object', properties: { limit: { type: 'number', description: '최대 건수 (기본 10, 최대 30)' } } },
     async execute(input) {
       const limit = Math.min(30, Math.max(1, Number(input.limit) || 10));
-      const s = getWorkspaceSnapshot();
-      let entries: HistoryEntry[] | null = s?.history ?? null;
-      if (s?.workspaceId) {
+      let entries: HistoryEntry[] | null = currentSnapshot()?.history ?? null;
+      const id = liveWorkspaceId();
+      if (id) {
         try {
           const api = await import('./api');
-          entries = (await api.fetchHistory(s.workspaceId)).entries;
+          entries = (await api.fetchHistory(id)).entries;
         } catch { /* 마지막 값 */ }
       }
       if (!entries) return { 출처: '없음', 안내: '서버에 연결해 워크스페이스 설정 화면을 열면 변경 이력을 읽을 수 있습니다 (시연 모드에는 실제 기록이 없습니다)', 이력: [] };
@@ -127,8 +145,36 @@ function historyTool(): AgentTool {
   };
 }
 
+function aiUsageTool(): AgentTool {
+  return {
+    name: 'workspace_ai_usage',
+    description: '이번 달(또는 month=YYYY-MM) 워크스페이스 서버 AI 사용량을 돌려준다: 입력 · 출력 토큰, 월 한도 대비 사용률, 남은 토큰, 호출 · 오류 수, 용도별 · 최근 7일. 서버 모드에서만 실제 기록이 있다. 읽기 전용.',
+    inputSchema: { type: 'object', properties: { month: { type: 'string', description: 'YYYY-MM (기본 이번 달, KST)' } } },
+    async execute(input) {
+      const month = typeof input.month === 'string' && /^\d{4}-\d{2}$/.test(input.month) ? input.month : undefined;
+      let u = null;
+      try {
+        u = await fetchServerAiUsage(month);
+      } catch { /* 네트워크 오류 */ }
+      if (!u) {
+        const e = configDataSync().effective;
+        return { 출처: '없음', 안내: '서버 모드에서만 실제 사용량을 읽을 수 있습니다 (시연 모드에는 기록이 없습니다)', 설정: { 사용: e.ai.enabled, 월한도토큰: e.ai.monthlyTokenLimit } };
+      }
+      const v = aiUsageView(u);
+      return {
+        출처: 'LIVE 서버 ai_usage 기록', 월: u.month, 판정: v.verdict,
+        사용토큰: v.used, 월한도토큰: v.limit, 사용률: pctText(v.usedRatio), 남은토큰: Math.max(0, u.remaining),
+        호출: u.calls, 오류: u.errors, 서버키연결: u.configured, AI사용: u.enabled, 모델: u.model,
+        용도별: v.purposes.slice(0, 8).map((p) => ({ 용도: p.label, 호출: p.calls, 토큰: p.tokens, 비중: pctText(p.share) })),
+        최근7일: v.recentDaily,
+        기준: u.basis,
+      };
+    },
+  };
+}
+
 function onboardingOf(): { o: OnboardingState; live: boolean } {
-  const s = getWorkspaceSnapshot();
+  const s = currentSnapshot();
   if (s?.onboarding) return { o: s.onboarding, live: true };
   return { o: demoOnboarding(), live: false };
 }
@@ -193,7 +239,7 @@ function onboardingBrief(_ctx: ToolContext): Brief {
 }
 
 export const agentKit: ModuleAgentKit = {
-  tools: () => [configTool(), historyTool()],
+  tools: () => [configTool(), historyTool(), aiUsageTool()],
   briefs: [
     { id: 'workspace_config', match: /(워크스페이스|설정|기준값|목표\s?ROAS|목표\s?CPA|위임|SLA|시간표|배분|SAFETY|세이프티)/i, build: configBrief },
     { id: 'workspace_onboarding', match: /(온보딩|시작하기|처음|셋업|초기\s?설정|연결 순서)/, build: onboardingBrief },

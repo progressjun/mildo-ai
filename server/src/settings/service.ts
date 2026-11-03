@@ -16,8 +16,9 @@ import type { WorkspaceCtx } from '../http/context';
 import { audit } from '../audit/audit';
 import { publish } from '../events/hub';
 import { conflict, HttpError } from '../lib/errors';
+import { can } from '../auth/permissions';
 import {
-  CONFIG_SECTIONS, configFieldLabel, DEFAULT_CONFIG, isEmptyConfig, leafPaths, mergeConfig, overrideChanges, parseWorkspaceConfig,
+  CONFIG_SECTIONS, configFieldLabel, DEFAULT_CONFIG, isEmptyConfig, isOwnerOnlyPath, leafPaths, mergeConfig, overrideChanges, parseWorkspaceConfig,
   type ConfigChangeRow, type ConfigIssue, type EffectiveConfig, type WorkspaceConfig,
 } from '@/data/config';
 
@@ -162,6 +163,11 @@ export async function saveConfig(db: Db, c: WorkspaceCtx, input: unknown, o: { b
     const next = parsed.config;
     const prevParsed = parseWorkspaceConfig(storedKnown).config;
     const changes = overrideChanges(prevParsed, next);
+    // 월 구독료(billing.*)는 계약 금액 · 회수 배수의 분모 — 소유자만 바꾼다 (미리보기 dryRun도 같은 판정)
+    const ownerOnly = changes.filter((x) => isOwnerOnlyPath(x.path));
+    if (ownerOnly.length && !can(c.role, 'owner')) {
+      throw new HttpError(403, 'forbidden', `${ownerOnly.map((x) => x.label).join(' · ')} 항목은 소유자만 바꿀 수 있습니다 (계약 금액 · 성과 증명 회수 배수의 분모). 다른 항목만 저장하려면 이 항목을 원래 값으로 두세요`, { paths: ownerOnly.map((x) => x.path) });
+    }
     // 저장돼 있던 잘못된 항목이 빠지는 것도 변경이다
     const cleansInvalid = cur.invalid.length > 0;
     const changed = changes.length > 0 || cleansInvalid;

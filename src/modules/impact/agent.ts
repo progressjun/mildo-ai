@@ -7,7 +7,7 @@ import type { Brief } from '@/ai/prompts';
 import type { ModuleAgentKit, ToolContext } from '../types';
 import { fmt } from '@/core/util';
 import {
-  buildDemoImpact, CONFIDENCE_LABEL, estimateText, hoursText, krw, monthLabel, SOURCE_LABEL, STATUS_LABEL, times,
+  buildDemoImpact, CONFIDENCE_LABEL, estimateText, hoursText, krw, monthLabel, SOURCE_LABEL, statusText, times,
   type ImpactSummary, type LedgerEntry, type LedgerStatus, type SourceType,
 } from './engine';
 import { getImpactSnapshot } from './live';
@@ -28,7 +28,7 @@ function sourceOf(ctx: ToolContext | null): Source {
   return { demo: true, summary: buildDemoImpact({ today: '2026-10-31', keywords: [] }, []).summary, entries: [], asOf: '데모 기준 시각', reports: [] };
 }
 
-const kindText = (demo: boolean, s: ImpactSummary) => (demo ? 'TEST DATA 예시' : s.dataMode === 'live' ? '서버 장부 · LIVE DATA' : '서버 장부 · TEST DATA 포함');
+const kindText = (demo: boolean, s: ImpactSummary) => (demo ? 'TEST DATA 예시' : s.dataMode === 'live' ? '서버 장부 · LIVE DATA' : s.dataMode === 'demo' ? '서버 장부 · TEST DATA(데모 커넥션)만 연결' : '서버 장부 · TEST DATA 포함');
 
 export function impactBrief(ctx: ToolContext): Brief {
   const src = sourceOf(ctx);
@@ -36,10 +36,12 @@ export function impactBrief(ctx: ToolContext): Brief {
   const t = s.totals;
   const c = s.counts;
   const ups = src.entries.filter((e) => e.sourceType === 'change' && e.status === 'measured');
+  const notApplied = src.entries.filter((e) => e.sourceType === 'change' && e.status === 'excluded' && e.detail.exclusion === 'not_applied').length;
   const facts = [
     `${monthLabel(s.month)} 장부 · 출처 ${kindText(src.demo, s)}.`,
     `변경 반영 측정 완료 ${c.change.measured}건 · 표본 부족 ${c.change.insufficient} · 관측 중 ${c.change.pending} · 집계 제외 ${c.change.excluded}.`,
     `해결된 사고 손실 추정 ${c.incident.measured}건 · 자동화 단위 ${c.automation.measured}개.`,
+    ...(notApplied ? [`매체 미반영(dry_run · 기록만) 변경 ${notApplied}건은 매체 값이 바뀌지 않아 증분 추정에서 제외했다.`] : []),
     `월 구독료 ${krw(t.costOfSubscription)} (${s.config.sources.monthlyFee === 'workspace' ? '워크스페이스 설정' : '기본값'}).`,
   ];
   const patterns: string[] = [];
@@ -78,7 +80,7 @@ export function impactBrief(ctx: ToolContext): Brief {
 }
 
 const compactEntry = (e: LedgerEntry) => ({
-  type: SOURCE_LABEL[e.sourceType], label: e.label, at: e.occurredAt, status: STATUS_LABEL[e.status], estimate: estimateText(e),
+  type: SOURCE_LABEL[e.sourceType], label: e.label, at: e.occurredAt, status: statusText(e), estimate: estimateText(e),
   confidence: e.estimate ? CONFIDENCE_LABEL[e.estimate.confidence] : null, reason: [e.detail.reason, ...(e.detail.reasons ?? [])].filter(Boolean).join(' · ') || null,
   route: e.detail.route ?? null, test: !!e.detail.test,
 });

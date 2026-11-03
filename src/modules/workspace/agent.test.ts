@@ -1,5 +1,6 @@
 /** 워크스페이스 설정 — 에이전트 도구 · 브리프: 기본값 · 적용된 설정 · LIVE 스냅샷 출처 구분, 번호 매기기 없음 */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { configureServerAi } from '@/ai/claude';
 import { applyWorkspaceConfig, mergeConfig, DEFAULT_CONFIG } from '@/data/config';
 import type { ToolContext } from '../types';
 import { agentKit } from './agent';
@@ -12,6 +13,8 @@ const tool = (name: string) => agentKit.tools(ctx).find((t) => t.name === name)!
 afterEach(() => {
   applyWorkspaceConfig(null);
   _resetWorkspaceSnapshot();
+  configureServerAi({ workspaceId: null });
+  vi.unstubAllGlobals();
 });
 
 describe('workspace_config 도구', () => {
@@ -42,6 +45,53 @@ describe('workspace_config 도구', () => {
     expect(r.버전).toBe(4);
     expect(r.마지막변경).toBe('2026.11.02 10:00 김PM');
     expect(r.설정.SAFETY.일조정폭상한pct).toBe(15);
+  });
+
+  it('워크스페이스를 바꾸면 이전 워크스페이스 스냅샷이 아니라 지금 워크스페이스(serverAiWorkspace) 설정 · 이력을 서버에서 읽는다', async () => {
+    const old = { ...demoState(), config: { targets: { roas: 900 } }, effective: mergeConfig(DEFAULT_CONFIG, { targets: { roas: 900 } }), version: 7 };
+    setWorkspaceSnapshot('ws-a', { state: old, history: [{ id: 1, at: '2026-11-01T00:00:00.000Z', actor: 'A 워크스페이스 PM', userId: null, action: 'config.update', version: 7, changes: [] }] });
+    configureServerAi({ workspaceId: 'ws-b' });
+    const urls: string[] = [];
+    const eff = mergeConfig(DEFAULT_CONFIG, { targets: { roas: 450 } });
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url);
+      const body = url.includes('/config/history')
+        ? { entries: [{ id: 9, at: '2026-11-02T00:00:00.000Z', actor: 'B 워크스페이스 PM', userId: null, action: 'config.update', version: 2, changes: [] }], nextBefore: null }
+        : { ...demoState(), config: { targets: { roas: 450 } }, effective: eff, version: 2 };
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    const r = (await tool('workspace_config').execute({ section: 'targets' })) as Record<string, any>;
+    expect(urls[0]).toBe('/api/w/ws-b/config');
+    expect(r.출처).toBe('LIVE 서버 설정');
+    expect(r.버전).toBe(2);
+    expect(r.설정.목표.목표ROASpct).toBe(450);
+    const h = (await tool('workspace_config_history').execute({})) as Record<string, any>;
+    expect(urls).toContain('/api/w/ws-b/config/history');
+    expect(urls.some((u) => u.includes('ws-a'))).toBe(false);
+    expect(h.이력[0].누가).toBe('B 워크스페이스 PM');
+    // 서버를 못 읽어도 다른 워크스페이스 스냅샷은 쓰지 않는다
+    _resetWorkspaceSnapshot();
+    setWorkspaceSnapshot('ws-a', { state: old });
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+    const off = (await tool('workspace_config').execute({ section: 'targets' })) as Record<string, any>;
+    expect(off.설정.목표.목표ROASpct).toBe(400);
+    expect(off.출처).not.toBe('LIVE 서버 설정');
+  });
+
+  it('AI · 성과 증명 · 당번 체계 강제 섹션', async () => {
+    applyWorkspaceConfig({ ai: { monthlyTokenLimit: 1_000_000 }, billing: { monthlyFee: 6_000_000 }, impact: { contributionMargin: 0.3 }, offHoursMode: true });
+    const ai = (await tool('workspace_config').execute({ section: 'ai' })) as Record<string, any>;
+    expect(ai.설정).toEqual({ AI: { 사용: true, 월한도토큰: 1_000_000 } });
+    const im = (await tool('workspace_config').execute({ section: 'impact' })) as Record<string, any>;
+    expect(im.설정.성과증명입력).toMatchObject({ 월구독료원: 6_000_000, 공헌이익률pct: 30, 일배회수필요증분매출원: 20_000_000, 일배회수필요절감시간: 150 });
+    const dt = (await tool('workspace_config').execute({ section: 'detect' })) as Record<string, any>;
+    expect(dt.설정.당번체계강제).toContain('켜짐');
+  });
+
+  it('AI 사용량 도구: 서버 미연결이면 설정 한도만 · 안내', async () => {
+    const r = (await tool('workspace_ai_usage').execute({})) as Record<string, any>;
+    expect(r.출처).toBe('없음');
+    expect(r.설정.월한도토큰).toBe(30_000_000);
   });
 
   it('변경 이력 도구: 서버 기록이 없으면 안내', async () => {

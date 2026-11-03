@@ -3,19 +3,27 @@
  * 계산은 순수 엔진(src/modules/impact/engine.ts)이 하고, 여기서는 입력을 모으고 장부에 쓴다.
  *
  *  변경 (change):   매체에 실제(live) 반영된 입찰 · 예산 변경 — 반영 당일 제외 전 7일 vs 후 7일. 후 7일이 어제까지 다 쌓여야 측정한다.
+ *                   반영 전후 구분 = change_requests.applied_at(서버가 반영을 끝낸 시각) · rolled_back_at (변경 이력 문구는 쓰지 않는다).
+ *                   반영 방식은 change_executions(시도별 기록 — 마지막 반영 시도)로 판정하고, 기록이 없으면 change_requests.execution을 본다:
+ *                   dry_run · 기록만(none)은 매체가 바뀌지 않았으므로 '집계 제외 · 매체 미반영'으로 장부에 남긴다.
  *                   입찰: wh_keyword_daily, 대조군 = 같은 광고그룹(3개 이상 데이터가 있으면) 또는 같은 의도 · 브랜드 구분의 미변경 키워드.
- *                   예산: 캠페인 일별 표가 없어 wh_media_daily(해당 매체), 대조군 = 같은 기간 예산 변경이 없는 다른 매체 합계 (신뢰도 낮음).
+ *                   예산: 캠페인 일별 표가 없어 wh_media_daily(해당 매체), 대조군 = 같은 기간 예산 변경이 없는 다른 매체 합계 (신뢰도 낮음) ·
+ *                         재배분(budget:<받는>:<주는>)이면 주는 캠페인의 매체도 대조군에서 뺀다.
+ *                   측정에 쓴 값이 TEST DATA(데모 출처)뿐이면 '집계 제외 · TEST DATA 반영'으로 남긴다 (실연동 성과와 섞지 않는다).
  *                   측정 · 표본 부족 · 제외는 확정 상태 — 다시 계산하지 않는다(force 제외). 관측 중(pending)은 매일 다시 본다.
- *  사고 (incident): 해결된 이슈 중 추정 매출 손실이 있는 것 — 테스트 · 오탐은 제외 행으로 남긴다. 다시 열린 이슈는 관측 중으로 되돌린다.
+ *  사고 (incident): 서버 24시간 감지(source 'scan')가 만든 해결된 이슈 중 추정 매출 손실이 있는 것 — 테스트 · 오탐 · 화면에서 사람이 등록한 이슈는
+ *                   제외 행으로 남긴다. 다시 열린 이슈는 관측 중으로 되돌린다. 영업일(자연 발견 시각)은 워크스페이스 공휴일 설정을 따른다.
  *  자동화 (automation): 이번 달 · 지난달의 자동 실행 기록 건수 (데모 커넥션 · TEST DATA 실행은 세지 않는다).
  */
 import type { Db, Queryable } from '../db/pool';
 import { one } from '../db/pool';
 import { kstHour, kstToday, nowMs, addDaysStr } from '../lib/time';
+import { withWorkspaceConfig, type WorkspaceConfig } from '@/data/config';
+import { loadWorkspaceConfig } from '../settings/service';
 import {
   addDaysUtc, AUTOMATION_UNITS, automationSavings, businessDaysIn, datesBetween, estimateLossAvoided, estimateUplift, impactConfig, isBusinessDate,
   kstDateOf, kstMonthOf, kstMsOf, nextMonth, prevMonth, sumWindow, IMPACT_WINDOW_DAYS,
-  type AutomationCounts, type ControlSnapshot, type DayMetrics, type LedgerEntry, type LedgerStatus, type SourceType,
+  type AutomationCounts, type ControlSnapshot, type DayMetrics, type ExclusionCode, type LedgerEntry, type LedgerStatus, type SourceType,
 } from '@/modules/impact/engine';
 
 /* ============================== 설정 ============================== */
@@ -124,10 +132,49 @@ function addInto(rec: Record<string, DayMetrics>, d: DayMetrics): void {
 
 /* ============================== 변경 ============================== */
 
+interface ExecJson { mode?: string; ok?: boolean; provider?: string; phase?: string; applyExecution?: ExecJson | null }
 interface ChangeRowLite {
   id: string; kind: string; module: string; target: string; target_id: string | null; before: unknown; after: unknown; status: string;
-  applied_at: Date; rolled_back_at: Date | null; execution: { mode?: string; ok?: boolean; provider?: string } | null;
+  applied_at: Date; rolled_back_at: Date | null; execution: ExecJson | null;
 }
+/** change_executions 한 줄 (반영 · 재시도 · 보상 단계만) */
+export interface ExecAttemptRow { change_id: string; attempt_id: string; phase: string; mode: 'none' | 'dry_run' | 'live'; ok: boolean; provider: string | null }
+
+/** 반영 방식 판정 결과 */
+export type ApplyClass =
+  | { kind: 'live'; provider: string | null; basis: 'executions' | 'execution' }
+  | { kind: 'dry_run'; basis: 'executions' | 'execution' }
+  | { kind: 'none'; basis: 'executions' | 'execution' }
+  | { kind: 'failed'; basis: 'executions' | 'execution' }
+  | { kind: 'unknown' };
+
+/**
+ * 반영 방식 — 마지막 반영 시도(change_executions의 apply · retry 단계, attempt 단위)가 기준.
+ * 한 시도의 작업이 모두 성공한 live면 live, 보상(되돌림) 기록이 있거나 실패한 작업이 있으면 failed, 아니면 그 시도의 mode(dry_run · none).
+ * 시도 기록이 없으면(이전 버전 · 외부 입력) change_requests.execution을 본다 — 롤백 실행 기록이면 그 안의 직전 반영 기록(applyExecution).
+ */
+export function classifyApply(execution: ExecJson | null, attempts: readonly ExecAttemptRow[]): ApplyClass {
+  const applies = attempts.filter((a) => a.phase === 'apply' || a.phase === 'retry');
+  if (applies.length) {
+    const last = applies[applies.length - 1].attempt_id;
+    const rows = attempts.filter((a) => a.attempt_id === last);
+    const ops = rows.filter((a) => a.phase === 'apply' || a.phase === 'retry');
+    if (rows.some((a) => a.phase === 'compensate') || ops.some((a) => !a.ok)) return { kind: 'failed', basis: 'executions' };
+    if (ops.every((a) => a.mode === 'live')) return { kind: 'live', provider: ops.find((a) => a.provider)?.provider ?? null, basis: 'executions' };
+    return ops.some((a) => a.mode === 'dry_run') ? { kind: 'dry_run', basis: 'executions' } : { kind: 'none', basis: 'executions' };
+  }
+  const ex = execution?.phase === 'rollback' ? execution.applyExecution ?? null : execution;
+  if (!ex || !ex.mode) return { kind: 'unknown' };
+  if (ex.ok === false) return { kind: 'failed', basis: 'execution' };
+  if (ex.mode === 'live') return { kind: 'live', provider: ex.provider ?? null, basis: 'execution' };
+  return ex.mode === 'dry_run' ? { kind: 'dry_run', basis: 'execution' } : { kind: 'none', basis: 'execution' };
+}
+
+const NOT_APPLIED_REASON = {
+  dry_run: '매체 미반영 — dry_run(호출 내용만 기록하고 매체에 보내지 않음) · 매체 값이 바뀌지 않아 증분 추정 대상이 아님',
+  none: '매체 미반영 — 기록만 변경 (반영할 커넥션 없음 · 매체 쓰기 미지원) · 서버가 매체를 바꾸지 않아 증분 추정 대상이 아님',
+  unknown: '매체 미반영 — 반영 실행 기록 없음 (화면 기록 · 수동 반영) · 언제 매체에 적용됐는지 확인할 수 없음',
+} as const;
 
 const KIND_LABEL: Record<string, string> = { bid: '입찰가', budget: '일 예산' };
 const fmtVal = (v: unknown) => (typeof v === 'number' ? v.toLocaleString('ko-KR') : String(v ?? '—'));
@@ -141,6 +188,11 @@ export function budgetCampaignOf(targetId: string | null): string | null {
   m = t.match(/^(?:gfa|flow):budget:(.+)$/);
   if (m) return m[1];
   return /^[A-Za-z0-9_.-]+$/.test(t) ? t : null;
+}
+/** 예산 재배분의 주는 캠페인 ('budget:<받는>:<주는>' — 주는 쪽이 비어 있으면 없음) */
+export function budgetDonorOf(targetId: string | null): string | null {
+  const m = (targetId ?? '').trim().match(/^budget:[^:]+:([^:]+)$/);
+  return m ? m[1] : null;
 }
 
 export interface MeasureResult {
@@ -160,6 +212,17 @@ interface Ctx {
   sources: Map<string, SourceInfo>;
   keywordDocs: Map<string, { intent: string; adgroup: string; isBrand: boolean; status: string; text: string }>;
   campaignDocs: Map<string, { media: string; name: string }>;
+  /** 반영된 변경 전체 (대조군 오염 판단) — 반영 방식 판정 포함 */
+  applied: { id: string; kind: string; targetId: string | null; appliedMs: number; cls: ApplyClass }[];
+  attempts: Map<string, ExecAttemptRow[]>;
+}
+
+const TEST_SOURCE_REASON = 'TEST DATA(데모 출처) 값으로만 계산됨 — 이 대상의 실연동 데이터가 없어 성과 집계 제외 (추정값은 참고용으로만 남김)';
+
+/** 대조군에서 뺄 변경: 매체가 바뀌었을 수 있는 것 (live · 기록만(수동 반영 가능) · 기록 없음). dry_run · 실패는 매체가 그대로라 뺄 필요 없다 */
+const touchesMedia = (cls: ApplyClass) => cls.kind === 'live' || cls.kind === 'none' || cls.kind === 'unknown';
+function changedTargets(ctx: Ctx, kinds: readonly string[], fromMs: number, toMs: number, exceptId: string): (string | null)[] {
+  return ctx.applied.filter((a) => a.id !== exceptId && kinds.includes(a.kind) && a.appliedMs >= fromMs && a.appliedMs < toMs && touchesMedia(a.cls)).map((a) => a.targetId);
 }
 
 async function measureChange(ctx: Ctx, c: ChangeRowLite): Promise<EntryInput> {
@@ -171,31 +234,30 @@ async function measureChange(ctx: Ctx, c: ChangeRowLite): Promise<EntryInput> {
     sourceType: 'change', sourceId: c.id, label: `${c.target} ${KIND_LABEL[c.kind] ?? c.kind} ${fmtVal(c.before)} → ${fmtVal(c.after)}`,
     occurredAt: new Date(appliedMs).toISOString(), month: kstMonthOf(appliedMs), windowDays: IMPACT_WINDOW_DAYS, status: 'pending',
     baseline: null, observed: null, control: null, estimate: null,
-    detail: { kind: c.kind, target: c.target, targetId: c.target_id ?? undefined, before: c.before as string | number, after: c.after as string | number, route: 'flow', mode: c.execution?.mode ?? 'none' },
+    detail: {
+      kind: c.kind, target: c.target, targetId: c.target_id ?? undefined, before: c.before as string | number, after: c.after as string | number, route: 'flow',
+      appliedAt: new Date(appliedMs).toISOString(), rolledBackAt: c.rolled_back_at ? new Date(c.rolled_back_at).toISOString() : undefined,
+    },
   };
-  const ex = c.execution;
-  const exclude = (reason: string): EntryInput => ({ ...base, status: 'excluded', detail: { ...base.detail, reason } });
-  if (!ex) return exclude('반영 실행 기록 없음 (화면 기록 · 수동 반영) — 언제 매체에 적용됐는지 확인할 수 없음');
-  if (ex.ok === false) return exclude('매체 반영 실패');
-  if (ex.mode === 'dry_run') return exclude('dry_run(호출 기록만) — 매체에 실제로 보내지 않아 성과 변화의 원인이 될 수 없음');
-  if (ex.mode !== 'live') return exclude('기록만 변경 (매체 반영 없음)');
-  if (ex.provider === 'demo') return exclude('데모 커넥션 반영 (TEST DATA 시뮬레이션) — 성과 집계 제외');
-  if (c.rolled_back_at && kstDateOf(new Date(c.rolled_back_at).getTime()) <= afterDates[afterDates.length - 1]) return exclude(`관측 기간(반영 후 ${IMPACT_WINDOW_DAYS}일) 중 롤백`);
+  const cls = classifyApply(c.execution, ctx.attempts.get(c.id) ?? []);
+  base.detail.mode = cls.kind;
+  const exclude = (reason: string, exclusion: ExclusionCode): EntryInput => ({ ...base, status: 'excluded', detail: { ...base.detail, reason, exclusion } });
+  if (cls.kind === 'dry_run' || cls.kind === 'none' || cls.kind === 'unknown') return exclude(NOT_APPLIED_REASON[cls.kind], 'not_applied');
+  if (cls.kind === 'failed') return exclude('매체 반영 실패 (마지막 반영 시도 실패 · 되돌림) — 매체 값이 바뀌었는지 확정할 수 없어 집계 제외', 'apply_failed');
+  if (cls.provider === 'demo') return exclude('데모 커넥션 반영 (TEST DATA 시뮬레이션) — 성과 집계 제외', 'demo');
+  if (c.rolled_back_at && kstDateOf(new Date(c.rolled_back_at).getTime()) <= afterDates[afterDates.length - 1]) return exclude(`관측 기간(반영 후 ${IMPACT_WINDOW_DAYS}일) 중 롤백 (${kstDateOf(new Date(c.rolled_back_at).getTime())})`, 'rolled_back');
   const lastAfter = afterDates[afterDates.length - 1];
   if (lastAfter > ctx.lastFinal) return { ...base, detail: { ...base.detail, reason: `반영 후 ${IMPACT_WINDOW_DAYS}일(~${lastAfter}) 데이터가 쌓이면 측정 (매일 06:00)` } };
 
   const winFrom = beforeDates[0], winTo = lastAfter;
-  const fromIso = `${addDaysUtc(D, -IMPACT_WINDOW_DAYS)}T00:00:00+09:00`;
-  const toIso = `${addDaysUtc(D, IMPACT_WINDOW_DAYS + 1)}T00:00:00+09:00`;
+  const fromMs = kstMsOf(addDaysUtc(D, -IMPACT_WINDOW_DAYS));
+  const toMs = kstMsOf(addDaysUtc(D, IMPACT_WINDOW_DAYS + 1));
 
   if (c.kind === 'bid') {
     const kw = (c.target_id ?? '').trim();
-    if (!kw) return exclude('대상 키워드 id가 없어 웨어하우스와 연결할 수 없음');
+    if (!kw) return exclude('대상 키워드 id가 없어 웨어하우스와 연결할 수 없음', 'unlinked');
     const doc = ctx.keywordDocs.get(kw);
-    const changed = new Set((await ctx.q.query<{ target_id: string }>(
-      `SELECT DISTINCT target_id FROM change_requests WHERE workspace_id = $1 AND applied_at >= $2 AND applied_at < $3 AND kind IN ('bid', 'status', 'keyword_exclude') AND target_id IS NOT NULL`,
-      [ctx.wsId, fromIso, toIso],
-    )).rows.map((r) => r.target_id));
+    const changed = new Set(changedTargets(ctx, ['bid', 'status', 'keyword_exclude'], fromMs, toMs, c.id).filter((x): x is string => !!x));
     const peerOk = (id: string, d: { status: string }) => id !== kw && !changed.has(id) && d.status !== 'off';
     const adgroupPeers = doc?.adgroup ? [...ctx.keywordDocs].filter(([id, d]) => peerOk(id, d) && d.adgroup === doc.adgroup).map(([id]) => id) : [];
     const intentPeers = doc ? [...ctx.keywordDocs].filter(([id, d]) => peerOk(id, d) && d.intent === doc.intent && d.isBrand === doc.isBrand).map(([id]) => id) : [];
@@ -226,22 +288,23 @@ async function measureChange(ctx: Ctx, c: ChangeRowLite): Promise<EntryInput> {
       before: peers.length ? sumWindow(control, beforeDates) : null, after: peers.length ? sumWindow(control, afterDates) : null,
     };
     const reasons = [...est.sufficiency.reasons, ...(doc ? [] : ['키워드 엔티티(의도 · 광고그룹)가 없어 대조군을 구성하지 못함'])];
+    const fromTest = picked.kinds.has('demo');
     return {
-      ...base, status: est.sufficiency.ok ? 'measured' : 'insufficient',
+      ...base, status: fromTest ? 'excluded' : est.sufficiency.ok ? 'measured' : 'insufficient',
       baseline: sumWindow(treated, beforeDates), observed: sumWindow(treated, afterDates), control: snap, estimate: est,
-      detail: { ...base.detail, reasons: reasons.length ? reasons : undefined, test: picked.kinds.has('demo') || undefined },
+      detail: { ...base.detail, reasons: reasons.length ? reasons : undefined, test: fromTest || undefined, ...(fromTest ? { reason: TEST_SOURCE_REASON, exclusion: 'demo' as const } : {}) },
     };
   }
 
   // 예산 — 매체 단위
   const cid = budgetCampaignOf(c.target_id);
   const camp = cid ? ctx.campaignDocs.get(cid) : undefined;
-  if (!camp?.media) return exclude('대상 캠페인을 웨어하우스에서 찾을 수 없어 매체를 정할 수 없음');
-  const otherBudget = (await ctx.q.query<{ target_id: string | null }>(
-    `SELECT target_id FROM change_requests WHERE workspace_id = $1 AND applied_at >= $2 AND applied_at < $3 AND kind = 'budget' AND id <> $4`,
-    [ctx.wsId, fromIso, toIso, c.id],
-  )).rows;
-  const changedMedia = new Set(otherBudget.map((r) => ctx.campaignDocs.get(budgetCampaignOf(r.target_id) ?? '')?.media).filter((m): m is string => !!m));
+  if (!camp?.media) return exclude('대상 캠페인을 웨어하우스에서 찾을 수 없어 매체를 정할 수 없음', 'unlinked');
+  // 대조군에서 뺄 매체: 같은 창에 예산이 바뀐 다른 변경의 받는 · 주는 캠페인 매체 + 이 변경이 재배분이면 주는 캠페인 매체 (예산이 줄어 대조군을 끌어내린다)
+  const mediaOf = (id: string | null) => (id ? ctx.campaignDocs.get(id)?.media || null : null);
+  const changedMedia = new Set(changedTargets(ctx, ['budget'], fromMs, toMs, c.id).flatMap((t) => [mediaOf(budgetCampaignOf(t)), mediaOf(budgetDonorOf(t))]).filter((m): m is string => !!m));
+  const donorMedia = mediaOf(budgetDonorOf(c.target_id));
+  if (donorMedia && donorMedia !== camp.media) changedMedia.add(donorMedia);
   const raw = (await ctx.q.query<MetricRow & { media: string }>(
     `SELECT media, date, source, impressions, clicks, cost, conversions, revenue FROM wh_media_daily WHERE workspace_id = $1 AND date BETWEEN $2 AND $3`,
     [ctx.wsId, winFrom, winTo],
@@ -255,13 +318,15 @@ async function measureChange(ctx: Ctx, c: ChangeRowLite): Promise<EntryInput> {
     else if (!changedMedia.has(r.media)) { addInto(control, toDay(r)); controlMedia.add(r.media); }
   }
   const est = estimateUplift({ beforeDates, afterDates, treated, control: controlMedia.size ? control : null, controlUnits: controlMedia.size, margin: ctx.margin, seed: `${ctx.wsId}:${c.id}`, granularity: 'media' });
+  const fromTest = picked.kinds.has('demo');
+  const reasons = [...(est.sufficiency.ok ? [] : est.sufficiency.reasons), ...(donorMedia && donorMedia !== camp.media ? [`재배분으로 예산이 준 매체(${donorMedia})는 대조군에서 뺌`] : [])];
   return {
-    ...base, status: est.sufficiency.ok ? 'measured' : 'insufficient',
+    ...base, status: fromTest ? 'excluded' : est.sufficiency.ok ? 'measured' : 'insufficient',
     label: `${c.target} (${camp.media}) ${KIND_LABEL.budget} ${fmtVal(c.before)} → ${fmtVal(c.after)}`,
     baseline: sumWindow(treated, beforeDates), observed: sumWindow(treated, afterDates),
     control: { basis: controlMedia.size ? 'media' : 'none', label: controlMedia.size ? '같은 기간 예산 변경이 없는 다른 매체 합계' : '대조군 없음', units: controlMedia.size, ids: [...controlMedia], before: controlMedia.size ? sumWindow(control, beforeDates) : null, after: controlMedia.size ? sumWindow(control, afterDates) : null },
     estimate: est,
-    detail: { ...base.detail, reasons: est.sufficiency.ok ? undefined : est.sufficiency.reasons, test: picked.kinds.has('demo') || undefined },
+    detail: { ...base.detail, reasons: reasons.length ? reasons : undefined, test: fromTest || undefined, ...(fromTest ? { reason: TEST_SOURCE_REASON, exclusion: 'demo' as const } : {}) },
   };
 }
 
@@ -273,10 +338,11 @@ async function tableExists(q: Queryable, name: string): Promise<boolean> {
 }
 
 /** 월(KST)의 자동 실행 건수 — 데모 커넥션 · TEST DATA 실행은 세지 않는다 */
-export async function automationCounts(q: Queryable, wsId: string, month: string, upTo: string): Promise<AutomationCounts> {
+export async function automationCounts(q: Queryable, wsId: string, month: string, upTo: string, wcfg: WorkspaceConfig | null = null): Promise<AutomationCounts> {
   const from = new Date(kstMsOf(`${month}-01`)).toISOString();
   const to = new Date(kstMsOf(`${nextMonth(month)}-01`)).toISOString();
-  const bizDates = (rows: { d: string }[]) => new Set(rows.map((r) => String(r.d)).filter((d) => d <= upTo && isBusinessDate(d))).size;
+  // 영업일 = 공휴일(KR_HOLIDAYS + 워크스페이스 추가 · 제외 공휴일) · 주말 제외 — 리포트 발송 일정과 같은 달력
+  const bizDates = (rows: { d: string }[]) => withWorkspaceConfig(wcfg, () => new Set(rows.map((r) => String(r.d)).filter((d) => d <= upTo && isBusinessDate(d))).size);
   const kd = `to_char(%s AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD')`;
   const ingest = (await q.query<{ d: string }>(
     `SELECT DISTINCT ${kd.replace('%s', 'r.started_at')} AS d FROM ingest_runs r LEFT JOIN connections c ON c.id = r.connection_id
@@ -291,9 +357,16 @@ export async function automationCounts(q: Queryable, wsId: string, month: string
   )).rows;
   const weekly = await one<{ n: number }>(q, `SELECT count(DISTINCT period_start)::int AS n FROM reports WHERE workspace_id = $1 AND type = 'weekly' AND trigger = 'schedule' AND COALESCE(data_mode, 'demo') <> 'demo' AND generated_at >= $2 AND generated_at < $3`, [wsId, from, to]);
   const reportsGenerated = await one<{ n: number }>(q, `SELECT count(*)::int AS n FROM reports WHERE workspace_id = $1 AND trigger <> 'manual' AND COALESCE(data_mode, 'demo') <> 'demo' AND generated_at >= $2 AND generated_at < $3`, [wsId, from, to]);
+  // live 반영 성공 = 시도 기록(change_executions)에 성공한 live 반영이 있거나, 시도 기록이 없으면 execution(롤백이면 직전 반영 기록)이 live 성공 · 데모 커넥션 제외
   const liveChanges = (kinds: string[]) => one<{ n: number }>(q,
-    `SELECT count(*)::int AS n FROM change_requests WHERE workspace_id = $1 AND applied_at >= $2 AND applied_at < $3 AND kind = ANY($4::text[])
-       AND execution->>'mode' = 'live' AND COALESCE((execution->>'ok')::boolean, false) AND COALESCE(execution->>'provider', '') <> 'demo'`,
+    `SELECT count(*)::int AS n FROM change_requests c
+      WHERE c.workspace_id = $1 AND c.applied_at >= $2 AND c.applied_at < $3 AND c.kind = ANY($4::text[])
+        AND (
+          EXISTS (SELECT 1 FROM change_executions e WHERE e.workspace_id = c.workspace_id AND e.change_id = c.id AND e.phase IN ('apply', 'retry') AND e.mode = 'live' AND e.ok AND COALESCE(e.provider, '') <> 'demo')
+          OR (NOT EXISTS (SELECT 1 FROM change_executions e WHERE e.workspace_id = c.workspace_id AND e.change_id = c.id AND e.phase IN ('apply', 'retry'))
+              AND (CASE WHEN c.execution->>'phase' = 'rollback' THEN c.execution->'applyExecution' ELSE c.execution END) @> '{"mode":"live","ok":true}'::jsonb
+              AND COALESCE((CASE WHEN c.execution->>'phase' = 'rollback' THEN c.execution->'applyExecution' ELSE c.execution END)->>'provider', '') <> 'demo')
+        )`,
     [wsId, from, to, kinds]);
   const bid = await liveChanges(['bid', 'budget', 'status']);
   const kw = await liveChanges(['keyword_add', 'keyword_exclude']);
@@ -338,6 +411,8 @@ export async function measureWorkspace(db: Db, wsId: string, opts: { force?: boo
   // 확정된 날짜만 쓴다: 전일 확정 수집(07:00) 전이면 그저께까지 (06:00 예약 측정은 그저께까지의 창만 측정)
   const lastFinal = addDaysStr(today, kstHour() >= 8 ? -1 : -2);
   const cfg = await loadImpactConfig(q, wsId);
+  // 영업일 계산(자연 발견 시각 · 자동화 영업일 · 월 상한)은 워크스페이스 공휴일 설정을 따른다 (동기 계산만 withWorkspaceConfig 안에서)
+  const wcfg = await loadWorkspaceConfig(q, wsId).catch(() => null);
   const sources = await loadSources(q, wsId);
   const ents = (await q.query<{ entity_type: string; external_id: string; doc: Record<string, unknown> }>(
     `SELECT entity_type, external_id, doc FROM wh_entities WHERE workspace_id = $1 AND entity_type IN ('keyword', 'campaign')`, [wsId],
@@ -348,19 +423,34 @@ export async function measureWorkspace(db: Db, wsId: string, opts: { force?: boo
     if (e.entity_type === 'keyword') keywordDocs.set(e.external_id, { intent: String(e.doc.intent ?? 'generic'), adgroup: String(e.doc.adgroup ?? ''), isBrand: !!e.doc.isBrand, status: String(e.doc.status ?? 'on'), text: String(e.doc.text ?? e.external_id) });
     else campaignDocs.set(e.external_id, { media: String(e.doc.media ?? ''), name: String(e.doc.name ?? e.external_id) });
   }
-  const ctx: Ctx = { q, wsId, lastFinal, margin: cfg.margin, sources, keywordDocs, campaignDocs };
   const since = new Date(nowMs() - 400 * 86_400_000).toISOString();
   const result: MeasureResult = { changes: { ...zero(), skipped: 0 }, incidents: zero(), automation: { months: [], rows: 0, hours: 0 }, at: new Date(nowMs()).toISOString() };
 
-  /* 변경 */
+  /* 변경 — 반영된 변경 전체(대조군 오염 판단용 · 측정 창 여유 14일)와 시도별 실행 기록 */
   const done = new Map((await q.query<{ source_id: string; status: LedgerStatus }>(
     `SELECT source_id, status FROM impact_ledger WHERE workspace_id = $1 AND source_type = 'change'`, [wsId],
   )).rows.map((r) => [r.source_id, r.status]));
-  const changes = (await q.query<ChangeRowLite>(
+  const appliedAll = (await q.query<ChangeRowLite>(
     `SELECT id, kind, module, target, target_id, before, after, status, applied_at, rolled_back_at, execution FROM change_requests
-      WHERE workspace_id = $1 AND applied_at IS NOT NULL AND kind IN ('bid', 'budget') AND applied_at >= $2 ORDER BY applied_at`,
-    [wsId, since],
+      WHERE workspace_id = $1 AND applied_at IS NOT NULL AND applied_at >= $2 ORDER BY applied_at, id`,
+    [wsId, new Date(Date.parse(since) - 14 * 86_400_000).toISOString()],
   )).rows;
+  const attempts = new Map<string, ExecAttemptRow[]>();
+  if (appliedAll.length) {
+    const rows = (await q.query<ExecAttemptRow>(
+      `SELECT change_id, attempt_id, phase, mode, ok, provider FROM change_executions
+        WHERE workspace_id = $1 AND change_id = ANY($2::text[]) AND phase IN ('apply', 'retry', 'compensate') ORDER BY id`,
+      [wsId, appliedAll.map((c) => c.id)],
+    )).rows;
+    for (const r of rows) {
+      const list = attempts.get(r.change_id) ?? [];
+      list.push(r);
+      attempts.set(r.change_id, list);
+    }
+  }
+  const applied = appliedAll.map((c) => ({ id: c.id, kind: c.kind, targetId: c.target_id, appliedMs: new Date(c.applied_at).getTime(), cls: classifyApply(c.execution, attempts.get(c.id) ?? []) }));
+  const ctx: Ctx = { q, wsId, lastFinal, margin: cfg.margin, sources, keywordDocs, campaignDocs, applied, attempts };
+  const changes = appliedAll.filter((c) => (c.kind === 'bid' || c.kind === 'budget') && new Date(c.applied_at).getTime() >= Date.parse(since));
   for (const c of changes) {
     const prev = done.get(c.id);
     if (!opts.force && prev && prev !== 'pending') { result.changes.skipped++; continue; }
@@ -379,23 +469,24 @@ export async function measureWorkspace(db: Db, wsId: string, opts: { force?: boo
     const loss = Number(doc.impact?.revenueLossEst);
     if (!(loss > 0)) continue;
     const det = new Date(i.detected_at).getTime();
-    const r = estimateLossAvoided({
+    // 서버 24시간 감지(alerts scan)가 만든 이슈만 — 화면에서 사람이 등록한 이슈(source 'client')는 발생 시각 · 추정 손실이 입력값이다
+    const r = withWorkspaceConfig(wcfg, () => estimateLossAvoided({
       id: i.id, title: String(doc.title ?? i.id), severity: i.severity, revenueLossEst: loss,
       occurredAt: typeof doc.occurredAt === 'string' ? doc.occurredAt : null, detectedAt: typeof doc.detectedAt === 'string' ? doc.detectedAt : new Date(det).toISOString(),
       actionAt: doc.sla?.actionAt ?? null, ackAt: doc.sla?.ackAt ?? null, resolvedAt: doc.sla?.resolvedAt ?? (i.resolved_at ? new Date(i.resolved_at).toISOString() : null),
-      isTest: !!doc.isTest, falsePositive: !!doc.falsePositive,
-    });
+      isTest: !!doc.isTest, falsePositive: !!doc.falsePositive, autoDetected: doc.source === 'scan',
+    }));
     const status: LedgerStatus = r.ok ? 'measured' : 'excluded';
     await upsertEntry(q, wsId, {
       sourceType: 'incident', sourceId: i.id, label: `${i.severity} ${String(doc.title ?? i.id)}`, occurredAt: new Date(det).toISOString(), month: kstMonthOf(det), windowDays: 0,
       status, baseline: null, observed: null, control: null, estimate: r.ok ? r.estimate : null,
-      detail: { severity: i.severity, target: typeof doc.target === 'string' ? doc.target : undefined, route: 'alert', reason: r.ok ? undefined : r.reason, test: !!doc.isTest || undefined },
+      detail: { severity: i.severity, target: typeof doc.target === 'string' ? doc.target : undefined, route: 'alert', reason: r.ok ? undefined : r.reason, exclusion: r.ok ? undefined : r.code, test: !!doc.isTest || undefined },
     });
     result.incidents[status]++;
   }
   // 다시 열린 이슈 → 관측 중
   await q.query(
-    `UPDATE impact_ledger l SET status = 'pending', estimate = NULL, measured_at = NULL, updated_at = now(), detail = l.detail || '{"reason":"다시 열린 이슈 — 해결되면 다시 추정"}'::jsonb
+    `UPDATE impact_ledger l SET status = 'pending', estimate = NULL, measured_at = NULL, updated_at = now(), detail = (l.detail - 'exclusion') || '{"reason":"다시 열린 이슈 — 해결되면 다시 추정"}'::jsonb
       FROM incidents i WHERE l.workspace_id = $1 AND l.source_type = 'incident' AND i.workspace_id = l.workspace_id AND i.id = l.source_id AND i.status <> 'resolved' AND l.status <> 'pending'`,
     [wsId],
   );
@@ -404,8 +495,8 @@ export async function measureWorkspace(db: Db, wsId: string, opts: { force?: boo
   const cur = today.slice(0, 7);
   for (const month of [prevMonth(cur), cur]) {
     const upTo = month === cur ? today : `${month}-31`;
-    const counts = await automationCounts(q, wsId, month, upTo);
-    const bdays = businessDaysIn(month, month === cur ? today : undefined);
+    const counts = await automationCounts(q, wsId, month, upTo, wcfg);
+    const bdays = withWorkspaceConfig(wcfg, () => businessDaysIn(month, month === cur ? today : undefined));
     const sav = automationSavings(counts, bdays);
     for (const row of sav.rows) {
       const u = AUTOMATION_UNITS.find((x) => x.id === row.unit)!;

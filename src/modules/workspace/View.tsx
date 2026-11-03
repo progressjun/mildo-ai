@@ -1,8 +1,10 @@
 /**
- * 워크스페이스 설정 (07 관리 · 연동) — 브랜드 · 예산 배분 · 목표 · SAFETY · 위임 범위 · 데이터 시간표 · SLA · 감지 기준 · 공휴일 · 당번 · 사용 모듈 · AI.
+ * 워크스페이스 설정 (07 관리 · 연동) — 브랜드 · 예산 배분 · 목표 · SAFETY · 위임 범위 · 데이터 시간표 · SLA · 감지 기준 · 공휴일 · 당번 ·
+ * 사용 모듈 · AI 사용량 · 한도 · 성과 증명 기준.
  * 항목마다 기본값(제안서 · RFP 기준)과 워크스페이스 값을 나란히 보여 주고 '기본값으로' 되돌릴 수 있다. 저장 전 변경 미리보기 · 변경 이력.
  *
- * 서버 모드: GET/PUT /api/w/:ws/config · /config/history · /config/onboarding · POST /config/review (server/src/settings).
+ * 서버 모드: GET/PUT /api/w/:ws/config · /config/history · /config/onboarding · POST /config/review (server/src/settings),
+ *   AI 사용량은 GET /api/w/:ws/ai/usage (ai 도메인 · fetchServerAiUsage).
  *   저장에 성공하면 applyWorkspaceConfig로 이 브라우저의 엔진 기준을 바로 바꾸고 워크스페이스 정보를 다시 읽는다(메뉴 · 다른 화면).
  *   다른 관리자가 저장하면(SSE 'config') 편집 중이 아닐 때 다시 읽고, 편집 중이면 안내만 한다(버전 충돌은 서버가 409로 막는다).
  * 데모 모드: 기본값을 읽기 전용으로 보여 주고, 서버 연결 시 실제로 저장된다고 안내한다(이력 · 온보딩은 TEST DATA 예시).
@@ -19,14 +21,14 @@ import {
   applyWorkspaceConfig, configFieldLabel, DEFAULT_CONFIG, getPath, leafPaths, mergeConfig, removeOverride, setOverride, type ConfigIssue, type WorkspaceConfig,
 } from '@/data/config';
 import {
-  allocationRows, demoHistory, demoOnboarding, demoState, draftIssues, fmtKst, HISTORY_ACTION_LABEL, historyChangeText, overrideCount, previewChanges,
-  type ConfigState, type HistoryEntry, type OnboardingState,
+  allocationRows, demoAiUsage, demoHistory, demoOnboarding, demoState, draftIssues, fmtKst, HISTORY_ACTION_LABEL, historyChangeText, overrideCount, previewChanges,
+  type AiUsageState, type ConfigState, type HistoryEntry, type OnboardingState,
 } from './model';
 import * as remote from './api';
 import type { FormCtx } from './Fields';
-import { BrandSection, BudgetSection, DelegationSection, DetectSection, ModulesSection, SlaSection, TargetsSection, TimetableSection } from './Sections';
+import { AiSection, BrandSection, BudgetSection, DelegationSection, DetectSection, ImpactSection, ModulesSection, SlaSection, TargetsSection, TimetableSection } from './Sections';
 
-export type WsTab = 'brand' | 'budget' | 'targets' | 'approval' | 'timetable' | 'detect' | 'modules' | 'history';
+export type WsTab = 'brand' | 'budget' | 'targets' | 'approval' | 'timetable' | 'detect' | 'modules' | 'ai' | 'impact' | 'history';
 
 const TAB_PREFIXES: Record<Exclude<WsTab, 'history'>, string[]> = {
   brand: ['brand', 'brandKeywords', 'sku'],
@@ -34,12 +36,14 @@ const TAB_PREFIXES: Record<Exclude<WsTab, 'history'>, string[]> = {
   targets: ['targets', 'safety'],
   approval: ['delegation'],
   timetable: ['timetable', 'sla'],
-  detect: ['anomalyThresholds', 'holidays', 'onDuty', 'tf'],
-  modules: ['modules', 'ai', 'billing', 'impact'],
+  detect: ['anomalyThresholds', 'holidays', 'onDuty', 'tf', 'offHoursMode'],
+  modules: ['modules'],
+  ai: ['ai'],
+  impact: ['billing', 'impact'],
 };
 const TAB_LABEL: Record<WsTab, string> = {
   brand: '브랜드 · SKU', budget: '예산 배분', targets: '목표 · SAFETY', approval: '위임 범위', timetable: '데이터 시간표 · SLA',
-  detect: '감지 · 공휴일 · 당번', modules: '사용 모듈 · AI · 구독', history: '변경 이력',
+  detect: '감지 · 공휴일 · 당번', modules: '사용 모듈', ai: 'AI 사용량 · 한도', impact: '성과 증명 기준', history: '변경 이력',
 };
 
 export interface WorkspaceHandlers {
@@ -49,6 +53,7 @@ export interface WorkspaceHandlers {
   onReview: () => void;
   onReload: () => void;
   onMoreHistory: () => void;
+  onReloadUsage?: () => void;
 }
 
 export interface WorkspaceScreenProps {
@@ -57,6 +62,10 @@ export interface WorkspaceScreenProps {
   state: ConfigState | null;
   draft: WorkspaceConfig;
   canConfigure: boolean;
+  /** 소유자 권한 — 월 구독료(billing.*)는 소유자만 바꾼다 */
+  canOwner?: boolean;
+  /** 서버 워크스페이스의 브랜드명(workspaces.brand_name) — 설정의 브랜드명과 다르면 안내 */
+  workspaceBrand?: string;
   history: HistoryEntry[] | null;
   hasMoreHistory: boolean;
   onboarding: OnboardingState | null;
@@ -66,6 +75,8 @@ export interface WorkspaceScreenProps {
   serverIssues: ConfigIssue[];
   /** 편집 중 다른 사용자가 저장함 */
   remoteChanged: boolean;
+  /** 이번 달 AI 사용량 (ai 도메인) */
+  aiUsage: AiUsageState;
   handlers: WorkspaceHandlers;
   initialTab?: WsTab;
   initialPreview?: boolean;
@@ -137,7 +148,7 @@ export function WorkspaceScreen(p: WorkspaceScreenProps) {
   const overridden = leafPaths(p.draft).length;
 
   const ctx: FormCtx = {
-    draft: p.draft, defaults, readOnly, issues,
+    draft: p.draft, defaults, readOnly, issues, canOwner: !!p.canOwner,
     // 기본값과 같은 값으로 되돌리면 덮어쓰기를 지운다 (기본값을 따르는 상태로)
     set: (path, v) => p.handlers.onDraft(JSON.stringify(getPath(defaults, path)) === JSON.stringify(v) ? removeOverride(p.draft, path) : setOverride(p.draft, path, v)),
     reset: (path) => p.handlers.onDraft(removeOverride(p.draft, path)),
@@ -169,6 +180,14 @@ export function WorkspaceScreen(p: WorkspaceScreenProps) {
         <Callout tone="warning" title="다른 사용자가 설정을 저장했습니다">
           <span className="row" style={{ gap: 8 }}>지금 편집 중인 내용은 이전 버전 기준입니다. 최신 설정을 불러오면 편집 중인 내용은 사라집니다.
             <Button size="sm" icon="refresh" onClick={p.handlers.onReload}>최신 설정 불러오기</Button></span>
+        </Callout>
+      ) : null}
+      {!demo && p.state && p.workspaceBrand && p.workspaceBrand.trim() && eff.brand.name !== p.workspaceBrand.trim() ? (
+        <Callout tone="warning" title={`설정의 브랜드명(${eff.brand.name}${getPath(p.draft, 'brand.name') === undefined ? ' · 기본값' : ''})이 워크스페이스 브랜드(${p.workspaceBrand.trim()})와 다릅니다`}>
+          <span className="row" style={{ gap: 8 }}>
+            <span>기본값은 제안서(수면밀도) 기준입니다. 화면 · 리포트 · 에이전트 표기와 경쟁사 · SKU 진입점이 이 브랜드 기준인지 확인해 주세요. 수집 시 브랜드 키워드 판정은 워크스페이스 브랜드명을 씁니다.</span>
+            {!readOnly ? <Button size="sm" icon="check" onClick={(e) => { if (e.detail > 1) return; ctx.set('brand.name', p.workspaceBrand!.trim()); setTab('brand'); }}>{`브랜드명을 '${p.workspaceBrand.trim()}'(으)로`}</Button> : null}
+          </span>
         </Callout>
       ) : null}
       {p.state?.invalid.length ? (
@@ -226,6 +245,8 @@ export function WorkspaceScreen(p: WorkspaceScreenProps) {
       {tab === 'timetable' ? <div className="stack-lg"><TimetableSection ctx={ctx} /><SlaSection ctx={ctx} /></div> : null}
       {tab === 'detect' ? <DetectSection ctx={ctx} /> : null}
       {tab === 'modules' ? <ModulesSection ctx={ctx} /> : null}
+      {tab === 'ai' ? <AiSection ctx={ctx} ai={p.aiUsage} onReloadUsage={p.handlers.onReloadUsage} /> : null}
+      {tab === 'impact' ? <ImpactSection ctx={ctx} /> : null}
       {tab === 'history' ? <HistoryCard history={p.history} hasMore={p.hasMoreHistory} demo={demo} busy={p.busy === 'history'} onMore={p.handlers.onMoreHistory} /> : null}
 
       {preview ? (
@@ -275,9 +296,10 @@ function DemoWorkspace() {
   const state = useMemo(() => demoState(), []);
   const history = useMemo(() => demoHistory(), []);
   const onboarding = useMemo(() => demoOnboarding(), []);
+  const aiUsage = useMemo<AiUsageState>(() => ({ status: 'demo', usage: demoAiUsage() }), []);
   return (
     <WorkspaceScreen mode="demo" workspaceName="수면밀도 퍼포먼스 (예시)" state={state} draft={{}} canConfigure={false} history={history} hasMoreHistory={false}
-      onboarding={onboarding} busy={null} error={null} serverIssues={[]} remoteChanged={false} handlers={NOOP} />
+      onboarding={onboarding} busy={null} error={null} serverIssues={[]} remoteChanged={false} aiUsage={aiUsage} handlers={NOOP} />
   );
 }
 
@@ -290,6 +312,7 @@ function ServerWorkspace() {
   const saas = useSaas();
   const ws = saas.workspace!;
   const canConfigure = saas.can('configure');
+  const canOwner = saas.can('owner');
   const { toast } = useActions();
   const [state, setState] = useState<ConfigState | null>(null);
   const [draft, setDraft] = useState<WorkspaceConfig>({});
@@ -300,6 +323,7 @@ function ServerWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [serverIssues, setServerIssues] = useState<ConfigIssue[]>([]);
   const [remoteChanged, setRemoteChanged] = useState(false);
+  const [aiUsage, setAiUsage] = useState<AiUsageState>({ status: 'loading', usage: null });
   const busyRef = useRef(false);
   const dirtyRef = useRef(false);
   const savedRef = useRef<WorkspaceConfig>({});
@@ -328,7 +352,16 @@ function ServerWorkspace() {
     setError(errs.length ? errs.join(' · ') : null);
   }, [ws.id, loadSide]);
 
+  const loadUsage = useCallback(async () => {
+    try {
+      setAiUsage({ status: 'ok', usage: await remote.fetchAiUsage(ws.id) });
+    } catch (e) {
+      setAiUsage({ status: 'error', usage: null, error: errText(e) });
+    }
+  }, [ws.id]);
+
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void loadUsage(); }, [loadUsage]);
 
   // 다른 사용자의 저장 · 연결 · 구성원 변화 (몰리면 한 번만)
   useEffect(() => {
@@ -340,17 +373,19 @@ function ServerWorkspace() {
         later(() => {
           if (busyRef.current) return;
           if (dirtyRef.current) { setRemoteChanged(true); void loadSide(); } else void load();
+          void loadUsage();
         });
       }),
       ...['connection', 'member'].map((t) => onServerEvent(t, (e) => { if (!e.ws || e.ws === ws.id) later(() => void loadSide()); })),
     ];
     return () => { offs.forEach((f) => f()); if (timer) clearTimeout(timer); };
-  }, [ws.id, load, loadSide]);
+  }, [ws.id, load, loadSide, loadUsage]);
 
   const handlers: WorkspaceHandlers = {
     onDraft: (next) => { setDraft(next); setServerIssues([]); },
     onDiscard: () => { setDraft(savedRef.current); setServerIssues([]); },
-    onReload: () => void load(),
+    onReload: () => { void load(); void loadUsage(); },
+    onReloadUsage: () => void loadUsage(),
     onSave: async () => {
       if (busyRef.current || !state) return false;
       busyRef.current = true;
@@ -366,6 +401,7 @@ function ServerWorkspace() {
         try { applyWorkspaceConfig(r.config); } catch { /* 적용 실패 — 다음 로드에서 다시 */ }
         void saas.reloadDetail();
         void loadSide();
+        void loadUsage();
         toast({ tone: 'good', title: r.changed ? `설정을 저장했습니다 · ${r.changes.length}건 (버전 ${r.version})` : '바뀐 항목이 없습니다', body: r.changed ? '이 화면 · 서버 엔진이 새 기준을 씁니다. 이미 열려 있던 다른 화면은 다시 열면 새 기준으로 계산합니다' : undefined });
         return true;
       } catch (e) {
@@ -400,8 +436,8 @@ function ServerWorkspace() {
   };
 
   return (
-    <WorkspaceScreen mode="server" workspaceName={ws.name} state={state} draft={draft} canConfigure={canConfigure} history={history} hasMoreHistory={!!nextBefore}
-      onboarding={onboarding} busy={busy} error={error} serverIssues={serverIssues} remoteChanged={remoteChanged} handlers={handlers} />
+    <WorkspaceScreen mode="server" workspaceName={ws.name} workspaceBrand={ws.brand_name} state={state} draft={draft} canConfigure={canConfigure} canOwner={canOwner} history={history} hasMoreHistory={!!nextBefore}
+      onboarding={onboarding} busy={busy} error={error} serverIssues={serverIssues} remoteChanged={remoteChanged} aiUsage={aiUsage} handlers={handlers} />
   );
 }
 

@@ -8,7 +8,7 @@ import { DEMO } from '@/data/demo';
 import { detectIncidents } from '@/modules/alert/engine';
 import {
   AUTOMATION_UNITS, automationSavings, buildDemoImpact, buildSummary, buildValueReport, businessDaysIn, datesBetween, estimateLossAvoided, estimateUplift,
-  impactConfig, kstMsOf, ledgerCsv, naturalDiscoveryMs, paybackVerdict, sufficiency, DEFAULT_HOURLY_COST, DEFAULT_MARGIN, DEFAULT_MONTHLY_FEE,
+  csvCell, impactConfig, kstMsOf, ledgerCsv, naturalDiscoveryMs, paybackVerdict, profitAt, statusText, sufficiency, DEFAULT_HOURLY_COST, DEFAULT_MARGIN, DEFAULT_MONTHLY_FEE,
   type DayMetrics, type LedgerEntry, type UpliftEstimate,
 } from './engine';
 
@@ -129,6 +129,15 @@ describe('손실 회피 (시간 비율)', () => {
     expect(estimateLossAvoided({ id: 'i4', title: 't', severity: 'P1', revenueLossEst: 1, detectedAt: '2026-10-13T08:00:00+09:00', actionAt: '2026-10-13T08:10:00+09:00', falsePositive: true })).toMatchObject({ ok: false });
     expect(estimateLossAvoided({ id: 'i5', title: 't', severity: 'P1', detectedAt: '2026-10-13T08:00:00+09:00', actionAt: '2026-10-13T08:10:00+09:00' })).toMatchObject({ ok: false });
   });
+
+  it('사람이 화면에서 등록한 이슈(autoDetected false)는 발생 시각 · 손실이 입력값이라 제외 · 서버 감지 이슈는 추정', () => {
+    const base = { id: 'i6', title: 't', severity: 'P1', revenueLossEst: 9_000_000, occurredAt: '2026-10-01T00:00:00+09:00', detectedAt: '2026-10-13T08:00:00+09:00', actionAt: '2026-10-13T08:10:00+09:00' };
+    const manual = estimateLossAvoided({ ...base, autoDetected: false });
+    expect(manual).toMatchObject({ ok: false, status: 'excluded', code: 'manual' });
+    expect(!manual.ok && manual.reason).toContain('사람이 화면에서 등록한 이슈');
+    expect(statusText({ status: 'excluded', detail: { exclusion: 'manual' } })).toBe('집계 제외 · 수동 등록 이슈');
+    expect(estimateLossAvoided({ ...base, autoDetected: true }).ok).toBe(true);
+  });
 });
 
 describe('업무 절감 (자동화)', () => {
@@ -188,6 +197,28 @@ describe('월간 요약 · 회수 배수', () => {
     }
   });
 
+  it('반올림은 마지막에 한 번: 같은 공헌이익률이면 저장된 건별 이익, 바뀌면 매출 · 광고비에서 다시 계산', () => {
+    const ups = [11, 12, 13].map((seed) => {
+      const { treated, control } = synth({ seed, base: 1_300_000, controlBase: 4_100_000, shock: 1.07, upliftPerDay: 170_000 });
+      return estimateUplift({ beforeDates: BEFORE, afterDates: AFTER, treated, control, controlUnits: 4, margin: 0.4, seed: `r${seed}` });
+    });
+    // 측정 당시와 같은 공헌이익률 → 저장된 값 그대로
+    expect(profitAt(ups[0], 0.4)).toEqual({ profit: ups[0].profit, se: ups[0].se.profit });
+    // 다른 공헌이익률 → 반올림하지 않은 재계산 값
+    expect(profitAt(ups[0], 0.33).profit).toBeCloseTo(ups[0].revenue * 0.33 - ups[0].cost, 9);
+    const entries = ups.map((u) => entry({ sourceType: 'change', status: 'measured', estimate: u }));
+    const s40 = buildSummary(entries, impactConfig(null), '2026-10');
+    const sum40 = ups.reduce((a, u) => a + u.profit, 0);
+    expect(s40.totals.measuredUpliftProfit.point).toBe(sum40);
+    expect(s40.totals.valueKrw.point).toBe(Math.round(sum40));
+    const s33 = buildSummary(entries, impactConfig({ impact: { contributionMargin: 0.33, hourlyCost: 41_234 }, billing: { monthlyFee: 3_333_333 } }), '2026-10');
+    const sum33 = ups.reduce((a, u) => a + (u.revenue * 0.33 - u.cost), 0);
+    expect(s33.totals.measuredUpliftProfit.point).toBe(Math.round(sum33));
+    expect(s33.totals.valueKrw.point).toBe(Math.round(sum33));
+    expect(s33.totals.paybackMultiple.point).toBe(Math.round((sum33 / 3_333_333) * 100) / 100);
+    expect(s33.totals.valueKrw.lo).toBeLessThan(s33.totals.valueKrw.point);
+  });
+
   it('워크스페이스 설정 값 · 판정 기준', () => {
     const cfg = impactConfig({ billing: { monthlyFee: 2_500_000 }, impact: { contributionMargin: 0.3, hourlyCost: 50_000 } });
     expect(cfg).toMatchObject({ monthlyFee: 2_500_000, margin: 0.3, hourlyCost: 50_000, sources: { monthlyFee: 'workspace', margin: 'workspace', hourlyCost: 'workspace' } });
@@ -226,5 +257,19 @@ describe('가치 리포트 · 데모 예시 · CSV', () => {
     const lines = csv.slice(1).split('\n');
     expect(lines[0]).toContain('증분 매출');
     expect(lines).toHaveLength(demo.entries.length + 1);
+  });
+
+  it('CSV 수식 주입 방지: = + - @ 로 시작하는 문자열은 앞에 작은따옴표 · 숫자(음수)는 그대로', () => {
+    expect(csvCell('=HYPERLINK("http://evil")')).toBe(`"'=HYPERLINK(""http://evil"")"`);
+    expect(csvCell('+cmd')).toBe("'+cmd");
+    expect(csvCell('-키워드')).toBe("'-키워드");
+    expect(csvCell('@SUM(A1)')).toBe("'@SUM(A1)");
+    expect(csvCell(-125_000)).toBe('-125000');
+    expect(csvCell('침대 매트리스')).toBe('침대 매트리스');
+    expect(csvCell('a\rb')).toBe('"a\rb"');
+    const evil: LedgerEntry = { ...demo.entries[0], label: '=cmd|\' /C calc\'!A0', sourceId: '@evil' };
+    const line = ledgerCsv([evil]).slice(1).split('\n')[1];
+    expect(line.startsWith(`${'변경 반영'},'=cmd|`)).toBe(true);
+    expect(line.endsWith(",'@evil")).toBe(true);
   });
 });

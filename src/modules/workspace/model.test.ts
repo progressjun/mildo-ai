@@ -4,8 +4,10 @@ import { DEFAULT_CONFIG, KNOWN_MODULE_IDS, parseWorkspaceConfig, setOverride, ty
 import { MODULES } from '@/modules/registry';
 import { DEFAULT_HOURLY_COST, DEFAULT_MARGIN, DEFAULT_MONTHLY_FEE } from '@/modules/impact/engine';
 import {
-  allocationRows, demoHistory, demoOnboarding, demoState, draftIssues, fieldState, fmtKst, historyChangeText, issueFor, normalizeAllocation, overrideCount, previewChanges,
+  aiUsageView, allocationRows, demoAiUsage, demoHistory, demoOnboarding, demoState, draftIssues, fieldState, fmtKst, historyChangeText, impactBasis, issueFor, normalizeAllocation,
+  overrideCount, pctText, previewChanges, purposeLabel,
 } from './model';
+import { mergeConfig } from '@/data/config';
 
 describe('필드 상태', () => {
   it('덮어쓰지 않은 항목은 기본값, 덮어쓴 항목은 값 · 기본값 표기를 함께', () => {
@@ -88,5 +90,35 @@ describe('예시 상태 · 표시', () => {
 
   it('사용 모듈 id 목록이 레지스트리와 같다 (모듈이 늘면 config.ts도 갱신)', () => {
     expect([...KNOWN_MODULE_IDS].sort()).toEqual(MODULES.map((m) => m.id).sort());
+  });
+});
+
+describe('AI 사용량 · 성과 증명 기준', () => {
+  it('사용률 판정(기준 포함) · 편집 중 한도 · 용도별 비중 · 최근 7일', () => {
+    const u = demoAiUsage();
+    const v = aiUsageView(u);
+    expect(v.used).toBe(7_452_000);
+    expect(pctText(v.usedRatio)).toBe('24.8%');
+    expect(v.tone).toBe('accent');
+    expect(v.verdict).toContain('기준');
+    expect(v.draftLimit).toBeNull();
+    expect(v.purposes[0]).toMatchObject({ purpose: 'agent', label: 'MILDO Agent 대화' });
+    expect(v.purposes.reduce((s, p) => s + p.share, 0)).toBeCloseTo(1, 6);
+    expect(v.recentDaily).toHaveLength(7);
+    expect(v.users[0].name).toBe('담당 AE (예시)');
+    const low = aiUsageView(u, 7_000_000);
+    expect(low).toMatchObject({ draftLimit: 7_000_000, draftBlocksNow: true, tone: 'critical' });
+    expect(aiUsageView(u, 9_000_000)).toMatchObject({ draftBlocksNow: false, tone: 'warning' });
+    expect(aiUsageView({ ...u, limit: 0 }).usedRatio).toBe(Infinity);
+    expect(pctText(Infinity)).toBe('한도 0');
+    expect(aiUsageView({ ...u, enabled: false }).verdict).toContain('AI 사용 꺼짐');
+    expect(aiUsageView({ ...u, budgetExceeded: true }).verdict).toContain('한도 도달');
+    expect(purposeLabel('adpilot:json')).toBe('adpilot · 구조화 분석');
+    expect(purposeLabel('')).toBe('기타');
+  });
+
+  it('1배 회수 조건 = 구독료 · 구독료 ÷ 공헌이익률 · 구독료 ÷ 시간당 인건비', () => {
+    expect(impactBasis(DEFAULT_CONFIG)).toEqual({ monthlyFee: 5_000_000, margin: 0.4, hourlyCost: 40_000, breakEvenValue: 5_000_000, breakEvenRevenue: 12_500_000, breakEvenHours: 125 });
+    expect(impactBasis(mergeConfig(DEFAULT_CONFIG, { impact: { hourlyCost: 0 } })).breakEvenHours).toBeNull();
   });
 });

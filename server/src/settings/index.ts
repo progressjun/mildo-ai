@@ -5,6 +5,7 @@
  *  GET  /w/:ws/config                read      → { config(저장된 덮어쓰기), effective(기본값 병합), defaults, overridden, invalid, preserved, version, updatedAt, updatedBy }
  *  PUT  /w/:ws/config                configure { config, baseVersion?, dryRun? } → 위와 같은 형태 + { changed, dryRun, changes }
  *                                              검증 실패 400 invalid_config(detail = 항목별 사유) · baseVersion 불일치 409 · 감사(이전 → 이후 차이) · 'config' 이벤트
+ *                                              billing.*(월 구독료 — 회수 배수의 분모)를 바꾸는 저장은 owner 권한만, 아니면 403 forbidden(detail.paths)
  *  GET  /w/:ws/config/history        read      ?before=&limit= → { entries, nextBefore }  (audit_log target_type = 'workspace_config')
  *  GET  /w/:ws/config/onboarding     read      → { onboarding: { firstRun, steps[데이터 연결 · 팀 초대 · 목표 · 예산 확인 · 알림 채널], done, total } }
  *  POST /w/:ws/config/review         configure { note? } → 기본값 확인 기록(감사 'config.review') + { onboarding }

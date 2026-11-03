@@ -6,7 +6,7 @@
  * 데모 모드(claude.ai 아티팩트 · 서버 없음): 데모 데이터(TEST DATA)로 같은 추정기를 돌린 예시를 읽기 전용으로 보여 주고,
  *   실제 값은 서버의 반영 이력 · 사고 조치 기록 · 자동 실행 기록이 쌓여야 계산된다는 안내를 붙인다.
  */
-import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import './styles.css';
 import { useActions, useStoreOptional } from '@/core/store';
 import { navigate } from '@/core/router';
@@ -17,7 +17,7 @@ import { onServerEvent } from '@/saas/events';
 import { Markdown } from '@/ui/Markdown';
 import { Button, Callout, Card, DataTable, DownloadButton, Drawer, Empty, PageHeader, Pill, Segmented, Src, Stat, Tabs, type Column, type Tone } from '@/ui/primitives';
 import {
-  buildDemoImpact, buildValueReport, CONFIDENCE_LABEL, estimateText, hoursText, krw, krwFull, ledgerCsv, monthLabel, prevMonth, profitAt, SOURCE_LABEL, STATUS_LABEL, times,
+  buildDemoImpact, buildValueReport, CONFIDENCE_LABEL, estimateText, hoursText, krw, krwFull, ledgerCsv, monthLabel, prevMonth, profitAt, SOURCE_LABEL, statusText, times,
   type Confidence, type ImpactComponent, type ImpactSummary, type LedgerEntry, type LedgerStatus, type SourceType,
 } from './engine';
 import * as remote from './api';
@@ -37,16 +37,21 @@ const fmtIso = (iso: string | null | undefined) => {
 };
 const CONF_TONE: Record<Confidence | 'none', Tone> = { high: 'good', medium: 'warning', low: 'serious', none: 'outline' };
 const STATUS_TONE: Record<LedgerStatus, Tone> = { measured: 'good', insufficient: 'warning', pending: 'neutral', excluded: 'outline' };
+const MODE_LABEL: Record<string, string> = { live: '매체 반영됨 (live)', dry_run: '매체 미반영 (dry-run 기록)', none: '기록만', failed: '반영 실패', unknown: '실행 기록 없음', example: '예시' };
 const ROUTE_LABEL: Record<string, string> = { flow: 'MILDO Flow에서 보기', alert: 'MILDO Alert에서 보기', adpilot: 'AD Pilot에서 보기', connections: '데이터 연결 보기', notify: '알림 설정 보기', impact: '보관함 보기' };
 
 export interface ImpactData {
   demo: boolean;
   loading: boolean;
   error: string | null;
+  /** 서버 모드: 지금 대상 월의 요약을 서버에서 읽었는지 (false면 수치 대신 오류 · 다시 시도 — 예시 값을 서버 값처럼 보여 주지 않는다). 생략 = 읽음 */
+  ready?: boolean;
   month: string;
   months: string[];
   summary: ImpactSummary;
   entries: LedgerEntry[];
+  /** 서버 모드: 같은 추정기로 지금 Dataset(데모 커넥션이면 TEST DATA)에서 만든 예시 — 장부가 TEST DATA뿐일 때 시연용으로 보여 준다 */
+  example: { summary: ImpactSummary; entries: LedgerEntry[] } | null;
   reload: () => Promise<void>;
 }
 
@@ -60,11 +65,17 @@ export function useImpactData(ws: string | null, month: string): ImpactData {
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(!!ws);
   const [error, setError] = useState<string | null>(null);
+  // 요청 순번 — 대상 월을 빠르게 바꿀 때 늦게 온 이전 월 응답이 화면을 덮지 않게
+  const seq = useRef(0);
 
   const reload = useCallback(async () => {
     if (!ws) return;
-    const res = await Promise.allSettled([remote.fetchSummary(ws, month).then(setSummary), remote.fetchLedger(ws, month).then(setEntries)]);
-    const bad = res.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    const my = ++seq.current;
+    const [s, l] = await Promise.allSettled([remote.fetchSummary(ws, month), remote.fetchLedger(ws, month)]);
+    if (my !== seq.current) return;
+    setSummary(s.status === 'fulfilled' ? s.value : null);
+    setEntries(l.status === 'fulfilled' ? l.value : []);
+    const bad = [s, l].find((r): r is PromiseRejectedResult => r.status === 'rejected');
     setError(bad ? errText(bad.reason) : null);
     setLoading(false);
   }, [ws, month]);
@@ -82,11 +93,18 @@ export function useImpactData(ws: string | null, month: string): ImpactData {
   }, [ws, reload]);
 
   if (!ws) {
-    return { demo: true, loading: false, error: null, month: demoState.month, months: [demoState.month], summary: demoState.summary, entries: demoState.entries, reload: async () => undefined };
+    return { demo: true, loading: false, error: null, month: demoState.month, months: [demoState.month], summary: demoState.summary, entries: demoState.entries, example: null, reload: async () => undefined };
   }
+  const ready = !!summary && summary.month === month;
+  // summary 자리 값은 타입을 맞추는 자리표시일 뿐 — ready가 false면 화면은 수치를 그리지 않는다
+  return { demo: false, loading, error, ready, month, months: monthOptions(kstNowMonth()), summary: ready ? summary : demoState.summary, entries: ready ? entries : [], example: demoState, reload };
+}
+
+/** 최근 12개월 (이번 달부터) */
+export function monthOptions(cur: string): string[] {
   const months: string[] = [];
-  for (let m = kstNowMonth(), i = 0; i < 12; i++, m = prevMonth(m)) months.push(m);
-  return { demo: false, loading, error, month, months, summary: summary ?? demoState.summary, entries: summary ? entries : [], reload };
+  for (let m = cur, i = 0; i < 12; i++, m = prevMonth(m)) months.push(m);
+  return months;
 }
 
 export default function View() {
@@ -94,11 +112,36 @@ export default function View() {
   const ws = saas.mode === 'server' ? saas.workspace?.id ?? null : null;
   const [month, setMonth] = useState(kstNowMonth);
   const d = useImpactData(ws, month);
-  const canOperate = !d.demo && saas.can('operate');
-  const [tab, setTab] = useState<TabId>('proof');
-  const s = d.summary;
-  const showData = d.demo || !d.loading;
-  const dataLabel = d.demo ? 'TEST DATA 예시' : s.dataMode === 'live' ? 'LIVE DATA' : s.dataMode === 'mixed' ? '일부 TEST DATA' : 'TEST DATA';
+  return (
+    <ImpactScreen d={d} ws={ws} canOperate={!d.demo && saas.can('operate')} onMonth={setMonth}
+      workspaceName={saas.workspace?.brand_name || saas.workspace?.name || ''} />
+  );
+}
+
+export interface ImpactScreenProps {
+  d: ImpactData;
+  ws: string | null;
+  canOperate: boolean;
+  workspaceName?: string;
+  onMonth?: (month: string) => void;
+  initialTab?: TabId;
+  /** 테스트 · 미리보기: 리포트 보관함 초기 목록 · 일정 (서버에서 읽기 전 값) */
+  reportsSeed?: { reports: ReportItem[]; schedule: ScheduleRow[] };
+}
+
+/** 성과 증명 화면 (상태 · 서버 호출은 바깥에서 — 데모 · 서버 모드 모두 이 화면을 그린다) */
+export function ImpactScreen({ d, ws, canOperate, workspaceName = '', onMonth, initialTab = 'proof', reportsSeed }: ImpactScreenProps) {
+  const [tab, setTab] = useState<TabId>(initialTab);
+  const [showExample, setShowExample] = useState(false);
+  // 서버 장부가 TEST DATA(데모 커넥션)뿐이면 측정 · 추정 대상이 없다 — 같은 추정기로 만든 예시를 따로 볼 수 있게 한다
+  const ready = d.demo || d.ready !== false;
+  const demoOnly = !d.demo && !d.loading && ready && d.summary.dataMode === 'demo';
+  const example = demoOnly && showExample ? d.example : null;
+  const s = example?.summary ?? d.summary;
+  const entries = example?.entries ?? d.entries;
+  const isExample = d.demo || !!example;
+  const showData = d.demo || (!d.loading && ready);
+  const dataLabel = isExample ? 'TEST DATA 예시' : s.dataMode === 'live' ? 'LIVE DATA' : s.dataMode === 'mixed' ? '일부 TEST DATA' : 'TEST DATA';
   const counts = s.counts.change;
 
   return (
@@ -109,13 +152,13 @@ export default function View() {
         sub="반영한 변경은 대조군과 비교해 측정하고, 막은 사고는 조치 시간으로 손실 회피를 추정하고, 자동화로 줄인 시간은 실행 기록으로 셉니다. 셋을 월 구독료와 나눠 회수 배수로 보여 주며, 측정 · 추정 · 가정을 섞지 않습니다."
         sources={<>
           <Src kind="PROPOSAL" page="p.11 · p.19" />
-          {d.demo || s.dataMode !== 'live' ? <span className="src demo" title={d.demo ? '데모 데이터로 만든 예시 · 실제 반영 이력 아님' : '데모 커넥션 데이터 포함'}>TEST DATA</span> : <Src kind="LIVE" title="서버 장부 (실연동 데이터)" />}
-          <span className="xs muted">{d.demo ? '예시 상태 · 읽기 전용' : `워크스페이스 ${saas.workspace?.brand_name ?? saas.workspace?.name ?? ''} · ${canOperate ? '즉시 측정 · 리포트 발송 가능' : '읽기 전용 (측정 · 발송은 담당 AE 이상)'}`}</span>
+          {isExample || s.dataMode !== 'live' ? <span className="src demo" title={isExample ? '데모 데이터로 만든 예시 · 실제 반영 이력 아님' : '데모 커넥션 데이터 포함'}>TEST DATA</span> : <Src kind="LIVE" title="서버 장부 (실연동 데이터)" />}
+          <span className="xs muted">{d.demo ? '예시 상태 · 읽기 전용' : `워크스페이스 ${workspaceName} · ${canOperate ? '즉시 측정 · 리포트 생성 · 발송 가능' : '읽기 전용 (측정 · 생성 · 발송은 담당 AE 이상)'}`}</span>
         </>}
         actions={<>
           <label className="row xs muted" style={{ gap: 6 }}>
             <span>대상 월</span>
-            <select id="impact-month" className="input" value={d.month} disabled={d.demo} onChange={(e) => setMonth(e.target.value)} title={d.demo ? '데모 모드는 예시 월 하나만 보여 줍니다' : undefined}>
+            <select id="impact-month" className="input" value={d.month} disabled={d.demo || !!example} onChange={(e) => onMonth?.(e.target.value)} title={d.demo ? '데모 모드는 예시 월 하나만 보여 줍니다' : undefined}>
               {d.months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
             </select>
           </label>
@@ -129,13 +172,28 @@ export default function View() {
           매체 반영(live) 이력 · 사고 조치 기록 · 자동 수집 · 리포트 · 감지 실행 기록이 쌓여야 계산되며, 서버는 매일 06:00에 장부를 갱신합니다.
         </Callout>
       ) : null}
+      {demoOnly ? (
+        <Callout tone="info" title={example ? 'TEST DATA 예시를 보는 중입니다 (서버 장부 아님)' : '이 워크스페이스 장부는 TEST DATA(데모 커넥션)뿐입니다'}>
+          {example
+            ? '지금 Dataset(데모 커넥션 · TEST DATA) 키워드 14일 값에서 7일째 반영을 가정해 같은 추정기로 계산한 예시입니다. 서버 장부 값이 아니며 회수 배수 판단에 쓰지 않습니다.'
+            : '데모 커넥션 반영 · TEST DATA 이슈 · 데모 수집 실행은 성과 집계에서 제외되어 회수 배수가 판정 보류로 나옵니다. 실연동 커넥션을 연결하고 변경을 live로 반영하면 매일 06:00 측정에서 채워집니다.'}
+          <div style={{ marginTop: 6 }}>
+            <Button size="sm" variant={example ? 'ghost' : 'primary'} onClick={once(() => setShowExample((v) => !v))}>{example ? '서버 장부로 돌아가기' : 'TEST DATA 예시로 보기'}</Button>
+          </div>
+        </Callout>
+      ) : null}
       {d.error ? <Callout tone="critical" title="서버에서 불러오지 못했습니다">{d.error}</Callout> : null}
 
-      {showData ? <PaybackHero s={s} dataLabel={dataLabel} demo={d.demo} /> : <Empty icon="clock" title="불러오는 중" />}
+      {showData ? <PaybackHero s={s} dataLabel={dataLabel} demo={isExample} /> : d.loading ? <Empty icon="clock" title="불러오는 중" /> : (
+        <Empty icon="alert" title="서버 장부를 불러오지 못했습니다">
+          회수 배수 · 장부 수치는 서버에서 읽은 값만 보여 줍니다 (예시 값으로 대신하지 않음).
+          <div style={{ marginTop: 8 }}><Button size="sm" icon="refresh" onClick={once(() => void d.reload())}>다시 시도</Button></div>
+        </Empty>
+      )}
 
       {showData ? (
         <div className="grid g-4">
-          <Stat label="측정된 증분 이익" value={krw(s.totals.measuredUpliftProfit.point)} foot={<span className="xs muted">증분 매출 {krw(s.totals.measuredUpliftRevenue.point)} · 측정 {counts.measured}건 · 표본 부족 {counts.insufficient} · 관측 중 {counts.pending}</span>} />
+          <Stat label="측정된 증분 이익" value={krw(s.totals.measuredUpliftProfit.point)} foot={<span className="xs muted">증분 매출 {krw(s.totals.measuredUpliftRevenue.point)} · 측정 {counts.measured}건 · 표본 부족 {counts.insufficient} · 관측 중 {counts.pending} · 제외 {counts.excluded}</span>} />
           <Stat label="추정 손실 회피 (추정)" value={krw(s.totals.lossAvoidedEst)} foot={<span className="xs muted">원 환산 {krw(s.components[1].valueKrw)} (× 공헌이익률) · 사고 {s.counts.incident.measured}건</span>} />
           <Stat label="절감 시간 (가정 기반)" value={hoursText(s.totals.hoursSaved)} foot={<span className="xs muted">원 환산 {krw(s.components[2].valueKrw)} · 시간당 {krw(s.config.hourlyCost)}</span>} />
           <Stat label="월 구독료" value={krw(s.totals.costOfSubscription)} foot={<span className="xs muted">{s.config.sources.monthlyFee === 'workspace' ? '워크스페이스 설정' : '기본값 · 계약 시 확정'}</span>} />
@@ -144,13 +202,13 @@ export default function View() {
 
       <Tabs<TabId> value={tab} onChange={setTab} tabs={[
         { id: 'proof', label: '구성 요소 · 전제' },
-        { id: 'ledger', label: '장부', badge: <Pill tone="outline">{d.entries.length}</Pill> },
+        { id: 'ledger', label: '장부', badge: <Pill tone="outline">{entries.length}</Pill> },
         { id: 'reports', label: '리포트 보관함' },
       ]} />
 
       {tab === 'proof' && showData ? <ProofTab s={s} /> : null}
-      {tab === 'ledger' && showData ? <LedgerTab entries={d.entries} month={d.month} demo={d.demo} margin={s.config.margin} /> : null}
-      {tab === 'reports' ? <ReportsTab ws={ws} canOperate={canOperate} demoSummary={d.demo ? s : null} demoEntries={d.demo ? d.entries : null} /> : null}
+      {tab === 'ledger' && showData ? <LedgerTab entries={entries} month={s.month} demo={isExample} margin={s.config.margin} ws={example ? null : ws} /> : null}
+      {tab === 'reports' ? <ReportsTab ws={ws} month={d.month} canOperate={canOperate} demoSummary={d.demo ? s : null} demoEntries={d.demo ? entries : null} seed={reportsSeed} /> : null}
     </div>
   );
 }
@@ -185,9 +243,12 @@ function PaybackHero({ s, dataLabel, demo }: { s: ImpactSummary; dataLabel: stri
     <Card className="impact-hero">
       <div className="impact-hero-row">
         <div className="stack-sm" style={{ gap: 4 }}>
-          <div className="xs muted">{monthLabel(s.month)} 구독료 대비 회수 배수 · {dataLabel}{demo ? ' · 예시' : ''}</div>
-          <div className="impact-big num">{times(pb.point)}</div>
-          <div className="small ink2">80% 구간 {times(pb.lo)} ~ {times(pb.hi)} <span className="muted">(측정 증분의 불확실성만 반영 · 손실 회피 · 절감 시간은 점추정)</span></div>
+          <div className="xs muted">{monthLabel(s.month)} 구독료 대비 회수 배수 · {dataLabel}{demo && !dataLabel.includes('예시') ? ' · 예시' : ''}</div>
+          {/* 판정 보류(측정 · 추정 항목 없음)는 0배가 아니라 값 없음 — 0.0배로 그리면 '회수 0'으로 읽힌다 */}
+          <div className="impact-big num">{s.verdict.tone === 'neutral' ? '—' : times(pb.point)}</div>
+          {s.verdict.tone === 'neutral'
+            ? <div className="small ink2">이 달에 측정 · 추정된 항목이 없어 회수 배수를 계산하지 않았습니다</div>
+            : <div className="small ink2">80% 구간 {times(pb.lo)} ~ {times(pb.hi)} <span className="muted">(측정 증분의 불확실성만 반영 · 손실 회피 · 절감 시간은 점추정)</span></div>}
         </div>
         <div className="stack-sm impact-verdict" style={{ gap: 4 }}>
           <Pill tone={s.verdict.tone === 'neutral' ? 'outline' : s.verdict.tone} icon={s.verdict.tone === 'good' ? 'check' : 'alert'}>{s.verdict.label}</Pill>
@@ -224,7 +285,7 @@ function ProofTab({ s }: { s: ImpactSummary }) {
     },
     { key: 'raw', label: '원값', render: (c) => <div className="xs stack-sm" style={{ gap: 2 }}>{c.raw.map((r) => <span key={r.label} className="nowrap">{r.label} {r.unit === '시간' ? hoursText(r.value) : krw(r.value)}</span>)}</div> },
     { key: 'method', label: '방법 · 환산', render: (c) => <div className="xs" style={{ maxWidth: 320 }}><div>{c.method}</div><div className="muted">{c.conversion}</div></div> },
-    { key: 'conf', label: '신뢰도', render: (c) => <div className="stack-sm" style={{ gap: 2, maxWidth: 220 }}><Pill tone={CONF_TONE[c.confidence]}>{c.confidence === 'none' ? '측정 없음' : CONFIDENCE_LABEL[c.confidence]}</Pill><span className="xs muted">기준: {c.confidenceBasis}</span></div> },
+    { key: 'conf', label: '신뢰도', render: (c) => <div className="stack-sm" style={{ gap: 2, maxWidth: 220, alignItems: 'flex-start' }}><Pill tone={CONF_TONE[c.confidence]}>{c.confidence === 'none' ? '측정 없음' : CONFIDENCE_LABEL[c.confidence]}</Pill><span className="xs muted">기준: {c.confidenceBasis}</span></div> },
     {
       key: 'sample', label: '표본 충분성', render: (c) => (
         <div className="xs" style={{ maxWidth: 220 }}>
@@ -264,7 +325,7 @@ function windowText(w: LedgerEntry['baseline']): string {
   return `매출 ${krw(w.revenue)} · 광고비 ${krw(w.cost)} · 클릭 ${fmt.int(w.clicks)} · 전환 ${fmt.dec1(w.conversions)}`;
 }
 
-function LedgerTab({ entries, month, demo, margin }: { entries: LedgerEntry[]; month: string; demo: boolean; margin: number }) {
+function LedgerTab({ entries, month, demo, margin, ws }: { entries: LedgerEntry[]; month: string; demo: boolean; margin: number; ws: string | null }) {
   const [type, setType] = useState<SourceType | 'all'>('all');
   const [status, setStatus] = useState<LedgerStatus | 'all'>('all');
   const [open, setOpen] = useState<LedgerEntry | null>(null);
@@ -301,8 +362,8 @@ function LedgerTab({ entries, month, demo, margin }: { entries: LedgerEntry[]; m
     },
     {
       key: 'status', label: '상태', render: (e) => (
-        <div className="stack-sm" style={{ gap: 2, maxWidth: 220 }}>
-          <Pill tone={STATUS_TONE[e.status]}>{STATUS_LABEL[e.status]}</Pill>
+        <div className="stack-sm" style={{ gap: 2, maxWidth: 220, alignItems: 'flex-start' }}>
+          <Pill tone={STATUS_TONE[e.status]}>{statusText(e)}</Pill>
           {e.detail.reasons?.length ? <span className="xs muted">{e.detail.reasons.join(' · ')}</span> : e.detail.reason ? <span className="xs muted">{e.detail.reason}</span> : null}
         </div>
       ),
@@ -311,7 +372,10 @@ function LedgerTab({ entries, month, demo, margin }: { entries: LedgerEntry[]; m
   ];
   return (
     <Card title={`장부 · ${monthLabel(month)}`} sub="근거 한 줄마다 원천(변경 · 사고 · 자동 실행 기록)과 반영 전 · 후 · 대조군 값, 추정 방법, 상태를 남깁니다. 행을 누르면 전제와 원천 화면 이동이 열립니다."
-      actions={<DownloadButton filename={`impact-ledger-${month}.csv`} data={() => ledgerCsv(rows)} mime="text/csv;charset=utf-8" label="CSV 내보내기" />}>
+      actions={<>
+        <DownloadButton filename={`impact-ledger-${month}.csv`} data={() => ledgerCsv(rows)} mime="text/csv;charset=utf-8" label="CSV 내보내기" />
+        {ws ? <a className="btn ghost sm" href={`/api/w/${encodeURIComponent(ws)}/impact/ledger.csv?month=${encodeURIComponent(month)}`} download={`impact-ledger-${month}.csv`} title="필터와 관계없이 이 달 장부 전체 (서버에서 내려받기)">서버 CSV (전체)</a> : null}
+      </>}>
       <div className="row" style={{ gap: 10, marginBottom: 10 }}>
         <Segmented<SourceType | 'all'> label="구분" value={type} onChange={setType} options={[{ id: 'all', label: '전체' }, { id: 'change', label: '변경' }, { id: 'incident', label: '사고' }, { id: 'automation', label: '자동화' }]} />
         <Segmented<LedgerStatus | 'all'> label="상태" value={status} onChange={setStatus} options={[{ id: 'all', label: '전체' }, { id: 'measured', label: '측정 완료' }, { id: 'insufficient', label: '표본 부족' }, { id: 'pending', label: '관측 중' }, { id: 'excluded', label: '제외' }]} />
@@ -330,11 +394,12 @@ function EntryDrawer({ e, onClose, margin }: { e: LedgerEntry; onClose: () => vo
     <Drawer title={e.label} onClose={onClose}>
       <div className="stack">
         <div className="row" style={{ gap: 6 }}>
-          <Pill tone={STATUS_TONE[e.status]}>{STATUS_LABEL[e.status]}</Pill>
+          <Pill tone={STATUS_TONE[e.status]}>{statusText(e)}</Pill>
           <Pill tone="outline">{SOURCE_LABEL[e.sourceType]}</Pill>
           {e.detail.test ? <span className="src demo">TEST DATA</span> : null}
           <span className="xs muted">발생 · 반영 {fmtIso(e.occurredAt)} · 측정 {fmtIso(e.measuredAt)}</span>
         </div>
+        <div className="xs muted">원천 {SOURCE_LABEL[e.sourceType]} id {e.sourceId}{e.detail.mode ? ` · 반영 방식 ${MODE_LABEL[e.detail.mode] ?? e.detail.mode}` : ''}{e.detail.rolledBackAt ? ` · 롤백 ${fmtIso(e.detail.rolledBackAt)}` : ''}</div>
         {e.detail.reason || e.detail.reasons?.length ? <Callout tone={e.status === 'insufficient' ? 'warning' : 'info'} title="상태 사유">{[e.detail.reason, ...(e.detail.reasons ?? [])].filter(Boolean).join(' · ')}</Callout> : null}
         {e.sourceType === 'change' ? (
           <div className="stack-sm">
@@ -375,15 +440,20 @@ function EntryDrawer({ e, onClose, margin }: { e: LedgerEntry; onClose: () => vo
 /* ============================== 리포트 보관함 ============================== */
 
 const STATUS_TEXT: Record<ReportItem['status'], string> = { generated: '생성됨 · 미발송', delivered: '발송됨', failed: '발송 실패' };
+/** 보관함 상태 — 발송 큐에 들어갔지만 아직 결과가 없으면 '발송 대기'로 (서버 status는 대기도 delivered로 센다) */
+function reportStatus(r: ReportItem): { text: string; tone: Tone } {
+  if (r.status === 'delivered' && r.delivered.some((x) => x.status === 'queued') && !r.delivered.some((x) => x.status === 'sent')) return { text: '발송 대기', tone: 'neutral' };
+  return { text: STATUS_TEXT[r.status], tone: r.status === 'delivered' ? 'good' : r.status === 'failed' ? 'critical' : 'outline' };
+}
 const DEL_TONE: Record<string, Tone> = { sent: 'good', queued: 'neutral', failed: 'critical', skipped: 'outline' };
 const DEL_TEXT: Record<string, string> = { sent: '발송', queued: '발송 대기', failed: '실패', skipped: '보내지 않음' };
 
-function ReportsTab({ ws, canOperate, demoSummary, demoEntries }: { ws: string | null; canOperate: boolean; demoSummary: ImpactSummary | null; demoEntries: LedgerEntry[] | null }) {
+function ReportsTab({ ws, month, canOperate, demoSummary, demoEntries, seed }: { ws: string | null; month: string; canOperate: boolean; demoSummary: ImpactSummary | null; demoEntries: LedgerEntry[] | null; seed?: { reports: ReportItem[]; schedule: ScheduleRow[] } }) {
   const actions = useActions();
   const [kind, setKind] = useState<ReportKind | ''>('');
-  const [list, setList] = useState<ReportItem[]>([]);
+  const [list, setList] = useState<ReportItem[]>(seed?.reports ?? []);
   const [next, setNext] = useState<string | null>(null);
-  const [schedule, setSchedule] = useState<ScheduleRow[]>([]);
+  const [schedule, setSchedule] = useState<ScheduleRow[]>(seed?.schedule ?? []);
   const [open, setOpen] = useState<ReportItem | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [armed, setArmed] = useState<string | null>(null);
@@ -424,8 +494,10 @@ function ReportsTab({ ws, canOperate, demoSummary, demoEntries }: { ws: string |
     setBusy(key);
     try { await fn(); } catch (e) { actions.toast({ tone: 'warning', title: '처리하지 못했습니다', body: errText(e) }); } finally { setBusy(null); }
   };
+  // 월간 · 가치 리포트는 화면 위 '대상 월'을 쓴다 (진행 중인 달은 어제까지 잠정)
+  const monthly = genType === 'monthly' || genType === 'value';
   const generate = () => run('gen', async () => {
-    const r = await remote.generateReport(ws!, { type: genType });
+    const r = await remote.generateReport(ws!, monthly ? { type: genType, month } : { type: genType });
     actions.toast({ tone: 'good', title: `${REPORT_KIND_LABEL[genType]} 리포트를 만들었습니다`, body: '발송은 목록의 발송 버튼으로 따로 합니다.' });
     await load();
     setOpen(r);
@@ -451,8 +523,8 @@ function ReportsTab({ ws, canOperate, demoSummary, demoEntries }: { ws: string |
     { key: 'at', label: '생성', render: (r) => <span className="xs nowrap">{ws ? fmtIso(r.generatedAt) : '예시'}</span>, sort: (r) => r.generatedAt },
     {
       key: 'del', label: '발송', render: (r) => (
-        <div className="stack-sm" style={{ gap: 2, maxWidth: 240 }}>
-          <Pill tone={r.status === 'delivered' ? 'good' : r.status === 'failed' ? 'critical' : 'outline'}>{STATUS_TEXT[r.status]}</Pill>
+        <div className="stack-sm" style={{ gap: 2, maxWidth: 240, alignItems: 'flex-start' }}>
+          <Pill tone={reportStatus(r).tone}>{reportStatus(r).text}</Pill>
           {r.delivered.slice(-3).map((x, i) => <span key={`${x.channelId}-${i}`} className="xs muted">{x.channelName} · {DEL_TEXT[x.status]}{x.reason ? ` · ${x.reason}` : ''}</span>)}
         </div>
       ),
@@ -489,11 +561,11 @@ function ReportsTab({ ws, canOperate, demoSummary, demoEntries }: { ws: string |
           </div>
         </Card>
       ) : null}
-      <Card title="리포트 보관함" sub="예약 생성 · P1 이슈 · 화면에서 만든 리포트와 발송 기록. 메일은 본문 전문, Slack · 웹훅은 메신저형 요약 + 보관함 링크로 보냅니다."
+      <Card title="리포트 보관함" sub="예약 생성 · P1 이슈 · 화면에서 만든 리포트와 발송 기록. 알림 설정에서 '리포트 발송'을 켠 채널(Slack · 메일 · 웹훅)로 메신저형 요약 + 보관함 링크를 보내고, 전문은 이 보관함에서 봅니다."
         actions={<>
           <Segmented<ReportKind | ''> label="종류" value={kind} onChange={setKind} options={[{ id: '', label: '전체' }, ...(['daily', 'weekly', 'monthly', 'issue', 'value'] as ReportKind[]).map((k) => ({ id: k, label: REPORT_KIND_LABEL[k] }))]} />
-          <select id="impact-gen-type" className="input" value={genType} disabled={!!noPerm} onChange={(e) => setGenType(e.target.value as ReportKind)} aria-label="생성할 리포트 종류">
-            {(['daily', 'weekly', 'monthly', 'value'] as ReportKind[]).map((k) => <option key={k} value={k}>{REPORT_KIND_LABEL[k]}</option>)}
+          <select id="impact-gen-type" className="input" style={{ width: 'auto' }} value={genType} disabled={!!noPerm} onChange={(e) => setGenType(e.target.value as ReportKind)} aria-label="생성할 리포트 종류">
+            {(['daily', 'weekly', 'monthly', 'value'] as ReportKind[]).map((k) => <option key={k} value={k}>{REPORT_KIND_LABEL[k]}{k === 'monthly' || k === 'value' ? ` · ${monthLabel(month)}` : k === 'daily' ? ' · 전일' : ' · 최근 7일'}</option>)}
           </select>
           <Button variant="primary" icon="plus" disabled={!!noPerm || !!busy} title={noPerm} onClick={once(() => void generate())}>{busy === 'gen' ? '생성 중' : '지금 생성'}</Button>
         </>}>
