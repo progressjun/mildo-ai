@@ -194,6 +194,15 @@ describe('POST /reports/generate — 종류별 생성 (데모 커넥터 TEST DAT
     expect((await op().post(W('/reports/generate'), { type: 'issue', incidentId: 'nope-123' })).status).toBe(404);
   });
 
+  it('이슈 id에 한글 · 공백 · 가운뎃점이 있어도(감지 엔진 id 형식) 이슈 리포트를 만든다 · 제어 문자는 거부', async () => {
+    const kid = 'bulk_change:adpilot · 이AE:2026-11-01';
+    await addIncident(kid, { title: 'AD Pilot 이AE 10분 내 11건 일괄 변경' });
+    const r = await op().post(W('/reports/generate'), { type: 'issue', incidentId: kid });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    expect(r.json.report).toMatchObject({ type: 'issue', refId: kid });
+    expect((await op().post(W('/reports/generate'), { type: 'issue', incidentId: 'bad\u0000id' })).status).toBe(400);
+  });
+
   it('AE 해석 · 섹션 피드백(광고주 담당자) 코멘트가 본문에 붙는다', async () => {
     const first = await op().post(W('/reports/generate'), { type: 'daily' });
     const sec = first.json.report.doc.sections[0];

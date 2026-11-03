@@ -1,3 +1,5 @@
+import { useSaas } from '@/saas/context';
+import { changeActionCheck, type ChangeAction, type PermCheck } from '@/core/permissions';
 import { useMemo, useState, type MouseEvent } from 'react';
 import type { ChangeRequest } from '@/core/types';
 import { CRITICAL_ISSUE_TYPES, DECISION_MATRIX, EXTRA_DETECTORS } from '@/data/constants';
@@ -51,6 +53,12 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
   const draftCount = useMemo(() => (invalid.length ? NaN : detectIncidents(data, { config: draftCfg, creatives: DEMO_CREATIVES }).filter((i) => ANOMALY_RULES.includes(i.ruleId)).length), [data, draftCfg, invalid.length]);
 
   const canPm = canApprove(state.role, 'PM');
+  // 서버 모드: 멤버십 권한으로 단계별 판정 (승인 · 반려 = PM 승인 권한, 반영 · 롤백 = PM 승인 권한 + 운영 권한) — 데모는 기존 역할 판정
+  const saas = useSaas();
+  const memberRole = ctx.server ? (saas.role ?? 'viewer') : null;
+  const ruleCheck = (action: ChangeAction): PermCheck => memberRole
+    ? changeActionCheck(memberRole, 'PM', action)
+    : { ok: canPm, reason: canPm ? '' : `현재 역할(${state.role})은 PM 승인 건을 처리할 수 없음` };
 
   const submit = () => {
     const cur = draftOf(cfg);
@@ -72,6 +80,10 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
   };
 
   const applyAndScan = (c: ChangeRequest) => {
+    if (!ruleCheck('apply').ok) {
+      actions.toast({ tone: 'warning', title: '탐지 기준 반영 권한이 없습니다', body: ruleCheck('apply').reason });
+      return;
+    }
     if (ctx.server) {
       // 서버 모드: 반영이 끝나면 서버가 새 기준으로 감지를 다시 돌린다 (alerts.scan) — 화면에서 따로 감지 · 등록하지 않는다
       actions.updateChange(c.id, { status: 'applied' }, '반영');
@@ -103,13 +115,15 @@ export function RulesTab({ ctx }: { ctx: AlertCtx }) {
         <div className="row" style={{ gap: 4 }}>
           {c.status === 'pending' ? (
             <>
-              <Button size="sm" variant="primary" disabled={!canPm} title={!canPm ? `현재 역할(${state.role})은 PM 승인 건을 처리할 수 없음` : undefined} onClick={once(() => actions.updateChange(c.id, { status: 'approved' }, '승인'))}>승인</Button>
-              <Button size="sm" variant="ghost" disabled={!canPm} onClick={once(() => actions.updateChange(c.id, { status: 'rejected' }, '반려'))}>반려</Button>
+              <Button size="sm" variant="primary" disabled={!ruleCheck('approve').ok} title={!ruleCheck('approve').ok ? ruleCheck('approve').reason : undefined} onClick={once(() => actions.updateChange(c.id, { status: 'approved' }, '승인'))}>승인</Button>
+              <Button size="sm" variant="ghost" disabled={!ruleCheck('reject').ok} title={!ruleCheck('reject').ok ? ruleCheck('reject').reason : undefined} onClick={once(() => actions.updateChange(c.id, { status: 'rejected' }, '반려'))}>반려</Button>
             </>
           ) : null}
-          {c.status === 'approved' ? <Button size="sm" variant="primary" disabled={!canPm} onClick={once(() => applyAndScan(c))}>반영</Button> : null}
-          {c.status === 'applied' ? <Button size="sm" icon="rollback" disabled={!canPm} onClick={once(() => actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', '이전 기준으로 복원'))}>롤백</Button> : null}
-          {!canPm && (c.status === 'pending' || c.status === 'approved') ? <span className="xs muted">PM · 수면밀도만 처리</span> : null}
+          {c.status === 'approved' ? <Button size="sm" variant="primary" disabled={!ruleCheck('apply').ok} title={!ruleCheck('apply').ok ? ruleCheck('apply').reason : undefined} onClick={once(() => applyAndScan(c))}>반영</Button> : null}
+          {c.status === 'applied' ? <Button size="sm" icon="rollback" disabled={!ruleCheck('rollback').ok} title={!ruleCheck('rollback').ok ? ruleCheck('rollback').reason : undefined} onClick={once(() => actions.updateChange(c.id, { status: 'rolled_back' }, '롤백', '이전 기준으로 복원'))}>롤백</Button> : null}
+          {memberRole
+            ? ((c.status === 'pending' && !ruleCheck('approve').ok) || (c.status === 'approved' && !ruleCheck('apply').ok) ? <span className="xs muted">{(c.status === 'pending' ? ruleCheck('approve') : ruleCheck('apply')).reason}</span> : null)
+            : (!canPm && (c.status === 'pending' || c.status === 'approved') ? <span className="xs muted">PM · 수면밀도만 처리</span> : null)}
         </div>
       ),
     },

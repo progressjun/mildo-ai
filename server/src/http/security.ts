@@ -781,6 +781,9 @@ export const securityPlugin = fp(async (app: FastifyInstance) => {
 
   if (opts.slowRequestMs > 0) {
     app.addHook('onResponse', async (req, reply) => {
+      // SSE(실시간 이벤트 · AI 스트림)는 원래 오래 열려 있다 — 연결 시간을 '느린 요청'으로 남기지 않는다
+      const route = routePath(req);
+      if (route.endsWith('/events') || route.endsWith('/ai/messages')) return;
       if (reply.elapsedTime >= opts.slowRequestMs) {
         // 경로는 라우트 패턴으로 남긴다(/api/invites/:token처럼 경로에 든 토큰이 로그에 남지 않게)
         req.log.warn({ requestId: req.requestId, method: req.method, route: routePath(req), statusCode: reply.statusCode, ms: Math.round(reply.elapsedTime) }, '느린 요청');

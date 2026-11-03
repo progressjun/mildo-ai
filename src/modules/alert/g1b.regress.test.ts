@@ -70,7 +70,7 @@ async function wrap(node: ReactNode, role: Role | 'demo'): Promise<ReactNode> {
 }
 
 type Ctx = ReturnType<typeof import('./hooks').useAlert>;
-async function render(name: 'View' | 'IncidentDrawer' | 'NotifyTab' | 'QueueTab' | 'AccountsTab', role: Role | 'demo', extra: Record<string, unknown> = {}): Promise<{ html: string; ctx: Ctx }> {
+async function render(name: 'View' | 'IncidentDrawer' | 'NotifyTab' | 'QueueTab' | 'AccountsTab' | 'RulesTab', role: Role | 'demo', extra: Record<string, unknown> = {}): Promise<{ html: string; ctx: Ctx }> {
   buttons.length = 0;
   const { useAlert } = await import('./hooks');
   let ctx: Ctx | null = null;
@@ -328,5 +328,39 @@ describe('대량 변경 이슈 제목 — 모듈 한글 · 제품명', () => {
     expect(inc.id).toBe('bulk_change:adpilot · 이AE:2026-11-03');
     const gfa = engine.detectBulkChange(changes.map((c) => ({ ...c, module: 'gfa' })), { today: '2026-11-03' })[0];
     expect(gfa.title.startsWith('GFA Control ')).toBe(true);
+  });
+});
+
+
+describe('탐지 기준 탭 — 기준 변경의 승인 · 반영 · 롤백도 멤버십 권한 (재검증 잔여)', () => {
+  const rule = (status: ChangeRequest['status']): ChangeRequest => ({
+    id: `qa_rule_${status}`, createdAt: '2026-11-03T08:00:00.000Z', module: 'alert', kind: 'alert_rule', target: '탐지 기준 · 키워드 급변', targetId: 'alert_rule:keywordSpikePct',
+    before: '50%', after: '60%', reason: 'QA', requestedBy: '김PM', approver: 'PM', status, history: [],
+  });
+  it('광고주 담당자: 승인은 가능, 반영 · 롤백은 운영 권한 사유와 함께 막히고 눌러도 보내지 않는다', async () => {
+    storeState = mkState({ changes: [rule('pending'), rule('approved'), rule('applied')] });
+    await render('RulesTab', 'client');
+    expect(btn('승인').disabled).toBe(false);
+    const apply = btn('반영');
+    expect(apply.disabled).toBe(true);
+    expect(apply.title).toContain('운영 권한');
+    expect(btn('롤백').disabled).toBe(true);
+    apply.onClick?.({ detail: 1 });
+    expect(toasts.at(-1)).toMatchObject({ tone: 'warning', title: '탐지 기준 반영 권한이 없습니다' });
+  });
+  it('열람자: 승인 · 반려 · 반영 모두 막힘 (읽기 전용 사유) / PM: 모두 가능', async () => {
+    storeState = mkState({ changes: [rule('pending'), rule('approved')] });
+    await render('RulesTab', 'viewer');
+    expect(btn('승인').disabled).toBe(true);
+    expect(btn('승인').title).toContain('읽기 전용');
+    expect(btn('반영').disabled).toBe(true);
+    await render('RulesTab', 'pm');
+    expect(btn('승인').disabled).toBe(false);
+    expect(btn('반영').disabled).toBe(false);
+  });
+  it('데모(역할 PM)는 기존 판정 그대로', async () => {
+    storeState = mkState({ changes: [rule('approved')] });
+    await render('RulesTab', 'demo');
+    expect(btn('반영').disabled).toBe(false);
   });
 });

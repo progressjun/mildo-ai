@@ -729,6 +729,33 @@ describe('느린 요청 로그', () => {
   });
 });
 
+describe('느린 요청 로그 — 스트림 제외', () => {
+  it('SSE(/events · /ai/messages)는 오래 열려 있어도 느린 요청으로 남기지 않는다', async () => {
+    const lines: string[] = [];
+    const stream = { write: (l: string) => { lines.push(l); } };
+    const m = await withEnv({ SLOW_REQUEST_MS: '1' }, async () => {
+      const f = Fastify({ logger: { level: 'warn', stream } });
+      f.decorate('ctx', { db: t.db, config: t.config, events: t.events });
+      await f.register(securityPlugin);
+      const slow = async () => { await new Promise((res) => setTimeout(res, 15)); return { ok: true }; };
+      f.get('/api/w/:ws/events', slow);
+      f.post('/api/w/:ws/ai/messages', slow);
+      f.get('/api/w/:ws/changes', slow);
+      await f.ready();
+      return f;
+    });
+    try {
+      expect((await m.inject({ method: 'GET', url: '/api/w/abc/events' })).statusCode).toBe(200);
+      expect((await m.inject({ method: 'POST', url: '/api/w/abc/ai/messages', payload: {} })).statusCode).toBe(200);
+      expect((await m.inject({ method: 'GET', url: '/api/w/abc/changes' })).statusCode).toBe(200);
+      const routes = lines.map((l) => JSON.parse(l)).filter((l) => l.msg === '느린 요청').map((l) => l.route);
+      expect(routes).toEqual(['/api/w/:ws/changes']);
+    } finally {
+      await m.close();
+    }
+  });
+});
+
 describe('우아한 종료', () => {
   it('app.close() 때 열린 SSE 연결을 정리해 종료가 멈추지 않는다', async () => {
     const g = await createTestApp();

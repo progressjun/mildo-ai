@@ -31,8 +31,8 @@ export default function View() {
   const [confirmReset, setConfirmReset] = useState(false);
 
   const ov = useMemo(
-    () => labOverview(d, state.changes, crit, cards, lab.decisions, { aiCandidates: lab.aiCandidates, aiCopies: lab.aiCopies, role: state.role }),
-    [d, state.changes, crit, cards, lab.decisions, lab.aiCandidates, lab.aiCopies, state.role],
+    () => labOverview(d, state.changes, crit, cards, lab.decisions, { aiCandidates: lab.aiCandidates, aiCopies: lab.aiCopies, role: m.perms.actor }),
+    [d, state.changes, crit, cards, lab.decisions, lab.aiCandidates, lab.aiCopies, m.perms.actor],
   );
   const t = ov.tiles;
   const makeCard = (dr: CardDraft) => {

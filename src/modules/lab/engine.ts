@@ -8,7 +8,7 @@
  */
 import type { ApprovalLevel, ChangeKind, ChangeRequest, Dataset, IntentId, Keyword, Product, Promotion } from '@/core/types';
 import type { Brief } from '@/ai/prompts';
-import { changeActionCheck, isMemberActor, requestCheck, type Actor, type ChangeAction } from '@/core/permissions';
+import { actorLabel, changeActionCheck, isMemberActor, requestCheck, type Actor, type ChangeAction } from '@/core/permissions';
 import { AD_PILOT, INTENT_IDS, REVIEW_RULES, SA_CAMPAIGNS, SKU_EXPANSION } from '@/data/constants';
 import { addDays, clamp, fmt, fmtDate, isOffDay, parseDate, twoProportionZ, weekday } from '@/core/util';
 import {
@@ -1712,10 +1712,10 @@ export interface LabTodo { id: string; tone: 'critical' | 'warning' | 'accent' |
 /** 첫 화면 요약 타일 + 오늘 처리할 항목 — 모든 항목에 판정 기준 · 근거 수치를 붙인다 */
 export function labOverview(
   data: Dataset, changes: readonly ChangeRequest[] = [], cIn: Partial<LabCriteria> | null = null, cards: readonly TestCard[] = [],
-  decisions: Record<string, CardDecision | undefined> = {}, extra: { aiCandidates?: readonly Candidate[]; aiCopies?: readonly AdCopy[]; role?: string } = {},
+  decisions: Record<string, CardDecision | undefined> = {}, extra: { aiCandidates?: readonly Candidate[]; aiCopies?: readonly AdCopy[]; role?: Actor } = {},
 ) {
   const crit = resolveCriteria(cIn);
-  const role = extra.role ?? 'PM';
+  const role: Actor = extra.role ?? 'PM';
   const pipeline = buildPipeline(data, changes, crit);
   const ps = pipelineSummary(pipeline);
   const pools = groupPools(pipeline, crit);
@@ -1804,7 +1804,7 @@ export function labOverview(
   if (mine.length) {
     todos.push({
       id: 'mine', tone: 'neutral', tab: 'pipeline', label: `${role} 승인`, rank: 8,
-      title: `현재 역할(${role})이 승인할 Lab 요청 ${mine.length}건`,
+      title: `현재 역할(${actorLabel(role)})이 승인할 Lab 요청 ${mine.length}건`,
       basis: mine.slice(0, 3).map((c) => `${c.target} (${APPROVER_LABEL[c.approver]})`).join(' · '),
     });
   }

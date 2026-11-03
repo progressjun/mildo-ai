@@ -32,7 +32,8 @@ import { isMonthlySendDay, isWeeklySendDay, monthlyTargetFor, upcomingRuns, week
 const DateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD 형식이어야 합니다');
 const MonthStr = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'YYYY-MM 형식이어야 합니다');
 const TypeEnum = z.enum(SERVER_REPORT_TYPES as unknown as [ServerReportType, ...ServerReportType[]]);
-const IncidentIdStr = z.string().regex(/^[A-Za-z0-9_:.\-]{1,160}$/);
+// 감지 엔진의 이슈 id에는 한글 · 공백 · 가운뎃점이 들어간다 (예: 'bulk_change:adpilot · 이AE:2026-11-03') — 제어 문자만 막는다
+const IncidentIdStr = z.string().min(1).max(200).refine((v) => !/[\u0000-\u001f\u007f]/.test(v), { message: '이슈 id에 제어 문자를 쓸 수 없습니다' });
 
 const ListQuery = z.object({
   type: TypeEnum.optional(),
