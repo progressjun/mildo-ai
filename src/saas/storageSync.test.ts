@@ -1,6 +1,7 @@
 /** 모듈 로컬 저장 미러 — localStorage 'mildo-os/*' 쓰기 가로채기 · 키별 1초 디바운스 PUT · 재시도 · 권한 · 서버 값 반영 · 해제 */
 import { afterEach, describe, expect, it } from 'vitest';
-import { activeMirror, clearSyncedStorage, installStorageMirror, readSyncedLocal, type StorageMirror } from './storageSync';
+import { activeMirror, clearSyncedStorage, installStorageMirror, isRetryable, readSyncedLocal, type StorageMirror } from './storageSync';
+import { ApiError } from './api';
 
 /** 메모리 Storage (Storage 인스턴스가 아닌 객체 — 미러는 객체 메서드를 감싼다) */
 function memStorage(init: Record<string, string> = {}): Storage {
@@ -42,7 +43,7 @@ function fakeTimers() {
 let mirror: StorageMirror | null = null;
 afterEach(() => { mirror?.uninstall(); mirror = null; });
 
-function setup(opts: { fail?: number; canWrite?: boolean; init?: Record<string, string> } = {}) {
+function setup(opts: { fail?: number; failWith?: () => unknown; canWrite?: boolean; init?: Record<string, string> } = {}) {
   const storage = memStorage(opts.init);
   const timers = fakeTimers();
   const puts: [string, unknown][] = [];
@@ -52,7 +53,7 @@ function setup(opts: { fail?: number; canWrite?: boolean; init?: Record<string, 
   mirror = installStorageMirror({
     storage,
     put: async (k, v) => {
-      if (failsLeft > 0) { failsLeft--; throw new Error('네트워크 오류'); }
+      if (failsLeft > 0) { failsLeft--; throw opts.failWith ? opts.failWith() : new Error('네트워크 오류'); }
       puts.push([k, v]);
     },
     canWrite: () => opts.canWrite ?? true,
@@ -107,6 +108,23 @@ describe('localStorage 미러', () => {
     await bad.timers.run(5000);
     expect(bad.puts).toEqual([]);
     expect(bad.errors).toEqual(['mildo-os/lab/v1']);
+  });
+  it('다시 보내도 같은 오류(413 크기 · 400 · 403 · 409 상한)는 재시도하지 않고 바로 onError, 5xx · 429 · 네트워크는 재시도', async () => {
+    const big = setup({ fail: 9, failWith: () => new ApiError(413, 'too_large', '저장 값이 너무 큽니다 (300KB · 최대 256KB)') });
+    big.storage.setItem('mildo-os/lab/v1', '1');
+    await big.timers.run(1000);
+    expect(big.errors).toEqual(['mildo-os/lab/v1']); // 첫 실패에서 바로
+    expect(big.timers.size()).toBe(0); // 재시도 예약 없음
+    big.mirror.uninstall();
+    const busy = setup({ fail: 1, failWith: () => new ApiError(503, 'http_503', '서버 오류') });
+    busy.storage.setItem('mildo-os/lab/v1', '2');
+    await busy.timers.run(1000);
+    expect(busy.errors).toEqual([]);
+    await busy.timers.run(100);
+    expect(busy.puts).toEqual([['mildo-os/lab/v1', 2]]);
+    for (const st of [400, 403, 404, 409, 413]) expect(isRetryable(new ApiError(st, 'x', 'x')), String(st)).toBe(false);
+    for (const st of [0, 408, 429, 500, 502, 503]) expect(isRetryable(new ApiError(st, 'x', 'x')), String(st)).toBe(true);
+    expect(isRetryable(new Error('boom'))).toBe(true);
   });
   it('쓰기 권한이 없으면(열람자) 보내지 않고 onBlocked', async () => {
     const t = setup({ canWrite: false });

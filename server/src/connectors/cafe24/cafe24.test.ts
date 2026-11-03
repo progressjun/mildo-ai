@@ -3,11 +3,13 @@
  * 결제일 KST · 취소/반품 품주 제외 · Analytics 방문/조회/장바구니 · 상품/품목 재고 · 혜택 프로모션 · 오류 해석. 네트워크 없음.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { connector, credentialsSchema, fetchCafe24 } from './index';
+import { connector, credentialsSchema, fetchCafe24, settingsSchema } from './index';
 import { Cafe24Client, _resetCafe24InflightForTest, cafe24AuthorizeUrl, describeCafe24Error, exchangeCafe24AuthCode, findRows } from './client';
 import { cafe24OrderLine } from './normalize';
 import { CAFE24_CREDS, CAFE24_ORDERS, cafe24Handler, cafe24State, order } from './fixtures';
-import { combine, fakeCtx, handlerHttp, type Handler } from '../naver-commerce/sales-testkit';
+import { combine, fakeCtx, handlerFetch, handlerHttp, type Handler } from '../naver-commerce/sales-testkit';
+import { createConnectorHttp } from '../http';
+import type { Cafe24Order } from './client';
 import { setNowForTest } from '../../lib/time';
 
 const NOW = Date.parse('2026-11-03T10:00:00+09:00');
@@ -150,13 +152,18 @@ describe('OAuth 2.0', () => {
 });
 
 describe('주문 → 판매 채널 일별', () => {
-  it('결제일(pay_date) 구간 · embed=items · 취소/미결제 주문과 C1/C2/C3 품주 제외 · 교환 유지 · Analytics 방문/조회/장바구니', async () => {
+  it('결제일(pay_date) 구간 · embed=items · 취소/미결제 주문과 C1/C2/C3 품주 제외 · 교환 유지 · Analytics 방문/조회/장바구니/광고 매출', async () => {
     const { http, ctx } = setup({ settings: { fetchProducts: false, fetchPromotions: false } });
     const b = await fetchCafe24(ctx, { from: '2026-10-31', to: '2026-11-02' });
     expect(b.salesDaily).toEqual([
       { date: '2026-10-31', channel: 'own_mall', visitors: 0, detailViews: 2500, carts: 240, orders: 0, revenue: 0, adAttributedRevenue: 0 },
-      { date: '2026-11-01', channel: 'own_mall', visitors: 5400, detailViews: 2500, carts: 240, orders: 2, revenue: 1_230_000, adAttributedRevenue: 0 },
-      { date: '2026-11-02', channel: 'own_mall', visitors: 6100, detailViews: 3400, carts: 290, orders: 1, revenue: 1_190_000, adAttributedRevenue: 0 },
+      { date: '2026-11-01', channel: 'own_mall', visitors: 5400, detailViews: 2500, carts: 240, orders: 2, revenue: 1_230_000, adAttributedRevenue: 940_000 },
+      // Analytics 광고 매출 1,400,000 > 주문 API 매출 1,190,000 → 매출로 자른다
+      { date: '2026-11-02', channel: 'own_mall', visitors: 6100, detailViews: 3400, carts: 290, orders: 1, revenue: 1_190_000, adAttributedRevenue: 1_190_000 },
+    ]);
+    const ad = http.calls.filter((c) => c.url.pathname === '/visitpaths/adsales');
+    expect(ad.map((c) => `${c.url.origin} ${c.url.searchParams.get('start_date')}~${c.url.searchParams.get('end_date')} ${c.url.searchParams.get('mall_id')}`)).toEqual([
+      'https://ca-api.cafe24data.com 2026-10-31~2026-10-31 mildomall', 'https://ca-api.cafe24data.com 2026-11-01~2026-11-01 mildomall', 'https://ca-api.cafe24data.com 2026-11-02~2026-11-02 mildomall',
     ]);
     const oc = http.calls.find((c) => c.url.pathname === '/api/v2/admin/orders')!;
     expect(Object.fromEntries(oc.url.searchParams)).toEqual({ shop_no: '1', start_date: '2026-10-31', end_date: '2026-11-02', date_type: 'pay_date', embed: 'items', limit: '500', offset: '0' });
@@ -218,7 +225,7 @@ describe('주문 → 판매 채널 일별', () => {
 });
 
 describe('상품 · 품목 재고 · 혜택', () => {
-  it('상품 + 품목(판매가 + 추가금액, 재고 사용 시 수량 > 0) · 판매안함 · 대표 도메인 랜딩 · 기간할인 혜택(12%) · 사은품 혜택(0%)', async () => {
+  it('상품 + 품목(판매가 + 추가금액, 재고 사용 시 수량 > 0) · 판매안함 · 대표 도메인 랜딩 · 기간할인 혜택(12%) · 사은품 혜택은 경고로', async () => {
     const { http, ctx } = setup({ settings: { fetchAnalytics: false } });
     const b = await fetchCafe24(ctx, { from: '2026-11-02', to: '2026-11-02' });
     expect(b.products).toEqual([
@@ -229,10 +236,13 @@ describe('상품 · 품목 재고 · 혜택', () => {
       { id: 'c24-12', name: '수면밀도 토퍼', landing: 'https://mildo.kr', options: [{ id: 'P000000L', label: '기본', price: 290_000, inStock: true }] },
       { id: 'c24-13', name: '단종 베개', landing: 'https://mildo.kr', options: [{ id: 'P000000M000A', label: '기본', price: 50_000, inStock: false }] },
     ]);
+    // 사은품(PG)은 판매가 대비 할인율이 없어 프로모션에 넣지 않는다 — 0%로 넣으면 Flow가 '할인율 0%' 실패로 거짓 판정
     expect(b.promotions).toEqual([
       { id: 'c24-benefit-3', name: '가을 이사 기획전', channel: 'own_mall', start: '2026-10-20', end: '2026-11-05', discountRate: 12, status: 'live' },
-      { id: 'c24-benefit-5', name: '사은품 증정', channel: 'own_mall', start: '2026-11-10', end: '2026-11-20', discountRate: 0, status: 'planned' },
     ]);
+    const skipped = b.warnings?.find((w) => w.code === 'promotions_skipped');
+    expect(skipped?.message).toMatch(/할인율\(%\)로 나타낼 수 없는 혜택 1건\(사은품 증정 \(PG\)\)/);
+    expect(skipped?.detail).toEqual({ count: 1 });
     const pc = http.calls.find((c) => c.url.pathname === '/api/v2/admin/products')!;
     expect(Object.fromEntries(pc.url.searchParams)).toEqual({ shop_no: '1', embed: 'variants', limit: '100' });
   });
@@ -267,5 +277,128 @@ describe('연결 확인 · 정의', () => {
     expect(connector.docsUrl).toMatch(/^https:\/\/apidocs\.cafe24\.com\//);
     expect(connector.capabilities).toEqual({ reads: ['salesDaily', 'products', 'promotions'], writes: [], intraday: true, maxBackfillDays: 400 });
     expect(connector.credentialFields.filter((f) => f.secret).map((f) => f.key)).toEqual(['clientSecret', 'refreshToken', 'authCode']);
+  });
+});
+
+/* ---------------- 리뷰 보강: 1회용 토큰 · 이중 집계 · 주소 검사 ---------------- */
+
+const noSnap = { fetchProducts: false, fetchPromotions: false, fetchAnalytics: false };
+const it24 = (o: { no: number; status?: string; pay: number; price?: number; qty?: number; original?: number }) => ({
+  shop_no: 1, item_no: o.no, order_item_code: `X-${o.no}`, product_no: 11, product_price: o.price ?? o.pay, option_price: 0, quantity: o.qty ?? 1,
+  payment_amount: o.pay, status_code: o.status ?? 'N1', ...(o.original !== undefined ? { original_item_no: o.original } : {}),
+});
+const ord = (id: string, items: ReturnType<typeof it24>[], extra: Partial<Cafe24Order> = {}): Cafe24Order => ({ ...order({ id, paid: '2026-11-02T10:00:00+09:00', items: items as never }), ...extra });
+
+describe('1회용 갱신 토큰 · 인증 코드 (리뷰 보강)', () => {
+  it('백필 묶음이 같은 (오래된) 자격증명으로 다시 수집해도 이미 회전된 갱신 토큰을 다시 쓰지 않는다', async () => {
+    const st = cafe24State();
+    // 백필: 커넥션 행을 한 번 읽어 묶음마다 같은 자격증명(갱신 토큰 R0, 액세스 토큰 없음)으로 수집한다
+    const first = setup({ state: st, settings: noSnap });
+    await fetchCafe24(first.ctx, { from: '2026-10-01', to: '2026-10-31' });
+    expect(st.tokenCalls.map((c) => c.body.refresh_token)).toEqual(['c24-refresh-0001']);
+    // 2시간 넘게 지나 다음 묶음 — 같은 행(R0)을 들고 오지만 R0은 서버에서 이미 폐기됨
+    setNowForTest(NOW + 3 * 3600_000);
+    const second = setup({ state: st, settings: noSnap });
+    const b = await fetchCafe24(second.ctx, { from: '2026-11-01', to: '2026-11-02' });
+    expect(b.salesDaily?.map((r) => r.orders)).toEqual([2, 1]);
+    // 두 번째 갱신은 회전된 R1001로 (R0으로 다시 보냈다면 invalid_grant → 백필 실패)
+    expect(st.tokenCalls.map((c) => c.body.refresh_token)).toEqual(['c24-refresh-0001', 'c24-refresh-1001']);
+    expect(second.saved.at(-1)).toMatchObject({ refreshToken: 'c24-refresh-1002', accessToken: 'c24-access-1002' });
+  });
+
+  it('액세스 토큰이 아직 유효해도 새로 넣은 인증 코드(다시 승인)를 먼저 교환한다 — 권한 범위 변경이 바로 반영된다', async () => {
+    const st = cafe24State({ access: 'old-access', authCode: 'reapproved-code' });
+    const creds = { ...CAFE24_CREDS, accessToken: 'old-access', accessTokenExpiresAt: iso(NOW + 90 * 60_000), authCode: 'reapproved-code', redirectUri: 'https://app.mildo.kr/cb' };
+    const { saved, ctx } = setup({ creds, state: st, settings: noSnap });
+    await fetchCafe24(ctx, { from: '2026-11-02', to: '2026-11-02' });
+    expect(st.tokenCalls.map((c) => c.body.grant_type)).toEqual(['authorization_code']);
+    expect(saved[0]).toMatchObject({ accessToken: 'c24-access-1001' });
+    expect(saved[0]).not.toHaveProperty('authCode');
+  });
+
+  it('지난 인증 코드 + 갱신 토큰 없음 + 유효한 액세스 토큰이면 그 토큰으로 계속한다', async () => {
+    const st = cafe24State({ access: 'only-access' });
+    const creds = { mallId: 'mildomall', clientId: CAFE24_CREDS.clientId, clientSecret: CAFE24_CREDS.clientSecret, accessToken: 'only-access', accessTokenExpiresAt: iso(NOW + 90 * 60_000), authCode: 'expired-code', redirectUri: 'https://app.mildo.kr/cb' };
+    const { ctx } = setup({ creds, state: st, settings: noSnap });
+    const b = await fetchCafe24(ctx, { from: '2026-11-02', to: '2026-11-02' });
+    expect(b.salesDaily?.[0].orders).toBe(1);
+    expect(st.tokenCalls).toHaveLength(1); // 코드 교환 한 번만 시도
+  });
+
+  it('토큰 요청은 재시도하지 않는다 (retries 0) — 래퍼가 5xx를 재시도하면 이미 소비된 갱신 토큰을 다시 보낸다', async () => {
+    const st = cafe24State();
+    let tokenHits = 0;
+    let storeHits = 0;
+    const flaky: Handler = (r) => {
+      if (r.url.pathname === '/api/v2/oauth/token') { tokenHits++; return { status: 503, data: { error: { code: 503, message: 'busy' } } }; }
+      if (r.url.pathname === '/api/v2/admin/store') { storeHits++; return { status: 503, data: { error: { code: 503, message: 'busy' } } }; }
+      return null;
+    };
+    const http = createConnectorHttp({ fetchImpl: handlerFetch(combine(flaky, cafe24Handler(st))), log: () => {}, maxRetries: 3, timeoutMs: 5_000, sleep: async () => {}, resolveHost: null });
+    const ctx = fakeCtx<Record<string, unknown>, Record<string, unknown>>(CAFE24_CREDS, {}, http, { connectionId: 'conn-c24-retry' });
+    const client = new Cafe24Client(ctx, CAFE24_CREDS as never, { now: () => NOW });
+    expect(client.tokenRequest({ grant_type: 'refresh_token', refresh_token: 'x' })).toMatchObject({ retries: 0 });
+    await expect(client.accessToken()).rejects.toMatchObject({ kind: 'server' });
+    expect(tokenHits).toBe(1);
+    // 일반 조회(멱등)는 래퍼 재시도를 그대로 탄다 (대조)
+    const ok = new Cafe24Client(ctx, { ...CAFE24_CREDS, accessToken: 'c24-access-0001', accessTokenExpiresAt: iso(NOW + 3600_000) } as never, { now: () => NOW });
+    await expect(ok.store()).rejects.toMatchObject({ kind: 'server' });
+    expect(storeHits).toBe(4);
+  });
+});
+
+describe('자사몰 매출 이중 집계 방지 (리뷰 보강)', () => {
+  it('마켓 연동 주문(order_place_id coupang · shopn 등)은 자사몰에서 빼고 경고, 설정으로 끌 수 있다', async () => {
+    const orders = [
+      ord('M-1', [it24({ no: 1, pay: 500_000 })], { order_place_id: 'coupang', order_place_name: '쿠팡' }),
+      ord('M-2', [it24({ no: 1, pay: 300_000 })], { order_place_id: 'shopn', order_place_name: '스마트스토어' }),
+      ord('O-1', [it24({ no: 1, pay: 200_000 })], { order_place_id: 'cafe24' }),
+      ord('O-2', [it24({ no: 1, pay: 100_000 })], { order_place_id: 'NCHECKOUT' }), // 자사몰에서 네이버페이로 결제
+    ];
+    const st = cafe24State();
+    const a = setup({ state: st, settings: noSnap, orders: { orders } });
+    const b = await fetchCafe24(a.ctx, { from: '2026-11-02', to: '2026-11-02' });
+    expect(b.salesDaily?.[0]).toMatchObject({ orders: 2, revenue: 300_000 });
+    const w = b.warnings?.find((x) => x.code === 'market_orders_excluded');
+    expect(w?.message).toMatch(/마켓 연동 주문 2건\(쿠팡 1건, 스마트스토어 1건\)/);
+    const off = setup({ state: st, settings: { ...noSnap, excludeMarketOrders: false }, orders: { orders } });
+    expect((await fetchCafe24(off.ctx, { from: '2026-11-02', to: '2026-11-02' })).salesDaily?.[0]).toMatchObject({ orders: 4, revenue: 1_100_000 });
+  });
+
+  it('교환: 원래 품주(E1)와 새 품주(N2, original_item_no)는 한 번만 센다 — 금액이 둘 다 실려도 · 한쪽만 실려도', () => {
+    const both = ord('E-1', [it24({ no: 1, status: 'E1', pay: 990_000 }), it24({ no: 2, status: 'N2', pay: 990_000, original: 1 }), it24({ no: 3, pay: 290_000 })]);
+    expect(cafe24OrderLine(both, 'net')).toMatchObject({ revenue: 1_280_000, items: 3 });
+    const newOnlyZero = ord('E-2', [it24({ no: 1, status: 'E1', pay: 990_000 }), it24({ no: 2, status: 'N2', pay: 0, price: 990_000, original: 1 })]);
+    expect(cafe24OrderLine(newOnlyZero, 'net')).toMatchObject({ revenue: 990_000 });
+    expect(cafe24OrderLine(newOnlyZero, 'gross')).toMatchObject({ revenue: 990_000 });
+    // 짝이 없는 교환 품주(원래 품주가 다른 주문)는 그대로 센다
+    const orphan = ord('E-3', [it24({ no: 5, status: 'N2', pay: 400_000, original: 99 })]);
+    expect(cafe24OrderLine(orphan, 'net')).toMatchObject({ revenue: 400_000 });
+  });
+});
+
+describe('주소 검사 (리뷰 보강)', () => {
+  it('쇼핑몰 ID는 DNS 라벨 규칙 — 점 · 슬래시 · @ · 끝 하이픈 · 1자는 거부 (API 호스트를 바꿀 수 없다)', () => {
+    const base = { clientId: 'BrIfqEKoPxeE', clientSecret: 'secret-1', refreshToken: 'refresh-1' };
+    for (const bad of ['evil.com', 'mall/x', 'mall@evil', 'mall#x', 'abc-', '-abc', 'a', 'mall x', `${'a'.repeat(50)}`, 'mall.cafe24api.com.evil']) {
+      expect(credentialsSchema.safeParse({ ...base, mallId: bad }).success, bad).toBe(false);
+    }
+    for (const good of ['mildomall', 'mildo-mall', 'ab', 'MildoMall2']) expect(credentialsSchema.safeParse({ ...base, mallId: good }).success, good).toBe(true);
+  });
+
+  it('상품 URL 템플릿은 https만 (javascript: · data: · http: 거부), 대표 도메인 랜딩도 https', () => {
+    for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'http://mildo.kr/p/{productNo}', 'https://user:pw@mildo.kr/{productNo}', 'mildo.kr/{productNo}']) {
+      expect(settingsSchema.safeParse({ productUrlTemplate: bad }).success, bad).toBe(false);
+    }
+    expect(settingsSchema.safeParse({ productUrlTemplate: 'https://mildo.kr/product/detail.html?product_no={productNo}' }).success).toBe(true);
+  });
+
+  it('광고 매체별 매출 조회만 실패하면 광고 경유 매출만 0 + 경고, 방문 · 조회 · 장바구니 · 주문은 그대로', async () => {
+    const deny: Handler = (r) => (r.url.pathname === '/visitpaths/adsales' ? { status: 403, data: { error: { code: 403, message: 'not allowed' } } } : null);
+    const { http, ctx } = setup({ extra: deny, settings: { fetchProducts: false, fetchPromotions: false } });
+    const b = await fetchCafe24(ctx, { from: '2026-11-01', to: '2026-11-02' });
+    expect(b.salesDaily?.map((r) => [r.visitors, r.detailViews, r.carts, r.orders, r.adAttributedRevenue])).toEqual([[5400, 2500, 240, 2, 0], [6100, 3400, 290, 1, 0]]);
+    expect(b.warnings?.map((w) => w.code)).toEqual(['ad_revenue_unavailable']);
+    expect(http.calls.filter((c) => c.url.pathname === '/visitpaths/adsales')).toHaveLength(1); // 실패 후 같은 기간 재호출 안 함
   });
 });

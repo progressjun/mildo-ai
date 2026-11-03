@@ -51,7 +51,8 @@ export interface SaasValue {
   role: Role | null;
   can: (perm: Permission) => boolean;
   switchWorkspace: (id: string) => void;
-  refreshMe: () => Promise<Me | null>;
+  /** /auth/me 다시 — sessionCheck: 로그인 중이었는데 401이면 '세션 만료' 안내와 함께 로그인 화면으로 (실시간 연결이 끊겼을 때 확인용) */
+  refreshMe: (opts?: { sessionCheck?: boolean }) => Promise<Me | null>;
   logout: () => Promise<void>;
   /** 현재 워크스페이스 상세 (config 포함) — 불러오기 전 null */
   detail: WorkspaceDetail | null;
@@ -68,7 +69,29 @@ export interface SaasValue {
 }
 
 const WS_KEY = 'mildo-os/cloud/workspace';
+/** 선택한 워크스페이스 (이 브라우저) — 초대 수락 직후 그 워크스페이스로 들어갈 때도 쓴다 */
+export const WORKSPACE_STORAGE_KEY = WS_KEY;
+/** 서버 모드 AI 설정 저장본 (src/core/store CLOUD_AI_KEY) — 개인 Anthropic API 키가 들어 있을 수 있다 */
+const CLOUD_AI_KEY = 'mildo-os/cloud/ai';
+/** 이 브라우저에 마지막으로 로그인한 사용자 id — 다른 사용자가 로그인하면 이전 사용자의 개인 AI 키를 지운다 */
+const CLOUD_USER_KEY = 'mildo-os/cloud/user';
 const Ctx = createContext<SaasValue | null>(null);
+
+/**
+ * 이 브라우저의 개인 설정을 로그인한 사용자 기준으로 맞춘다. 로그아웃(userId null)이나 다른 사용자의 로그인이면
+ * 서버 모드 AI 설정 저장본(개인 Anthropic API 키 포함)을 지운다 — 공용 PC에서 다음 사용자가 이전 사용자의 키로 호출하지 않게.
+ */
+export function claimBrowserFor(userId: string | null, storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null = typeof localStorage !== 'undefined' ? localStorage : null): void {
+  if (!storage) return;
+  try {
+    const prev = storage.getItem(CLOUD_USER_KEY);
+    if (userId === null || (prev !== null && prev !== userId)) storage.removeItem(CLOUD_AI_KEY);
+    if (userId === null) storage.removeItem(CLOUD_USER_KEY);
+    else if (prev !== userId) storage.setItem(CLOUD_USER_KEY, userId);
+  } catch {
+    /* 저장소 접근 불가 */
+  }
+}
 
 /**
  * AI 서버 백엔드 연결 (ai 도메인 src/ai/claude.ts configureServerAi) — 워크스페이스가 정해지거나 바뀌면 그 id, 로그아웃 · 세션 만료면 null.
@@ -99,14 +122,20 @@ export function SaasProvider({ children }: { children: ReactNode }) {
   const meRef = useRef<Me | null>(null);
   meRef.current = me;
 
-  const refreshMe = useCallback(async () => {
+  const refreshMe = useCallback(async (opts: { sessionCheck?: boolean } = {}) => {
     try {
       const m = await api<Me>('/api/auth/me', { silent: true });
       if (m?.csrfToken) setCsrfToken(m.csrfToken);
+      if (m?.user?.id) claimBrowserFor(m.user.id);
       setMe(m);
       return m;
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
+        // /auth/me는 로그인 전 경로라 전역 401 처리(세션 만료 안내)를 타지 않는다 — 확인 요청이면 여기서 안내한다
+        if (opts.sessionCheck && meRef.current) {
+          setDetail(null);
+          setNotice('세션이 만료되었거나 다른 곳에서 로그아웃되었습니다. 다시 로그인해 주세요.');
+        }
         setMe(null);
         void configureAi(null);
         return null;
@@ -228,6 +257,7 @@ export function SaasProvider({ children }: { children: ReactNode }) {
       await flushStorageSync();
       await api('/api/auth/logout', { method: 'POST', body: {}, silent: true }).catch(() => null);
       clearSyncedStorage();
+      claimBrowserFor(null);
       await configureAi(null);
       setCsrfToken(null);
       setMe(null);

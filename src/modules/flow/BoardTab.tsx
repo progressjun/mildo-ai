@@ -12,7 +12,7 @@ import {
 import { ApproverBadge, ChangeValue, ConfirmButton, LeadBadge, ModuleTag, SeedTag, StatusPill, settled } from './parts';
 import type { FlowCtx } from './useFlow';
 import { ExecBadge } from './ExecutionPanel';
-import { executionState, isExecuting } from './execution';
+import { execCsvLabel, executionState, isExecuting } from './execution';
 
 export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: string) => void; onNew: () => void }) {
   const { changes, state, clock, summary, act, bulk, data, incidents, missingSeeds, loadSeeds, bulkAlerts, apCfg } = ctx;
@@ -49,7 +49,7 @@ export function BoardTab({ ctx, onOpen, onNew }: { ctx: FlowCtx; onOpen: (id: st
     id: c.id, 요청시각: fmtStamp(clock.toMs(c.createdAt)), 상태: STATUS_META[c.status].label, 모듈: moduleLabel(c.module), 유형: kindLabel(c.kind), 대상: c.target,
     변경전: fmtValue(c, c.before), 변경후: fmtValue(c, c.after), 변경폭: c.changePct ?? '', 승인주체: APPROVER_LABEL[c.approver], 요청자: c.requestedBy, 사유: c.reason,
     이력: c.history.map((h) => `${fmtStamp(clock.toMs(h.at))} ${h.by} ${h.action}${h.note ? `(${h.note})` : ''}`).join(' / '), 시연이력: c.id.startsWith('seed_') ? 'Y' : '',
-    ...(hasExec ? { 매체반영: executionState(c)?.label ?? '' } : {}),
+    ...(hasExec ? { 매체반영: execCsvLabel(c) } : {}),
   })));
 
   return (

@@ -6,7 +6,7 @@
  *   PATCH /api/w/:ws/comments/:id { resolved }   comment  → { comment }
  *   GET   /api/w/:ws/state                       read     → { state: Record<key, value> }
  *   PUT   /api/w/:ws/state/:key { value }        comment  → { state: { [key]: value }, key, updatedAt, unchanged }
- *         (value = null이면 삭제 — 프런트 localStorage.removeItem 미러)
+ *         (value = null이면 삭제 — 프런트 localStorage.removeItem 미러 · 값 256KB · 키 500개 · 합계 8MB 상한 → 413 / 409 / 413 state_quota)
  *   DELETE /api/w/:ws/state/:key                 comment  → { ok, deleted }
  *
  * 키는 프런트 localStorage 키 그대로('mildo-os/lab/v1' 등, 슬래시 포함) — 경로에서는 그대로 쓰거나 %2F로 인코딩해도 된다.
@@ -20,8 +20,8 @@ import { isSafeId, randomToken } from '../lib/ids';
 import { audit } from '../audit/audit';
 import { publish } from '../events/hub';
 import {
-  STATE_KEY_RE, STATE_MAX_KEYS, STATE_VALUE_MAX_BYTES, canonicalJson, countStateKeys, deleteState, getComment, getStateRow, insertComment,
-  listComments, loadState, setCommentResolved, stateValueBytes, toCommentDto, upsertState,
+  STATE_KEY_RE, STATE_MAX_KEYS, STATE_TOTAL_MAX_BYTES, STATE_VALUE_MAX_BYTES, canonicalJson, countStateKeys, deleteState, getComment, getStateRow, insertComment,
+  listComments, loadState, setCommentResolved, stateBytesExcept, stateValueBytes, toCommentDto, upsertState,
 } from './service';
 
 
@@ -134,6 +134,14 @@ export const routes: FastifyPluginAsync = async (app) => {
       }
       if (!before && (await countStateKeys(q, ws)) >= STATE_MAX_KEYS) {
         throw conflict(`저장 키가 너무 많습니다 (워크스페이스당 최대 ${STATE_MAX_KEYS}개)`);
+      }
+      // 합계 상한 — 값이 줄어드는 갱신은 늘 허용 (상한을 넘긴 뒤에도 정리할 수 있게)
+      const beforeBytes = before ? stateValueBytes(before.value) : 0;
+      if (bytes > beforeBytes) {
+        const others = await stateBytesExcept(q, ws, key);
+        if (others + bytes > STATE_TOTAL_MAX_BYTES) {
+          throw new HttpError(413, 'state_quota', `워크스페이스 화면 입력 저장 공간이 부족합니다 (합계 최대 ${STATE_TOTAL_MAX_BYTES / 1024 / 1024}MB · 지금 ${Math.ceil((others + bytes) / 1024)}KB). 쓰지 않는 화면 입력을 지워 주세요`);
+        }
       }
       const row = await upsertState(q, ws, key, value, c.user.id);
       await audit(q, {

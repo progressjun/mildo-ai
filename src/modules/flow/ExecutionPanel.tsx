@@ -3,14 +3,19 @@ import { useEffect, useState } from 'react';
 import { Pill } from '@/ui/primitives';
 import { useSaas } from '@/saas/context';
 import { api, wsPath } from '@/saas/api';
-import { attemptLine, executionState, kstStamp, phaseLabel, providerLabel, requestPreview, type ExecutionAttempt, type ServerChangeView } from './execution';
+import { attemptLine, executionState, kstStamp, phaseLabel, providerLabel, requestPreview, UNVERIFIED_BASIS, UNVERIFIED_LABEL, type ExecutionAttempt, type ServerChangeView } from './execution';
 import { KV } from './parts';
 
 /** 목록 · 카드용 배지 — 판정 근거는 툴팁 */
 export function ExecBadge({ c }: { c: ServerChangeView }) {
   const s = executionState(c);
   if (!s) return null;
-  return <span className="flow-exec" data-exec={s.kind}><Pill tone={s.tone} icon={s.icon} title={s.basis}>{s.label}</Pill></span>;
+  return (
+    <span className="flow-exec" data-exec={s.kind}>
+      <Pill tone={s.tone} icon={s.icon} title={s.basis}>{s.label}</Pill>
+      {s.unverified && s.kind !== 'dry_run' ? <Pill tone="warning" icon="alert" title={UNVERIFIED_BASIS}>{UNVERIFIED_LABEL}</Pill> : null}
+    </span>
+  );
 }
 
 /** 상세 패널: 실행 방식 · 매체 · 시각 · 반영 값 · 점검 · 보낸(보낼) 요청 · 시도 기록 */
@@ -45,7 +50,10 @@ export function ExecutionPanel({ c }: { c: ServerChangeView }) {
   return (
     <div className="stack-sm flow-exec-panel" data-exec={s.kind}>
       <div className="zone-label">매체 반영 · 서버 실행 기록</div>
-      <div className="row" style={{ gap: 6 }}><Pill tone={s.tone} icon={s.icon}>{s.label}</Pill></div>
+      <div className="row" style={{ gap: 6 }}>
+        <Pill tone={s.tone} icon={s.icon}>{s.label}</Pill>
+        {s.unverified ? <Pill tone="warning" icon="alert" title={UNVERIFIED_BASIS}>{UNVERIFIED_LABEL}</Pill> : null}
+      </div>
       <div className="xs ink2">{s.basis}</div>
       {c.executing ? (
         <KV k="진행" v={<>{phaseLabel(c.executing.phase)} · {kstStamp(c.executing.since)} 시작{c.executing.background ? ' · 서버 백그라운드 처리' : ''}</>} />
@@ -53,7 +61,7 @@ export function ExecutionPanel({ c }: { c: ServerChangeView }) {
       {detail ? (
         <>
           <KV k="실행 방식" v={detail.mode === 'dry_run' ? 'dry_run (요청만 기록 · 매체 미호출)' : detail.mode === 'live' ? `live (매체 API 호출 ${detail.ok ? '성공' : '실패'})` : '기록만 (매체 API 대상 아님)'} />
-          {detail.provider ? <KV k="매체 커넥터" v={providerLabel(detail.provider)} /> : null}
+          {detail.provider ? <KV k="매체 커넥터" v={<>{providerLabel(detail.provider)}{detail.verifiedLive === false ? ` · ${UNVERIFIED_LABEL} (공식 문서 기준 구현 · 실계정 호출 미검증)` : detail.verifiedLive === true ? ' · 실계정 호출 검증됨' : ''}</>} /> : null}
           {detail.at ? <KV k="기록 시각" v={<span className="num">{kstStamp(detail.at)}</span>} /> : null}
           {detail.appliedValue !== undefined && detail.appliedValue !== '' ? <KV k="반영 값" v={<span className="num">{String(detail.appliedValue)}</span>} /> : null}
           {detail.error ? <KV k="오류" v={<span style={{ color: 'var(--critical-ink)' }}>{detail.error}</span>} /> : null}

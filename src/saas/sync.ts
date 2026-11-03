@@ -97,8 +97,32 @@ export function refetchTargetOf(type: string): RefetchTarget | null {
   return EVENT_REFETCH[type] ?? null;
 }
 
-/** 재연결 시 놓친 이벤트를 메우려고 다시 불러오는 목록 */
-export const RECONNECT_TARGETS: RefetchTarget[] = ['changes', 'incidents', 'comments', 'dataset', 'state'];
+/**
+ * 이벤트(종류 + id) → 다시 불러올 대상. config 이벤트 중 id 'review'는 온보딩 기본값 확인 기록(POST /config/review)이라
+ * 설정 값이 바뀌지 않는다 — 워크스페이스 설정을 다시 읽지 않고 '설정이 바뀌었습니다' 안내도 띄우지 않는다
+ * (워크스페이스 설정 화면이 onServerEvent('config')로 온보딩 상태만 다시 읽는다).
+ */
+export function refetchTargetForEvent(e: { type: string; id?: string | null }): RefetchTarget | null {
+  if (e.type === 'config' && e.id === 'review') return null;
+  return refetchTargetOf(e.type);
+}
+
+/** 재연결 시 놓친 이벤트를 메우려고 다시 불러오는 목록 (설정 · 멤버십 포함 — 바뀐 게 없으면 안내 없이 끝난다) */
+export const RECONNECT_TARGETS: RefetchTarget[] = ['changes', 'incidents', 'comments', 'dataset', 'state', 'workspace', 'me'];
+
+/** 설정 비교용 정규화 JSON (키 순서 무관) — 값이 실제로 바뀐 경우에만 안내하려고 쓴다 */
+export function configFingerprint(v: unknown): string {
+  if (v === null || v === undefined) return 'null';
+  if (typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return `[${v.map(configFingerprint).join(',')}]`;
+  const o = v as Record<string, unknown>;
+  return `{${Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${configFingerprint(o[k])}`).join(',')}}`;
+}
+
+/** 워크스페이스 설정의 주말 · 공휴일 당번 체계 강제 (settings offHoursMode — 서버 alerts 스캔 · SLA와 같은 읽기: === true) */
+export function offHoursFromConfig(cfg: Record<string, unknown> | null | undefined): boolean {
+  return (cfg as { offHoursMode?: unknown } | null | undefined)?.offHoursMode === true;
+}
 
 /** 재연결 대기: 1 · 2 · 4 · 8 · 16 · 30초(상한) + 0~20% 흔들기 */
 export function backoffDelay(attempt: number, rand: () => number = Math.random): number {
@@ -131,6 +155,25 @@ export function describeSources(meta: DatasetMeta): string[] {
     const latest = s.latestDate ? `${fmtDate(s.latestDate)}${s.latestHour !== null && s.latestHour !== undefined ? ` ${String(s.latestHour).padStart(2, '0')}시` : ''}` : '데이터 없음';
     return `${channelName(s.channel)} · ${KIND_LABEL[s.kind] ?? s.kind} · 최신 ${latest}`;
   });
+}
+
+/**
+ * 출처 태그 문구가 '데이터셋과 무관한 시연용 예시'를 가리키는지 — 예: '시연용 가정 계정 · 실제 계정 아님', '가상 이력 · 실제 테스트 결과 아님',
+ * '데모 진단 스냅샷', '검색량은 데모 추정', '후보 점수는 데모 평가', '탄력성 가정 시뮬레이션'. 이런 태그는 워크스페이스 데이터가
+ * 실연동(LIVE)이어도 TEST DATA로 남겨야 한다 (예시 · 가정을 실데이터로 오표시하지 않는다).
+ */
+export const FIXTURE_TITLE_RE = /(아님|가정|가상|데모 (평가|추정|스냅샷|진단)|시연용 (가정|이력|예시)|초안은 시연용)/;
+
+/**
+ * Src kind='DEMO' 태그 라벨. 데이터셋에서 계산한 값은 데이터 출처(TEST DATA · LIVE DATA · LIVE + TEST · 데이터 없음)를 따르고,
+ * 시연용 예시(fixture — 명시 또는 문구로 판정)는 언제나 TEST DATA. 데모 모드(메타 없음 · demo)는 기존 표기 그대로.
+ */
+export function srcDemoLabel(meta: DatasetMeta | null | undefined, opts: { title?: string; fixture?: boolean } = {}): DataSourceLabel {
+  const ds = dataSourceLabel(meta);
+  if (ds.tone === 'demo') return { ...ds, title: opts.title ?? ds.title };
+  const fixture = opts.fixture ?? (typeof opts.title === 'string' && FIXTURE_TITLE_RE.test(opts.title));
+  if (fixture) return { label: 'TEST DATA', tone: 'demo', cls: 'demo', title: `${opts.title ?? '시연용 예시 · 실제 데이터 아님'}\n워크스페이스 데이터와 무관한 시연용 예시입니다 (실연동 데이터 아님)` };
+  return ds;
 }
 
 export function dataSourceLabel(meta?: DatasetMeta | null): DataSourceLabel {

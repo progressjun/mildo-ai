@@ -167,6 +167,22 @@ describe('변경 요청', () => {
     expect(h.toasts[0]).toMatchObject({ tone: 'warning' });
     expect(h.toasts[0].body).toContain('이미 반영된 요청입니다');
   });
+  it('updateChange 409 approver_changed(승인 시점 재판정으로 승인 주체 상향) → 서버 값(승인 대기 · 새 승인 주체)으로 맞추고 서버 사유 안내', async () => {
+    const msg = '승인 주체가 수면밀도(으)로 바뀌어 현재 역할로는 승인할 수 없습니다 — 수면밀도 승인을 받아 주세요';
+    const rerouted = chg('chg_1', { status: 'pending', approver: 'CLIENT', history: [...chg('chg_1').history, { at: '2026-11-02T02:00:00.000Z', by: '서버', action: '승인 주체 변경' }] });
+    const h = harness({ 'PATCH /changes/chg_1': () => new ApiError(409, 'approver_changed', msg, undefined, { error: { code: 'approver_changed', message: msg }, change: rerouted }) });
+    h.state = { ...h.state, changes: [chg('chg_1', { status: 'pending', approver: 'PM' })] };
+    h.bridge.updateChange('chg_1', { status: 'approved' }, { by: 'PM', action: '승인' });
+    expect(h.state.changes[0].status).toBe('approved'); // 낙관적
+    await h.bridge.settle();
+    expect(h.state.changes[0]).toEqual(rerouted); // 되돌리기(이전 PM 승인 주체)가 아니라 서버가 올린 승인 주체
+    expect(h.toasts).toHaveLength(1);
+    expect(h.toasts[0]).toMatchObject({ tone: 'warning', route: 'flow' });
+    expect(h.toasts[0].title).toContain('승인 주체가 바뀌었습니다');
+    expect(h.toasts[0].body).toContain(msg);
+    expect(h.toasts[0].body).toContain('CLIENT');
+    expect(h.bridge.pending().changes).toEqual([]);
+  });
   it('updateChange 실패 → 이전 값으로 되돌림', async () => {
     const h = harness({ 'PATCH /changes/chg_1': () => new ApiError(409, 'conflict', '이미 다른 사람이 처리했습니다') });
     const before = chg('chg_1', { status: 'pending' });

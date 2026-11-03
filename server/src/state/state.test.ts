@@ -1,7 +1,7 @@
 /** platform(state) 도메인: 코멘트 · workspace_state API — 권한 · 테넌트 격리 · 입력 검증 · 감사 · 이벤트 */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestApp, type TestApp, type TestClient, type TestResponse } from '../../test/app';
-import { canonicalJson, STATE_MAX_KEYS } from './service';
+import { canonicalJson, STATE_MAX_KEYS, STATE_TOTAL_MAX_BYTES } from './service';
 import type { Role } from '../auth/permissions';
 
 let t: TestApp;
@@ -203,6 +203,43 @@ describe('workspace_state API', () => {
     expect(full.status).toBe(409);
     expect((await c.pm!.put(url('/state/mildo-os/lab/v1'), { value: { replaced: true } })).status).toBe(200);
     await t.db.query(`DELETE FROM workspace_state WHERE key LIKE 'bulk/%'`);
+  });
+
+  it(`합계 상한(${STATE_TOTAL_MAX_BYTES / 1024 / 1024}MB): 넘기는 쓰기는 413 state_quota(기록 · 이벤트 없음), 줄이는 갱신 · 작은 새 키는 허용`, async () => {
+    // 256KB에 가까운 값 32개 ≈ 8MB (jsonb 문자열 텍스트 = 따옴표 포함 262,002바이트)
+    const each = 262_000;
+    const n = Math.floor(STATE_TOTAL_MAX_BYTES / (each + 2));
+    await t.db.query(
+      `INSERT INTO workspace_state (workspace_id, key, value) SELECT $1, 'quota/' || g, to_jsonb(repeat('x', $2::int)) FROM generate_series(1, $3::int) g`,
+      [t.ws, each, n],
+    );
+    const used = await t.db.query<{ b: string }>(`SELECT sum(octet_length(value::text))::bigint AS b FROM workspace_state WHERE workspace_id = $1`, [t.ws]);
+    const room = STATE_TOTAL_MAX_BYTES - Number(used.rows[0].b);
+    expect(room).toBeGreaterThan(1000);
+    expect(room).toBeLessThan(each);
+    const auditBefore = (await t.db.query(`SELECT 1 FROM audit_log WHERE action = 'state.update'`)).rowCount;
+    let r: TestResponse | null = null;
+    const events = await captureEvents(async () => { r = await c.pm!.put(url('/state/mildo-os/quota-new'), { value: 'y'.repeat(room + 10) }); });
+    expect(r!.status).toBe(413);
+    expect(r!.json.error.code).toBe('state_quota');
+    expect(r!.json.error.message).toMatch(/8MB/);
+    expect(events.filter((e) => e.startsWith('state:'))).toEqual([]);
+    expect((await t.db.query(`SELECT 1 FROM audit_log WHERE action = 'state.update'`)).rowCount).toBe(auditBefore);
+    expect((await t.db.query(`SELECT 1 FROM workspace_state WHERE key = 'mildo-os/quota-new'`)).rowCount).toBe(0);
+    // 기존 키를 더 크게 바꾸는 것도 413
+    expect((await c.pm!.put(url('/state/quota/1'), { value: 'x'.repeat(each + room + 10) })).status).toBe(413);
+    // 줄이는 갱신은 상한을 넘긴 상태에서도 허용 (정리할 수 있게)
+    expect((await c.pm!.put(url('/state/quota/1'), { value: 'short' })).status).toBe(200);
+    // 남은 공간 안의 새 키는 허용
+    expect((await c.pm!.put(url('/state/mildo-os/quota-small'), { value: 'z'.repeat(1000) })).status).toBe(200);
+    await t.db.query(`DELETE FROM workspace_state WHERE workspace_id = $1 AND (key LIKE 'quota/%' OR key LIKE 'mildo-os/quota-%')`, [t.ws]);
+    // 다른 워크스페이스의 사용량은 이 워크스페이스 상한에 들어가지 않는다
+    await t.db.query(
+      `INSERT INTO workspace_state (workspace_id, key, value) SELECT $1, 'quota/' || g, to_jsonb(repeat('x', $2::int)) FROM generate_series(1, $3::int) g`,
+      [otherWs, each, n],
+    );
+    expect((await c.pm!.put(url('/state/mildo-os/quota-new'), { value: 'y'.repeat(room + 10) })).status).toBe(200);
+    await t.db.query(`DELETE FROM workspace_state WHERE key LIKE 'quota/%' OR key LIKE 'mildo-os/quota-%'`);
   });
 
   it('권한: viewer · 비로그인은 쓰기 불가, client는 쓰기 가능(comment 권한)', async () => {

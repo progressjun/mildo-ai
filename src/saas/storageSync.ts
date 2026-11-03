@@ -39,6 +39,17 @@ export interface StorageMirror {
 
 let active: StorageMirror | null = null;
 
+/**
+ * 다시 보내도 결과가 같은 요청 오류인지 — 형식 · 크기(413) · 권한(403) · 대상 없음(404) · 충돌(키 수 상한 409)은 다시 보내도 같으므로
+ * 바로 알린다. 네트워크(status 0) · 시간 초과(408) · 요청 과다(429) · 서버 오류(5xx) · 상태 코드 없는 오류만 재시도한다.
+ */
+export function isRetryable(e: unknown): boolean {
+  const status = (e as { status?: unknown } | null)?.status;
+  if (typeof status !== 'number') return true;
+  if (status === 0 || status === 408 || status === 429) return true;
+  return status >= 500;
+}
+
 /** 동기화 대상 로컬 키 → 값 */
 export function readSyncedLocal(storage: Storage): Record<string, string> {
   const out: Record<string, string> = {};
@@ -88,7 +99,7 @@ export function installStorageMirror(d: MirrorDeps): StorageMirror {
     } catch (e) {
       const n = (retries.get(key) ?? 0) + 1;
       retries.set(key, n);
-      if (n <= maxRetries && installed) {
+      if (n <= maxRetries && installed && isRetryable(e)) {
         timers.set(key, setT(() => { void send(key); }, retryMs * n));
       } else {
         retries.delete(key);

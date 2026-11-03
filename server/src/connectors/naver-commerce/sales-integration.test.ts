@@ -116,7 +116,8 @@ describe('커넥션 생성 → 연결 확인 → 초기 백필 → Dataset', () 
     const ents = await t.db.query<{ source: string; entity_type: string; n: number }>(`SELECT source, entity_type, count(*)::int AS n FROM wh_entities WHERE workspace_id = $1 GROUP BY 1, 2 ORDER BY 2, 1`, [t.ws]);
     const count = (src: string, type: string) => ents.rows.find((r) => r.source === src && r.entity_type === type)?.n ?? 0;
     expect([count(ids.naver_commerce, 'product'), count(ids.coupang, 'product'), count(ids.cafe24, 'product')]).toEqual([2, 2, 3]);
-    expect([count(ids.naver_commerce, 'promotion'), count(ids.coupang, 'promotion'), count(ids.cafe24, 'promotion')]).toEqual([1, 3, 2]);
+    // 정액 쿠폰 · 사은품 혜택은 할인율(%)이 없어 프로모션에서 빠진다 (경고 promotions_skipped)
+    expect([count(ids.naver_commerce, 'promotion'), count(ids.coupang, 'promotion'), count(ids.cafe24, 'promotion')]).toEqual([1, 2, 1]);
   });
 
   it('buildDataset: 세 채널이 실데이터(api) 출처로, 값은 공급자 응답 그대로', async () => {
@@ -126,7 +127,7 @@ describe('커넥션 생성 → 연결 확인 → 초기 백필 → Dataset', () 
     expect(row('brandstore', '2026-11-02')).toMatchObject({ orders: 2, revenue: 1_480_000 });
     expect(row('coupang', '2026-11-01')).toMatchObject({ orders: 2, revenue: 1_730_000 });
     expect(row('coupang', '2026-11-02')).toMatchObject({ orders: 2, revenue: 1_480_000 });
-    expect(row('own_mall', '2026-11-01')).toEqual({ date: '2026-11-01', channel: 'own_mall', visitors: 5400, detailViews: 2500, carts: 240, orders: 2, revenue: 1_230_000, adAttributedRevenue: 0 });
+    expect(row('own_mall', '2026-11-01')).toEqual({ date: '2026-11-01', channel: 'own_mall', visitors: 5400, detailViews: 2500, carts: 240, orders: 2, revenue: 1_230_000, adAttributedRevenue: 940_000 });
     expect(row('own_mall', '2026-11-02')).toMatchObject({ visitors: 6100, detailViews: 3400, carts: 290, orders: 1, revenue: 1_190_000 });
     expect(row('brandstore', '2026-10-15')).toMatchObject({ orders: 0, revenue: 0 });
     for (const [ch, p] of [['brandstore', 'naver_commerce'], ['coupang', 'coupang'], ['own_mall', 'cafe24']]) {
@@ -160,6 +161,27 @@ describe('커넥션 생성 → 연결 확인 → 초기 백필 → Dataset', () 
     expect(await drainIngest(t.db, t.config)).toBe(2);
     const sum = await t.db.query<{ orders: number; revenue: string }>(`SELECT sum(orders)::int AS orders, sum(revenue)::bigint::text AS revenue FROM wh_sales_daily WHERE workspace_id = $1 AND source = $2`, [t.ws, ids.coupang]);
     expect(sum.rows[0]).toEqual({ orders: 4, revenue: '3210000' });
+  });
+
+  it('카페24: 액세스 토큰이 만료된 뒤 여러 묶음 백필 — 앞 묶음이 회전시킨 갱신 토큰을 뒤 묶음(같은 커넥션 행)이 다시 쓰지 않는다', async () => {
+    const before = c24.tokenCalls.length;
+    setNowForTest(kst(TODAY, 13, 0)); // 연결 확인 때 받은 액세스 토큰(2시간)이 만료된 시각
+    try {
+      const r = await u.pm.post(`${base()}/${ids.cafe24}/sync`, { from: '2026-09-01', to: '2026-11-02' });
+      expect(r.status).toBe(200);
+      expect(r.json.queued).toBe(true);
+      expect(await drainIngest(t.db, t.config)).toBe(1);
+      const runs = await t.db.query<{ job: string; status: string; error: string | null }>(
+        `SELECT job, status, error FROM ingest_runs WHERE connection_id = $1 AND triggered_by = 'manual' ORDER BY started_at`, [ids.cafe24],
+      );
+      // 63일 = 31일 묶음 3개 + 당일 수집 — 모두 성공 (예전에는 둘째 묶음이 폐기된 갱신 토큰으로 invalid_grant)
+      expect(runs.rows.map((x) => `${x.job}:${x.status}`)).toEqual(['backfill:succeeded', 'backfill:succeeded', 'backfill:succeeded', 'intraday:succeeded']);
+      expect(c24.tokenCalls.slice(before).map((x) => x.body.refresh_token)).toEqual(['c24-refresh-1001']);
+      const creds = decryptCredentials<Record<string, unknown>>((await t.db.query<{ credentials_enc: string }>(`SELECT credentials_enc FROM connections WHERE id = $1`, [ids.cafe24])).rows[0].credentials_enc, t.config.encryptionKey);
+      expect(creds).toMatchObject({ refreshToken: 'c24-refresh-1002', accessToken: 'c24-access-1002' });
+    } finally {
+      setNowForTest(kst(TODAY, 10, 0));
+    }
   });
 });
 

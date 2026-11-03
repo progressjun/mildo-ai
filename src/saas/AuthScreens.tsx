@@ -7,7 +7,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { ROLE_LABEL } from '@/core/permissions';
 import { Icon } from '@/ui/Icon';
 import { api, ApiError } from './api';
-import { useSaas } from './context';
+import { useSaas, WORKSPACE_STORAGE_KEY } from './context';
 import { AuthFrame } from './Splash';
 import {
   apiErrorMessage, normalizeInvite, normalizeResetCheck, passwordProblem, readAuthTokens, resetLinkProblem, serverKoreanMessage, stripAuthTokens,
@@ -229,9 +229,17 @@ export function InviteScreen({ token, onDone, initialInfo = null }: {
     }
     setBusy(true);
     try {
-      await api(`/api/invites/${encodeURIComponent(token)}/accept`, { method: 'POST', body, silent: true });
+      const r = await api<{ workspaceId?: string } | null>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: 'POST', body, silent: true });
       clearAuthTokensFromUrl();
-      if (isShellLoaded()) return hardReload();
+      // 수락한 워크스페이스로 들어간다 (다른 워크스페이스에 이미 속해 있어도)
+      const joined = typeof r?.workspaceId === 'string' && r.workspaceId ? r.workspaceId : null;
+      if (isShellLoaded()) {
+        if (joined) {
+          try { localStorage.setItem(WORKSPACE_STORAGE_KEY, joined); } catch { /* 저장 불가 */ }
+        }
+        return hardReload();
+      }
+      if (joined) saas.switchWorkspace(joined);
       await saas.refreshMe().catch(() => null);
       onDone();
     } catch (err) {

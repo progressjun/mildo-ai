@@ -15,6 +15,8 @@ export interface ServerExecutionView extends ChangeExecution {
   reason?: string;
   appliedValue?: string | number;
   checks?: { blocks?: string[]; warnings?: string[]; passes?: string[] };
+  /** 반영에 쓴 커넥터가 모두 실계정 호출로 검증됐는지 (changes 도메인) — false면 '실계정 연결 전 확인 필요' (docs/SAAS_SPEC.md §0) */
+  verifiedLive?: boolean;
 }
 
 /** 변경 요청 + 서버 표시 필드 (GET /changes · PATCH 응답) */
@@ -31,7 +33,13 @@ export interface ExecState {
   icon: string;
   /** 판정 근거 (툴팁 · 상세) */
   basis: string;
+  /** 커넥터가 실계정 호출로 검증되지 않았다 (execution.verifiedLive === false) — 결과 옆에 '실계정 연결 전 확인 필요' */
+  unverified?: boolean;
 }
+
+/** 실계정 미검증 커넥터 표시 문구 · 근거 */
+export const UNVERIFIED_LABEL = '실계정 연결 전 확인 필요';
+export const UNVERIFIED_BASIS = '이 매체 커넥터는 공식 API 문서대로 구현했지만 아직 실계정 호출로 검증하지 않았습니다 (verifiedLive=false). 매체 관리 화면에서 반영 결과를 직접 확인해 주세요';
 
 const PHASE_LABEL: Record<ExecPhase, string> = { apply: '반영', retry: '반영 재시도', rollback: '롤백' };
 
@@ -65,24 +73,35 @@ export function executionState(c: Pick<ServerChangeView, 'executing' | 'executio
   }
   const ex = c.execution;
   if (!ex || (ex.mode !== 'dry_run' && ex.mode !== 'live' && ex.mode !== 'none')) return null;
+  // 서버가 명시적으로 false라고 한 경우만 (필드가 없으면 판단하지 않는다)
+  const unverified = ex.verifiedLive === false;
   const who = providerLabel(ex.provider);
   const at = kstStamp(ex.at);
   const tail = [who, at ? `${at} 기록` : '', ex.phase && ex.phase !== 'apply' ? phaseLabel(ex.phase) : ''].filter(Boolean).join(' · ');
   if (ex.mode === 'dry_run') {
     return {
       kind: 'dry_run', label: '매체 미반영 (dry-run 기록)', tone: 'warning', icon: 'pause',
-      basis: `커넥션 쓰기 모드가 dry_run이라 매체 API를 호출하지 않고 보낼 요청만 기록했습니다${tail ? ` · ${tail}` : ''}. 매체에 실제로 반영하려면 관리자가 데이터 연결에서 live를 켭니다`,
+      basis: `커넥션 쓰기 모드가 dry_run이라 매체 API를 호출하지 않고 보낼 요청만 기록했습니다${tail ? ` · ${tail}` : ''}. 매체에 실제로 반영하려면 관리자가 데이터 연결에서 live를 켭니다${unverified ? ` · 요청 형식은 공식 문서 기준이며 ${UNVERIFIED_LABEL}` : ''}`,
+      unverified,
     };
   }
   if (ex.mode === 'live') {
+    const note = unverified ? ` · ${UNVERIFIED_LABEL}: ${UNVERIFIED_BASIS}` : '';
     return ex.ok
-      ? { kind: 'live', label: '매체 반영됨', tone: 'good', icon: 'check', basis: `매체 API 호출 성공${ex.appliedValue !== undefined && ex.appliedValue !== '' ? ` · 반영 값 ${ex.appliedValue}` : ''}${tail ? ` · ${tail}` : ''}` }
-      : { kind: 'live_failed', label: '매체 반영 실패', tone: 'critical', icon: 'x', basis: `매체 API 호출 실패${ex.error ? ` · ${ex.error}` : ''}${tail ? ` · ${tail}` : ''}` };
+      ? { kind: 'live', label: '매체 반영됨', tone: 'good', icon: 'check', basis: `매체 API 호출 성공${ex.appliedValue !== undefined && ex.appliedValue !== '' ? ` · 반영 값 ${ex.appliedValue}` : ''}${tail ? ` · ${tail}` : ''}${note}`, unverified }
+      : { kind: 'live_failed', label: '매체 반영 실패', tone: 'critical', icon: 'x', basis: `매체 API 호출 실패${ex.error ? ` · ${ex.error}` : ''}${tail ? ` · ${tail}` : ''}${note}`, unverified };
   }
   return {
     kind: 'none', label: '기록만', tone: 'neutral', icon: 'sparkle',
     basis: `${ex.reason ?? ex.note ?? '매체 API로 반영하는 유형이 아니거나 연결된 쓰기 커넥션이 없어 상태만 기록했습니다'}${tail ? ` · ${tail}` : ''}`,
   };
+}
+
+/** CSV 열 '매체반영' 값 — 라벨 + 실계정 미검증 표시 (실행 정보가 없으면 빈 칸) */
+export function execCsvLabel(c: Pick<ServerChangeView, 'executing' | 'execution'>): string {
+  const s = executionState(c);
+  if (!s) return '';
+  return s.unverified && s.kind !== 'dry_run' ? `${s.label} · ${UNVERIFIED_LABEL}` : s.label;
 }
 
 /** 반영 · 롤백이 진행 중이면 다른 처리를 막는다 (서버도 409 executing으로 거절) */

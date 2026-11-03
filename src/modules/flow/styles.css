@@ -197,7 +197,7 @@
 }
 
 /* ---------- 매체 반영 실행 상태 (서버 모드: change.executing · change.execution) ---------- */
-.flow-exec { display: inline-flex; }
+.flow-exec { display: inline-flex; gap: 4px; flex-wrap: wrap; }
 .flow-card .flow-exec { display: block; }
 .flow-exec-panel { border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; background: var(--surface-2); }
 .flow-exec-panel[data-exec='executing'] { box-shadow: inset 3px 0 0 var(--accent); }

@@ -17,6 +17,7 @@ import { nowIso, uid } from './util';
 import { useSaas } from '@/saas/context';
 import { useServerSync, type ServerSyncHandle } from '@/saas/useServerSync';
 import { BootScreen } from '@/saas/Splash';
+import { offHoursFromConfig } from '@/saas/sync';
 
 export interface Comment {
   id: string;
@@ -310,6 +311,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           canWrite: saas.can('comment'),
           reloadWorkspace: saas.reloadDetail,
           refreshMe: saas.refreshMe,
+          checkSession: () => saas.refreshMe({ sessionCheck: true }),
+          config: saas.config,
+          offHoursMode: offHoursFromConfig(saas.config),
+          detailStamp: saas.detail,
         }
       : null,
     state,

@@ -14,13 +14,17 @@
  *   - 갱신 토큰(refresh token)을 넣거나, 브라우저로 받은 인증 코드(1분 유효 · 1회용)와 Redirect URI를 넣으면 첫 호출에서 토큰으로 교환한다.
  *     인증 코드가 남아 있으면(=운영자가 다시 승인) 먼저 교환하고, 교환이 거절되면 갱신 토큰으로 이어서 시도한다. 저장된 갱신 토큰 만료 시각은 참고만 한다.
  *   - 액세스 토큰(2시간)은 만료 5분 전에 갱신하고, 갱신마다 새 갱신 토큰을 ctx.saveCredentials로 즉시 암호화 저장한다(이전 갱신 토큰은 폐기됨).
+ *     토큰 요청은 재시도하지 않는다(1회용 값). 같은 프로세스에서 이미 소비된 갱신 토큰 · 인증 코드를 든 자격증명(백필 묶음이 들고 있는 커넥션 행)은
+ *     그 결과로 바꿔 끼운다. 새 인증 코드가 들어 있으면(다시 승인) 액세스 토큰이 유효해도 먼저 교환한다.
  *   - 인증 코드 요청 URL은 cafe24AuthorizeUrl()로 만든다(커넥션 화면 · OAuth 콜백 라우트용, client.ts).
  * 수집 (fetch)
  *   - salesDaily: 결제일(pay_date) 구간을 설정 orderWindowDays(기본 7일) 묶음 × offset 페이지(최대 15,000)로 순회 → 취소 · 미결제 · 취소/반품 품주 제외,
- *     결제일 KST 날짜로 묶는다. offset 상한에 닿으면 그 구간을 하루 단위로 다시 나눈다.
+ *     마켓 연동 주문(주문경로 쿠팡 · 스마트스토어 등) 제외(이중 집계 방지), 교환 짝 품주는 한 번만, 결제일 KST 날짜로 묶는다.
+ *     offset 상한에 닿으면 그 구간을 하루 단위로 다시 나눈다.
  *   - visitors: Analytics visitors/view(일별 방문자수) · detailViews: products/view(상품 상세 조회수 합) · carts: carts/action(장바구니 담긴수 합)
- *     — 조회수 · 장바구니는 기간 합계 API라 최근 funnelDays(기본 14일)만 하루씩 부른다. Analytics 권한이 없으면 0 + 경고.
- *   - products: 상품 + 품목(variants) 가격 · 재고 · promotions: 진행 중 기간 혜택
+ *     · adAttributedRevenue(추정): visitpaths/adsales(광고 매체별 매출 합, 매출을 넘으면 매출로 자름)
+ *     — 조회수 · 장바구니 · 광고 매출은 기간 합계 API라 최근 funnelDays(기본 14일)만 하루씩 부른다. Analytics 권한이 없으면 0 + 경고.
+ *   - products: 상품 + 품목(variants) 가격 · 재고 · promotions: 진행 중 기간 혜택 중 할인율(%)이 있는 것(정액 · 사은품 등은 경고)
  *   상품 · 프로모션 스냅샷은 일 수집과 어제를 포함하는 백필 구간에서만 받는다.
  * 반영(apply): 없음 — 판매 채널은 읽기 전용.
  * 보관 한도: 문서는 한 호출 3개월 미만만 정하고 조회 가능 기간 한도는 적지 않아 플랫폼 상한(400일)을 쓴다.
@@ -30,18 +34,24 @@ import type { ConnectorContext, ConnectorDef, DateRange, NormalizedBatch } from 
 import type { Product, Promotion } from '@/core/types';
 import { addDaysStr, dateRange, kstToday, nowMs } from '../../lib/time';
 import {
-  ConfigError, SalesAcc, SalesApiError, clampRange, isoDate, num, softPart, splitRange, testOutcome, warn, wantsSnapshot, type FunnelValues,
+  ConfigError, SalesAcc, SalesApiError, clampRange, httpsUrlTemplate, isoDate, num, promotionsSkipped, softPart, splitRange, testOutcome, warn, wantsSnapshot, type FunnelValues,
 } from '../naver-commerce/sales-shared';
 import { CAFE24_API_VERSION, CAFE24_LABEL, CAFE24_SCOPES, Cafe24Client, type Cafe24Credentials } from './client';
-import { cafe24OrderLine, cafe24Product, cafe24Promotion } from './normalize';
+import { cafe24OrderLine, cafe24Product, cafe24Promotion, isMarketOrder } from './normalize';
 
 /** 주문 목록 offset 최대값 (문서) */
 export const MAX_ORDER_OFFSET = 15_000;
 
 const opt = (min = 1) => z.string().trim().min(min).optional();
 
+/**
+ * 쇼핑몰 ID — API 호스트 https://{mall_id}.cafe24api.com 의 첫 라벨이 되므로 DNS 라벨 규칙으로 엄격히 검사한다
+ * (영문 소문자 · 숫자 · 가운데 하이픈, 2~49자. 점 · 슬래시 · @ · # · 공백 등은 주소를 바꿀 수 있어 막는다 — SSRF 방지).
+ */
+export const MALL_ID = /^[a-z0-9](?:[a-z0-9-]{0,47}[a-z0-9])$/;
+
 export const credentialsSchema = z.object({
-  mallId: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.string().regex(/^[a-z0-9][a-z0-9-]{1,49}$/, '쇼핑몰 ID(mall_id)는 영문 소문자 · 숫자입니다')),
+  mallId: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.string().regex(MALL_ID, '쇼핑몰 ID(mall_id)는 영문 소문자 · 숫자(가운데 하이픈 허용) 2~49자입니다')),
   clientId: z.string().trim().min(5, 'Client ID를 입력해 주세요'),
   clientSecret: z.string().trim().min(5, 'Client Secret을 입력해 주세요'),
   redirectUri: z.string().trim().url('Redirect URI는 앱에 등록한 URL 전체입니다').optional(),
@@ -62,6 +72,8 @@ export const settingsSchema = z.object({
   apiVersion: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).default(CAFE24_API_VERSION),
   /** 매출 기준: net = 품목별 결제금액(기본) · gross = (판매가 + 옵션가) × 수량 */
   revenueBasis: z.enum(['net', 'gross']).default('net'),
+  /** 마켓 연동 주문(주문경로 쿠팡 · 스마트스토어 · G마켓 · 옥션 · 11번가 · 인터파크) 제외 — 각 채널 커넥터와 이중 집계 방지 */
+  excludeMarketOrders: z.boolean().default(true),
   /** 주문 조회 구간 일수 (문서: 한 호출 3개월 미만) */
   orderWindowDays: z.number().int().min(1).max(60).default(7),
   /** 주문 페이지 크기 (문서 최대 1000) */
@@ -73,8 +85,8 @@ export const settingsSchema = z.object({
   fetchProducts: z.boolean().default(true),
   fetchPromotions: z.boolean().default(true),
   productLimit: z.number().int().min(1).max(5000).default(300),
-  /** 상품 랜딩 URL 템플릿 — {productNo} · {productCode} (없으면 쇼핑몰 대표 도메인) */
-  productUrlTemplate: z.string().url().optional(),
+  /** 상품 랜딩 URL 템플릿 (https만) — {productNo} · {productCode} (없으면 쇼핑몰 대표 도메인) */
+  productUrlTemplate: httpsUrlTemplate.optional(),
 });
 export type Cafe24Settings = z.infer<typeof settingsSchema>;
 
@@ -101,9 +113,16 @@ export async function fetchCafe24(ctx: ConnectorContext, range: DateRange, opts:
   if (r) {
     const acc = new SalesAcc();
     const seen = new Set<string>();
+    const market = new Map<string, number>();
     const take = (orders: Awaited<ReturnType<Cafe24Client['orders']>>) => {
       for (const o of orders) {
         if (!o.order_id || seen.has(o.order_id)) continue;
+        if (s.excludeMarketOrders && isMarketOrder(o)) {
+          seen.add(o.order_id);
+          const place = String(o.order_place_name || o.order_place_id);
+          market.set(place, (market.get(place) ?? 0) + 1);
+          continue;
+        }
         const line = cafe24OrderLine(o, s.revenueBasis);
         if (!line) continue;
         seen.add(o.order_id);
@@ -126,9 +145,13 @@ export async function fetchCafe24(ctx: ConnectorContext, range: DateRange, opts:
         if (!(await scan({ from: d, to: d }))) warn(batch, 'orders_truncated', `${d} 주문이 조회 offset 상한(${MAX_ORDER_OFFSET.toLocaleString('ko-KR')}건)을 넘어 일부만 집계했습니다`);
       }
     }
+    if (market.size) {
+      const n = [...market.values()].reduce((a, b) => a + b, 0);
+      warn(batch, 'market_orders_excluded', `마켓 연동 주문 ${n}건(${[...market].map(([k, v]) => `${k} ${v}건`).join(', ')})은 자사몰 매출에서 뺐습니다 — 쿠팡 · 네이버 등 각 채널 커넥터가 따로 셉니다(설정 excludeMarketOrders)`, { count: n });
+    }
     const funnel = s.fetchAnalytics ? await collectFunnel(client, s, r, today, batch) : undefined;
     batch.salesDaily = acc.rows('own_mall', r, funnel);
-    if (!s.fetchAnalytics && !opts.intradayDate) warn(batch, 'funnel_disabled', '설정 fetchAnalytics=false — 방문자 · 상세 조회 · 장바구니를 0으로 저장했습니다');
+    if (!s.fetchAnalytics && !opts.intradayDate) warn(batch, 'funnel_disabled', '설정 fetchAnalytics=false — 방문자 · 상세 조회 · 장바구니 · 광고 경유 매출을 0으로 저장했습니다');
   }
 
   if (wantsSnapshot(range, opts, today)) {
@@ -147,17 +170,25 @@ export async function fetchCafe24(ctx: ConnectorContext, range: DateRange, opts:
     }
     if (s.fetchPromotions) {
       const promos = await softPart(batch, 'promotions_failed', '혜택(프로모션)', () => collectPromotions(client, today), { allowAuth: true });
-      if (promos) batch.promotions = promos;
+      if (promos) {
+        batch.promotions = promos.promotions;
+        promotionsSkipped(batch, CAFE24_LABEL, promos.skipped);
+      }
     }
   }
   if (!batch.warnings?.length) delete batch.warnings;
   return batch;
 }
 
-/** 방문자(기간 일별) + 상세 조회 · 장바구니(최근 funnelDays 하루씩). Analytics 권한 · 한도 문제는 경고로 남기고 주문 집계는 살린다 */
+/**
+ * 방문자(기간 일별) + 상세 조회 · 장바구니 · 광고 경유 매출(최근 funnelDays 하루씩). Analytics 권한 · 한도 문제는 경고로 남기고 주문 집계는 살린다.
+ * 광고 경유 매출(추정) = /visitpaths/adsales(광고 매체별 order_amount, 기간 합계)의 하루치 합 — 네이버 · 구글 등 광고 유입 방문의 구매 금액.
+ * Analytics 집계라 주문 API 매출과 기준이 달라 매출을 넘으면 매출로 자른다. 실패하면 그 지표만 0 + 경고.
+ */
 async function collectFunnel(client: Cafe24Client, s: Cafe24Settings, r: DateRange, today: string, batch: NormalizedBatch): Promise<Map<string, FunnelValues> | undefined> {
   const m = new Map<string, FunnelValues>();
   const slot = (d: string) => m.get(d) ?? m.set(d, {}).get(d)!;
+  let adFailed: SalesApiError | null = null;
   try {
     for (const row of await client.analyticsRows('/visitors/view', '방문자수 조회', { start_date: r.from, end_date: r.to, format_type: 'day' }, ['date', 'visit_count'])) {
       const d = isoDate(row.date);
@@ -170,9 +201,19 @@ async function collectFunnel(client: Cafe24Client, s: Cafe24Settings, r: DateRan
       slot(d).detailViews = views.reduce((a, x) => a + num(x.count), 0);
       const carts = await client.analyticsRows('/carts/action', '장바구니 담긴수 조회', { start_date: d, end_date: d }, ['product_no', 'add_cart_count']);
       slot(d).carts = carts.reduce((a, x) => a + num(x.add_cart_count), 0);
+      if (!adFailed) {
+        try {
+          const ads = await client.analyticsRows('/visitpaths/adsales', '광고 매체별 매출 조회', { start_date: d, end_date: d }, ['ad', 'order_amount']);
+          slot(d).adRevenue = ads.reduce((a, x) => a + num(x.order_amount), 0);
+        } catch (e) {
+          if (!(e instanceof SalesApiError) || e.kind === 'rate' || e.kind === 'auth') throw e;
+          adFailed = e;
+        }
+      }
     }
+    if (adFailed) warn(batch, 'ad_revenue_unavailable', `Cafe24 Analytics 광고 매체별 매출(/visitpaths/adsales) 조회 실패 — 광고 경유 매출을 0으로 저장했습니다: ${adFailed.message}`);
     if (r.from < from || s.funnelDays === 0) {
-      warn(batch, 'funnel_window', `상세 조회 · 장바구니는 최근 ${s.funnelDays}일(${from} 이후)만 하루씩 조회했습니다 — 그 이전 날짜는 0입니다(Analytics API가 기간 합계만 제공, 설정 funnelDays)`);
+      warn(batch, 'funnel_window', `상세 조회 · 장바구니 · 광고 경유 매출은 최근 ${s.funnelDays}일(${from} 이후)만 하루씩 조회했습니다 — 그 이전 날짜는 0입니다(Analytics API가 기간 합계만 제공, 설정 funnelDays)`);
     }
     return m;
   } catch (e) {
@@ -202,8 +243,9 @@ async function collectProducts(client: Cafe24Client, s: Cafe24Settings, domain: 
   return out;
 }
 
-async function collectPromotions(client: Cafe24Client, today: string): Promise<Promotion[]> {
+async function collectPromotions(client: Cafe24Client, today: string): Promise<{ promotions: Promotion[]; skipped: string[] }> {
   const out: Promotion[] = [];
+  const skipped: string[] = [];
   let details = 0;
   for (let offset = 0; offset <= 8000; offset += 100) {
     const rows = await client.benefits(offset, 100);
@@ -214,11 +256,12 @@ async function collectPromotions(client: Cafe24Client, today: string): Promise<P
         try { full = { ...b, ...(await client.benefit(b.benefit_no)) }; } catch (e) { if (e instanceof SalesApiError && e.kind === 'rate') throw e; }
       }
       const p = cafe24Promotion(full, today);
-      if (p) out.push(p);
+      if (p && 'skipped' in p) skipped.push(p.skipped);
+      else if (p) out.push(p);
     }
     if (rows.length < 100) break;
   }
-  return out;
+  return { promotions: out, skipped };
 }
 
 /* ------------------------------ 정의 ------------------------------ */
@@ -253,7 +296,7 @@ export const connector: ConnectorDef = {
       await client.accessToken();
       const st = await client.store();
       const y = addDaysStr(kstToday(), -1);
-      const orders = (await client.orders(y, y, 0, 100)).filter((o) => o.paid !== 'F' && o.canceled !== 'T');
+      const orders = (await client.orders(y, y, 0, 100)).filter((o) => o.paid !== 'F' && o.canceled !== 'T' && !(s.excludeMarketOrders && isMarketOrder(o)));
       const missing = client.scopes.length ? CAFE24_SCOPES.filter((sc) => !client.scopes.includes(sc)) : [];
       const tail = missing.length ? ` · 승인되지 않은 권한: ${missing.join(', ')}${missing.includes('mall.read_analytics') ? ' (방문자 · 상세 조회 · 장바구니는 0으로 저장)' : ''}` : '';
       return {

@@ -122,6 +122,11 @@ export function createServerBridge(d: BridgeDeps): ServerBridge {
           const current = e instanceof ApiError && e.status === 409 ? (e.body as { change?: ChangeRequest } | undefined)?.change : undefined;
           if (current && typeof current === 'object' && current.id === id) {
             d.dispatch({ type: 'change/upsert', change: current });
+            if ((e as ApiError).code === 'approver_changed') {
+              // 승인 시점 재판정(대량 · 위임 범위)으로 승인 주체가 올라갔다 — 서버가 올린 승인 주체를 저장했고 이 승인은 받지 않았다
+              d.toast({ tone: 'warning', title: `승인 주체가 바뀌었습니다 · ${current.target}`, body: `${apiErrorMessage(e)} · 현재 ${STATUS_KO[current.status] ?? current.status} · 승인 주체 ${current.approver}`, route: 'flow' });
+              return;
+            }
             d.toast({ tone: 'warning', title: `${log?.action ?? '변경'}: 서버의 현재 상태로 맞췄습니다`, body: `${apiErrorMessage(e)} · 현재 ${STATUS_KO[current.status] ?? current.status}`, route: 'flow' });
             return;
           }

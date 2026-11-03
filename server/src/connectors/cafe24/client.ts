@@ -14,6 +14,8 @@
  *   - 주문 목록 조회: https://apidocs.cafe24.com/docs/admin/get-orders
  *       GET /admin/orders?shop_no&start_date&end_date(한 호출 3개월 미만)&date_type=pay_date&embed=items&limit(최대 1000)&offset(최대 15000)
  *       주문: paid(T/F/M) · canceled(T/F/M) · payment_date · actual_order_amount{ order_price_amount, payment_amount … }
+ *       · order_place_id(주문경로: cafe24 · mobile · mobile_d · NCHECKOUT · inpark · auction · sk11st · gmarket · coupang · shopn) · order_place_name
+ *       품주: item_no(품주 아이디) · original_item_no(기존 품주 아이디 — 교환으로 생긴 새 품주가 가리키는 원래 품주)
  *   - 주문 품주 목록 조회(embed=items 필드): https://apidocs.cafe24.com/docs/admin/get-orders-by-order-id-items
  *       product_price · option_price · quantity · payment_amount(품목별 결제금액) · status_code(N1 정상 · N2 교환상품 · C1 입금전취소 · C2 배송전취소 · C3 반품 · E1 교환)
  *   - 상품 목록 조회: https://apidocs.cafe24.com/docs/admin/get-products  (limit 최대 100, 5,000개 넘으면 since_product_no, embed=variants)
@@ -23,7 +25,8 @@
  *   - Cafe24 Analytics API: https://developers.cafe24.com/docs/ko/api/cafe24data/
  *       https://ca-api.cafe24data.com — Bearer(Admin 토큰과 같은 토큰), scope mall.read_analytics, 토큰 버킷(초당 2개 보충)
  *       GET /visitors/view?mall_id&shop_no&start_date&end_date&format_type=day&limit(50~1000)&offset → 행 { date, visit_count, first_visit_count, re_visit_count }
- *       GET /products/view(상품별 상세 조회수 count) · GET /carts/action(상품별 장바구니 담긴수 add_cart_count) — 기간 합계라 날짜별로 하루씩 부른다
+ *       GET /products/view(상품별 상세 조회수 count) · GET /carts/action(상품별 장바구니 담긴수 add_cart_count)
+ *       · GET /visitpaths/adsales(광고 매체별 order_count · order_amount — "네이버, 다음, 구글, 크리테오 등 광고 매체별 … 구매 관련 분석") — 기간 합계라 날짜별로 하루씩 부른다
  *       응답을 감싸는 키 이름은 문서 예시가 비어 있어 확인하지 못했다 → 문서에 적힌 행 속성(date · visit_count 등)을 가진 배열을 찾아 읽는다.
  *       (일본어 문서: 카페24 승인을 받은 협력사에만 제공되는 베타 API — 권한이 없으면 방문 지표는 0 + 경고)
  */
@@ -109,8 +112,29 @@ function lifetime(expiresAt: string | undefined, issuedAt: string | undefined, f
 /** 같은 커넥션의 동시 갱신을 한 번으로 묶는다 (갱신 토큰은 1회용 — 동시에 두 번 쓰면 하나는 invalid_grant) */
 const inflight = new Map<string, Promise<Cafe24Credentials>>();
 
+/**
+ * 이 프로세스에서 이미 써 버린 갱신 토큰 · 인증 코드 → 그 교환으로 받은 자격증명.
+ * 백필은 커넥션 행을 한 번 읽어 31일 묶음마다 같은 자격증명으로 수집하므로, 앞 묶음이 갱신 토큰을 회전(이전 것 폐기)시키면
+ * 뒤 묶음은 폐기된 갱신 토큰을 다시 쓰게 된다(invalid_grant → 백필 실패). 1회용 값은 한 번 쓰면 다시 쓸 수 없으므로
+ * 그 결과로 바꿔 끼우는 것이 언제나 맞다 — 새 값은 이미 ctx.saveCredentials로 저장돼 있다. 키는 원문이 아닌 해시.
+ */
+const consumed = new Map<string, { next: Cafe24Credentials; at: number }>();
+const CONSUMED_TTL_MS = 15 * 86_400_000;
+const CONSUMED_MAX = 2000;
+const consumedKey = (connectionId: string, kind: 'refresh' | 'code', value: string) => createHash('sha256').update(`${connectionId}|${kind}|${value}`).digest('hex');
+function rememberConsumed(key: string, next: Cafe24Credentials, now: number): void {
+  consumed.set(key, { next, at: now });
+  if (consumed.size > CONSUMED_MAX) {
+    for (const [k, v] of consumed) if (now - v.at > CONSUMED_TTL_MS || consumed.size > CONSUMED_MAX) consumed.delete(k);
+  }
+}
+
 export interface Cafe24Order {
   order_id?: string;
+  /** 주문경로 (문서: cafe24 · mobile · mobile_d · NCHECKOUT · inpark · auction · sk11st · gmarket · coupang · shopn) */
+  order_place_id?: string;
+  order_place_name?: string;
+  market_id?: string;
   paid?: string;
   canceled?: string;
   order_date?: string;
@@ -120,6 +144,10 @@ export interface Cafe24Order {
   items?: Cafe24OrderItem[];
 }
 export interface Cafe24OrderItem {
+  /** 품주 아이디 */
+  item_no?: number | string;
+  /** 기존 품주 아이디 (교환으로 새로 생긴 품주가 가리키는 원래 품주) */
+  original_item_no?: number | string | (number | string)[] | null;
   order_item_code?: string;
   product_no?: number;
   product_name?: string;
@@ -181,7 +209,10 @@ export class Cafe24Client {
   private now(): number { return (this.o.now ?? Date.now)(); }
   private key(): string { return createHash('sha256').update(`${this.ctx.connectionId}|${this.creds.mallId}|${this.creds.clientId}`).digest('hex'); }
 
-  /** 토큰 엔드포인트 요청 (Basic 인증 · form) */
+  /**
+   * 토큰 엔드포인트 요청 (Basic 인증 · form). 재시도하지 않는다(retries 0): 인증 코드 · 갱신 토큰은 1회용이라
+   * 서버가 이미 소비한 뒤(5xx · 시간 초과) 같은 값으로 다시 보내면 invalid_grant가 되고 새 토큰을 잃는다 — 실패는 수집 잡 재시도로 넘긴다.
+   */
   tokenRequest(grant: { grant_type: 'authorization_code'; code: string; redirect_uri: string } | { grant_type: 'refresh_token'; refresh_token: string }): HttpRequest {
     return {
       method: 'POST',
@@ -189,7 +220,20 @@ export class Cafe24Client {
       headers: { Authorization: `Basic ${Buffer.from(`${this.creds.clientId}:${this.creds.clientSecret}`, 'utf-8').toString('base64')}` },
       bodyType: 'form',
       body: grant,
+      retries: 0,
+      timeoutMs: 30_000,
     };
+  }
+
+  /** 이 프로세스에서 이미 소비된 갱신 토큰 · 인증 코드를 들고 있으면 그 결과 자격증명으로 바꿔 끼운다 (연쇄 회전도 따라간다) */
+  private adoptConsumed(): void {
+    for (let i = 0; i < 20; i++) {
+      const hit = (this.creds.authCode && consumed.get(consumedKey(this.ctx.connectionId, 'code', this.creds.authCode)))
+        || (this.creds.refreshToken && consumed.get(consumedKey(this.ctx.connectionId, 'refresh', this.creds.refreshToken)))
+        || null;
+      if (!hit || hit.next.mallId !== this.creds.mallId || hit.next.clientId !== this.creds.clientId) return;
+      this.creds = { ...hit.next };
+    }
   }
 
   private async grant(req: HttpRequest, what: string): Promise<Cafe24Credentials> {
@@ -211,16 +255,26 @@ export class Cafe24Client {
       refreshTokenExpiresAt: new Date(now + lifetime(t.refresh_token_expires_at, t.issued_at, REFRESH_TTL_MS)).toISOString(),
       ...(Array.isArray(t.scopes) ? { scopes: t.scopes.map(String) } : this.creds.scopes ? { scopes: this.creds.scopes } : {}),
     };
+    const body = (req.body ?? {}) as { grant_type?: string; code?: string; refresh_token?: string };
+    const used = body.grant_type === 'authorization_code' && body.code ? consumedKey(this.ctx.connectionId, 'code', body.code)
+      : body.grant_type === 'refresh_token' && body.refresh_token ? consumedKey(this.ctx.connectionId, 'refresh', body.refresh_token) : null;
+    if (used) rememberConsumed(used, next, now);
     this.creds = next;
     // 새 갱신 토큰은 받는 즉시 저장한다 (이전 갱신 토큰은 이미 폐기됨)
     if (this.ctx.saveCredentials) await this.ctx.saveCredentials(next as unknown as Record<string, unknown>);
     return next;
   }
 
-  /** 유효한 액세스 토큰 — 남은 시간이 5분 미만이면 갱신, 없으면 인증 코드 교환 */
+  /**
+   * 유효한 액세스 토큰 — 남은 시간이 5분 미만이면 갱신, 없으면 인증 코드 교환.
+   * 새 인증 코드(교환하면 지워지므로 남아 있다 = 운영자가 다시 승인)가 있으면 액세스 토큰이 아직 유효해도 먼저 교환한다
+   * — 권한 범위를 늘리려고 다시 승인한 경우 옛 토큰을 계속 쓰다 코드(1분 유효)를 흘려보내지 않도록.
+   */
   async accessToken(force = false): Promise<string> {
+    this.adoptConsumed();
     const exp = parseInstant(this.creds.accessTokenExpiresAt);
-    if (!force && this.creds.accessToken && exp !== null && exp - MARGIN_MS > this.now()) return this.creds.accessToken;
+    const pendingCode = !!(this.creds.authCode && this.creds.redirectUri);
+    if (!force && !pendingCode && this.creds.accessToken && exp !== null && exp - MARGIN_MS > this.now()) return this.creds.accessToken;
     const key = this.key();
     const running = inflight.get(key);
     if (running) return (this.creds = await running).accessToken!;
@@ -231,7 +285,15 @@ export class Cafe24Client {
         try {
           return await this.grant(this.tokenRequest({ grant_type: 'authorization_code', code: this.creds.authCode, redirect_uri: this.creds.redirectUri }), '인증 코드 교환');
         } catch (e) {
-          if (!(e instanceof SalesApiError) || e.kind !== 'auth' || !this.creds.refreshToken) throw e;
+          if (!(e instanceof SalesApiError) || e.kind !== 'auth') throw e;
+          if (!this.creds.refreshToken) {
+            // 갱신 토큰 없이 아직 유효한 액세스 토큰만 있으면 그것으로 계속한다 (이 수집 동안은 지난 코드를 다시 시도하지 않는다)
+            if (!force && this.creds.accessToken && exp !== null && exp - MARGIN_MS > this.now()) {
+              this.creds = { ...this.creds, authCode: undefined };
+              return { ...this.creds };
+            }
+            throw e;
+          }
           codeError = e; // 1분이 지난 코드 등 — 갱신 토큰으로 이어서 시도
         }
       }
@@ -339,8 +401,10 @@ export function findRows(data: unknown, required: string[]): Record<string, unkn
   return [];
 }
 
+/** 테스트: 동시 갱신 묶음 · 소비된 1회용 값 기록을 비운다 (테스트끼리 같은 커넥션 id · 갱신 토큰을 쓰므로) */
 export function _resetCafe24InflightForTest(): void {
   inflight.clear();
+  consumed.clear();
 }
 
 /**

@@ -13,9 +13,10 @@
  *   - salesDaily: 발주서 목록(일단위 페이징)을 주문 생성일(createdAt) 기준 30일 묶음 × 발주서 상태 6종(ACCEPT ~ NONE_TRACKING)으로 nextToken 순회.
  *     결제일(paidAt) KST 날짜로 다시 묶는다 — 가상계좌처럼 생성 후 결제되는 주문을 잡으려고 생성일 구간을 설정 createdLookbackDays(기본 2일)만큼 앞당겨 조회하고,
  *     요청 기간 밖 결제일은 버린다. 순수량 = shippingCount − holdCountForCancel − cancelCount, 취소 · 순수량 0 제외. 같은 배송번호 · 옵션은 한 번만.
- *   - visitors · detailViews · carts: Wing Open API에 방문 통계가 없어 0 + 경고(CSV 템플릿 안내)
+ *   - visitors · detailViews · carts · adAttributedRevenue: Wing Open API에 방문 통계 · 광고 경유 매출이 없어 0 + 경고(CSV 템플릿 안내)
  *   - products: 승인 완료 · 부분 승인 상품 → 상품 조회(옵션) → 옵션별 재고 조회(설정 inventoryLimit개까지). 랜딩 URL은 주문에 실린 productSalesPageUrl
- *   - promotions: 즉시할인 쿠폰(사용중 APPLIED · 대기중 STANDBY)
+ *   - promotions: 즉시할인 쿠폰(사용중 APPLIED · 대기중 STANDBY) 중 정률(RATE). 정액 쿠폰은 판매가 대비 %가 없어 경고(promotions_skipped)로만
+ *   - 서명: 쿼리 문자열은 문서 예시 형태(createdAtFrom=2025-07-15%2B09:00)로 한 번 만들어 서명과 전송에 같이 쓴다
  *   상품 · 프로모션 스냅샷은 일 수집과 어제를 포함하는 백필 구간에서만 받는다.
  * 반영(apply): 없음 — 판매 채널은 읽기 전용.
  * 보관 한도: 문서는 한 번에 31일까지만 정하고 조회 가능 기간 한도는 적지 않아 플랫폼 상한(400일)을 쓴다.
@@ -25,10 +26,10 @@ import type { ConnectorContext, ConnectorDef, DateRange, NormalizedBatch } from 
 import type { Product, Promotion } from '@/core/types';
 import { addDaysStr, kstToday, nowMs } from '../../lib/time';
 import {
-  ConfigError, MAX_PAGES, SalesAcc, SalesApiError, clampRange, funnelUnavailable, softPart, splitRange, testOutcome, warn, wantsSnapshot,
+  ConfigError, MAX_PAGES, SalesAcc, SalesApiError, clampRange, funnelUnavailable, httpsUrlTemplate, krw, promotionsSkipped, softPart, splitRange, testOutcome, warn, wantsSnapshot,
 } from '../naver-commerce/sales-shared';
 import { COUPANG_LABEL, CoupangClient, ORDER_SHEET_STATUSES, type CoupangCredentials, type CoupangInventory, type CoupangSellerProductSummary } from './client';
-import { coupangLines, coupangProduct, coupangPromotion, landingOf } from './normalize';
+import { couponName, coupangLines, coupangProduct, coupangPromotion, landingOf } from './normalize';
 
 /** 문서 오류 사양: 'endTime-startTime range should less than31.' → 시작 · 종료 차이 31일 미만이 되도록 30일 묶음 */
 export const ORDER_WINDOW_DAYS = 30;
@@ -53,7 +54,7 @@ export const settingsSchema = z.object({
   /** 옵션별 재고 조회 최대 옵션 수 (옵션당 1회) — 0이면 상품 조회의 판매가능수량으로 판단 */
   inventoryLimit: z.number().int().min(0).max(5000).default(300),
   /** 상품 랜딩 URL 템플릿 (주문에 productSalesPageUrl이 없을 때) — {sellerProductId} · {productId} */
-  productUrlTemplate: z.string().url().optional(),
+  productUrlTemplate: httpsUrlTemplate.optional(),
 });
 export type CoupangSettings = z.infer<typeof settingsSchema>;
 
@@ -103,7 +104,8 @@ export async function fetchCoupang(ctx: ConnectorContext, range: DateRange, opts
       }
     }
     batch.salesDaily = acc.rows('coupang', r);
-    if (!opts.intradayDate) funnelUnavailable(batch, COUPANG_LABEL, ['방문자', '상세 조회', '장바구니']);
+    // Wing Open API에는 스토어 방문 통계도, 광고(쿠팡 광고센터) 경유 매출도 없다 — 광고 경유 매출 0은 '측정 안 됨'
+    if (!opts.intradayDate) funnelUnavailable(batch, COUPANG_LABEL, ['방문자', '상세 조회', '장바구니', '광고 경유 매출']);
   }
 
   if (wantsSnapshot(range, opts, today)) {
@@ -113,7 +115,10 @@ export async function fetchCoupang(ctx: ConnectorContext, range: DateRange, opts
     }
     if (s.fetchPromotions) {
       const promos = await softPart(batch, 'promotions_failed', '즉시할인 쿠폰', () => collectPromotions(client, today));
-      if (promos) batch.promotions = promos;
+      if (promos) {
+        batch.promotions = promos.promotions;
+        promotionsSkipped(batch, COUPANG_LABEL, promos.skipped);
+      }
     }
   }
   if (!batch.warnings?.length) delete batch.warnings;
@@ -172,8 +177,9 @@ async function collectProducts(client: CoupangClient, s: CoupangSettings, pageUr
   return products;
 }
 
-async function collectPromotions(client: CoupangClient, today: string): Promise<Promotion[]> {
+async function collectPromotions(client: CoupangClient, today: string): Promise<{ promotions: Promotion[]; skipped: string[] }> {
   const out: Promotion[] = [];
+  const skipped: string[] = [];
   for (const status of ['APPLIED', 'STANDBY'] as const) {
     for (let page = 1; page <= 20; page++) {
       const res = await client.coupons(status, page);
@@ -181,13 +187,14 @@ async function collectPromotions(client: CoupangClient, today: string): Promise<
       for (const c of content) {
         const p = coupangPromotion(c, today);
         if (p && !out.some((x) => x.id === p.id)) out.push(p);
+        else if (!p && c.couponId && c.type !== 'RATE' && !skipped.some((x) => x.startsWith(`${couponName(c)} `))) skipped.push(`${couponName(c)} (정액 ${krw(c.discount).toLocaleString('ko-KR')}원)`);
       }
       const pg = res.data?.pagination ?? (Array.isArray(res.data?.Pagination) ? res.data?.Pagination[0] : res.data?.Pagination);
       const total = Number(pg?.totalPages ?? 1);
       if (!content.length || !Number.isFinite(total) || page >= total) break;
     }
   }
-  return out;
+  return { promotions: out, skipped };
 }
 
 /* ------------------------------ 정의 ------------------------------ */

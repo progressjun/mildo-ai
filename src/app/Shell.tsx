@@ -94,7 +94,8 @@ export function Shell() {
   }, [visible]);
 
   return (
-    <div className="shell">
+    // 서버 모드 표시(data-saas) — 모듈 화면의 데모 3역할 전환(Flow '현재 역할' · Reports '작성 역할')을 CSS로 숨긴다 (역할은 멤버십 기준, §2)
+    <div className="shell" data-saas={serverMode ? 'server' : undefined}>
       <nav className="sidebar" aria-label="MILDO OS 메뉴">
         <div className="brand">
           <div className="brand-mark">MILDO <span className="os">OS</span></div>

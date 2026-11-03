@@ -7,10 +7,11 @@ import { passwordProblem as serverPasswordProblem } from '../../server/src/lib/c
 import { STATE_KEY_RE as SERVER_KEY_RE } from '../../server/src/state/service';
 import { ApiError } from './api';
 import {
-  apiErrorMessage, AUTH_ENTRY_RE, backoffDelay, dataSourceLabel, dataTimeLabel, decodeStorageValue, encodeStorageValue, EVENT_REFETCH, FLOW_SEED_PREFIX,
-  fromServerComment, isGlobalToastError, isSyncedStorageKey, mergeWithPending, normalizeInvite, normalizeResetCheck, passwordProblem, planStorageLoad, readAuthTokens, RECONNECT_TARGETS,
-  refetchTargetOf, resetLinkProblem, SERVER_EVENT_TYPES, serverKoreanMessage, STATE_KEY_RE, stripAuthTokens, visibleModuleIds,
+  apiErrorMessage, AUTH_ENTRY_RE, backoffDelay, configFingerprint, dataSourceLabel, dataTimeLabel, decodeStorageValue, encodeStorageValue, EVENT_REFETCH, FIXTURE_TITLE_RE, FLOW_SEED_PREFIX,
+  fromServerComment, isGlobalToastError, isSyncedStorageKey, mergeWithPending, normalizeInvite, normalizeResetCheck, offHoursFromConfig, passwordProblem, planStorageLoad, readAuthTokens, RECONNECT_TARGETS,
+  refetchTargetForEvent, refetchTargetOf, resetLinkProblem, SERVER_EVENT_TYPES, serverKoreanMessage, srcDemoLabel, STATE_KEY_RE, stripAuthTokens, visibleModuleIds,
 } from './sync';
+import { readFileSync } from 'node:fs';
 
 describe('모듈 로컬 저장 키 필터', () => {
   it("'mildo-os/' 접두 키만, 'mildo-os/v1' · 'mildo-os/cloud/*' 제외", () => {
@@ -66,6 +67,32 @@ describe('SSE 이벤트 → 다시 불러오기', () => {
     for (const t of ['change', 'incident', 'comment', 'dataset', 'connection', 'report', 'config', 'state', 'member', 'notify']) expect(t in EVENT_REFETCH, t).toBe(true);
     expect(RECONNECT_TARGETS).toEqual(expect.arrayContaining(['changes', 'incidents', 'comments', 'dataset', 'state']));
   });
+  it("config 이벤트 중 id 'review'(온보딩 기본값 확인 기록)는 설정을 다시 읽지 않는다 · 다른 config는 다시 읽는다", () => {
+    expect(refetchTargetForEvent({ type: 'config', id: 'review' })).toBeNull();
+    expect(refetchTargetForEvent({ type: 'config', id: 'workspace' })).toBe('workspace');
+    expect(refetchTargetForEvent({ type: 'config' })).toBe('workspace');
+    expect(refetchTargetForEvent({ type: 'change', id: 'review' })).toBe('changes'); // 다른 종류의 id는 상관없다
+    expect(refetchTargetForEvent({ type: 'notify', id: 'ch-1' })).toBeNull();
+  });
+  it('재연결하면 놓친 설정 · 멤버십 변경도 다시 확인한다', () => {
+    expect(RECONNECT_TARGETS).toEqual(expect.arrayContaining(['workspace', 'me']));
+  });
+  it('설정 비교: 키 순서 · undefined 키와 무관, 값이 다르면 다르다 (자기 저장 직후 안내를 띄우지 않는 판정)', () => {
+    expect(configFingerprint({ b: 1, a: { y: [1, { q: 2, p: 1 }], x: null } })).toBe(configFingerprint({ a: { x: null, y: [1, { p: 1, q: 2 }] }, b: 1, c: undefined }));
+    expect(configFingerprint({ a: 1 })).not.toBe(configFingerprint({ a: 2 }));
+    expect(configFingerprint({ a: [1, 2] })).not.toBe(configFingerprint({ a: [2, 1] }));
+    expect(configFingerprint(null)).toBe(configFingerprint(undefined));
+    expect(configFingerprint({})).not.toBe(configFingerprint(null));
+  });
+  it('당번 체계 강제: config.offHoursMode === true만 켠다 (서버 alerts 스캔과 같은 읽기)', () => {
+    expect(offHoursFromConfig({ offHoursMode: true })).toBe(true);
+    for (const v of [false, 'true', 1, null, undefined]) expect(offHoursFromConfig({ offHoursMode: v }), String(v)).toBe(false);
+    expect(offHoursFromConfig(null)).toBe(false);
+    expect(offHoursFromConfig(undefined)).toBe(false);
+    // 서버 scan.ts가 같은 키를 같은 방식으로 읽는다
+    const scan = readFileSync(new URL('../../server/src/alerts/scan.ts', import.meta.url), 'utf8');
+    expect(scan).toMatch(/offHoursMode\?: unknown \}\)\.offHoursMode === true/);
+  });
   it('재연결 대기: 1 · 2 · 4 · 8 · 16 · 30초 상한, 흔들기 0~20%', () => {
     expect([1, 2, 3, 4, 5, 6, 7, 20].map((n) => backoffDelay(n, () => 0))).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
     expect(backoffDelay(1, () => 1)).toBe(1200);
@@ -102,6 +129,28 @@ describe('데이터 출처 라벨', () => {
   it('live · mixed인데 출처가 하나도 없으면 "데이터 없음" (빈 데이터를 LIVE로 표시하지 않는다)', () => {
     expect(dataSourceLabel({ mode: 'live', builtAt: '', sources: [] })).toMatchObject({ label: '데이터 없음', tone: 'empty', cls: 'empty' });
     expect(dataSourceLabel({ mode: 'mixed', builtAt: '', sources: [] }).title).toMatch(/데이터 연결/);
+  });
+  it('출처 태그(Src DEMO): 데모 모드는 기존 그대로, 실연동이면 데이터셋 값은 LIVE · 시연용 예시(가정 · 가상 · 실제 아님)는 TEST DATA', () => {
+    // 데모 모드(메타 없음): 모듈이 준 툴팁 그대로 · 라벨 TEST DATA (기존 동작)
+    expect(srcDemoLabel(undefined, { title: '판매가 · 프로모션은 TEST DATA' })).toMatchObject({ label: 'TEST DATA', tone: 'demo', title: '판매가 · 프로모션은 TEST DATA' });
+    expect(srcDemoLabel(undefined).title).toBe(dataSourceLabel(undefined).title);
+    expect(srcDemoLabel(meta('demo'), { title: '시연용 가정 계정 · 실제 계정 아님' }).title).toBe('시연용 가정 계정 · 실제 계정 아님');
+    // 실연동: 데이터셋에서 계산한 값 → LIVE DATA (모듈의 'TEST DATA' 문구 툴팁은 쓰지 않는다)
+    const live = srcDemoLabel(meta('live'), { title: '판매가 · 프로모션은 TEST DATA' });
+    expect(live).toMatchObject({ label: 'LIVE DATA', tone: 'live' });
+    expect(live.title).not.toContain('판매가');
+    expect(srcDemoLabel(meta('mixed')).label).toBe('LIVE + TEST');
+    // 실연동이어도 시연용 예시는 TEST DATA (실데이터로 오표시하지 않는다)
+    for (const t of ['시연용 가정 계정 · 실제 계정 아님', '가상 이력 · 실제 테스트 결과 아님', '데모 진단 스냅샷 · 실제 엔진 응답 아님', '검색량은 데모 추정', '후보 점수는 데모 평가 · 매체 미팅 후 확정', '탄력성 가정 시뮬레이션', 'VisualTune 초안은 시연용', '시연용 이력 · 실제 운영 이력 아님']) {
+      const f = srcDemoLabel(meta('live'), { title: t });
+      expect(f.label, t).toBe('TEST DATA');
+      expect(f.tone, t).toBe('demo');
+      expect(f.title.startsWith(t), t).toBe(true);
+    }
+    expect(srcDemoLabel(meta('live'), { fixture: true }).label).toBe('TEST DATA');
+    expect(srcDemoLabel(meta('live'), { title: '검색량은 데모 추정', fixture: false }).label).toBe('LIVE DATA'); // 명시가 문구 판정보다 우선
+    // 데이터셋 기반 문구는 예시로 보지 않는다
+    for (const t of ['판매가 · 프로모션은 TEST DATA', '계정 · 성과 기준선은 시연용 테스트 데이터', '사이즈 · 정가 · 재고는 시연용 테스트 데이터', '샘플은 시연용 테스트 데이터의 상품 · 옵션 · 프로모션으로 생성']) expect(FIXTURE_TITLE_RE.test(t), t).toBe(false);
   });
   it('알 수 없는 mode는 TEST DATA로 (실데이터로 오표시하지 않는다)', () => {
     expect(dataSourceLabel({ ...meta('live'), mode: 'weird' as never }).label).toBe('TEST DATA');
@@ -230,7 +279,14 @@ it('Flow 시연 이력 접두사는 flow 모듈과 같다', () => {
 describe('서버 모드 AI 거부 코드 (ai 도메인 ↔ SearchTuneOS 진단 버튼)', () => {
   it('서버가 AI를 쓸 수 없다고 답하는 코드(키 없음 · AI 꺼짐 · 권한 없음)는 진단 버튼을 끄는 거부 코드에 들어 있다', async () => {
     const { DENIED_CODES } = await import('@/modules/geo/engine');
-    for (const code of ['not_granted', 'sampling_disabled', 'no_backend', 'ai_not_configured', 'ai_disabled', 'forbidden']) expect(DENIED_CODES.has(code), code).toBe(true);
+    for (const code of ['not_granted', 'sampling_disabled', 'no_backend', 'ai_not_configured', 'ai_disabled', 'forbidden', 'workspace_locked']) expect(DENIED_CODES.has(code), code).toBe(true);
+    // ai 도메인(src/ai/claude.ts)이 서버 백엔드를 끄는(markServerDenied) 코드는 모두 거부 코드다
+    const src = readFileSync(new URL('../ai/claude.ts', import.meta.url), 'utf8');
+    const line = src.split('\n').find((l) => l.includes('markServerDenied()') && l.includes('code ==='));
+    expect(line).toBeTruthy();
+    const codes = [...line!.matchAll(/code === '([a-z_]+)'/g)].map((m) => m[1]);
+    expect(codes.length).toBeGreaterThan(2);
+    for (const code of codes) expect(DENIED_CODES.has(code), code).toBe(true);
     // 일시적 오류는 거부로 보지 않는다 (사용자가 다시 시도할 수 있게)
     for (const code of ['rate_limited', 'upstream_error', 'budget_exceeded']) expect(DENIED_CODES.has(code), code).toBe(false);
   });

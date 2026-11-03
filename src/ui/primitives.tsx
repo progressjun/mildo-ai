@@ -5,7 +5,7 @@ import type { Severity, SourceKind } from '@/core/types';
 import { copyText, saveFile } from '@/core/download';
 import { fmt } from '@/core/util';
 import { useActions, useStoreOptional } from '@/core/store';
-import { dataSourceLabel } from '@/saas/sync';
+import { srcDemoLabel } from '@/saas/sync';
 
 /* ---------- 버튼 ---------- */
 type BtnVariant = 'default' | 'primary' | 'accent' | 'danger' | 'ghost';
@@ -109,12 +109,15 @@ const SRC_LABEL: Record<SourceKind, string> = { RFP: 'RFP', PROPOSAL: '제안서
  * kind 'DEMO'(성과 데이터 출처)는 현재 Dataset 메타를 따른다: 메타 없음 · demo → TEST DATA, live → LIVE DATA, mixed → LIVE + TEST
  * (서버 모드에서 실연동 데이터일 때, 툴팁에 매체별 출처 · 최신 시각).
  */
-export function Src({ kind, page, title }: { kind: SourceKind; page?: string; title?: string }) {
+/**
+ * 출처 태그. kind='DEMO'는 데이터 출처를 따른다 — 데모 모드 · 테스트 데이터는 TEST DATA, 서버 모드 실연동은 LIVE DATA · LIVE + TEST.
+ * fixture(또는 '실제 … 아님' · '가정' · '데모 추정' 같은 문구의 title)는 데이터셋과 무관한 시연용 예시라 언제나 TEST DATA (src/saas/sync srcDemoLabel).
+ */
+export function Src({ kind, page, title, fixture }: { kind: SourceKind; page?: string; title?: string; fixture?: boolean }) {
   const store = useStoreOptional();
   if (kind === 'DEMO') {
-    const ds = dataSourceLabel(store?.state.data.meta);
-    const t = ds.tone === 'demo' ? (title ?? ds.title) : ds.title;
-    return <span className={`src ${ds.cls}`} title={t} data-source={ds.tone}>{ds.label}{page ? ` ${page}` : ''}</span>;
+    const ds = srcDemoLabel(store?.state.data.meta, { title, fixture });
+    return <span className={`src ${ds.cls}`} title={ds.title} data-source={ds.tone}>{ds.label}{page ? ` ${page}` : ''}</span>;
   }
   const cls = { RFP: 'rfp', PROPOSAL: 'proposal', DEMO: 'demo', AI: 'ai', LIVE: 'live' }[kind];
   const t = title ?? (kind === 'PROPOSAL' ? '프로그레스미디어 2027 제안서 기준' : kind === 'RFP' ? '수면밀도 RFP 명시 사항' : undefined);

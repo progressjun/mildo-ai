@@ -12,6 +12,11 @@ export const STATE_KEY_RE = /^[a-z0-9:/._-]{1,120}$/;
 export const STATE_VALUE_MAX_BYTES = 256 * 1024;
 /** 워크스페이스당 최대 키 수 (모듈 로컬 입력용 — 무한 증가 방지) */
 export const STATE_MAX_KEYS = 500;
+/**
+ * 워크스페이스당 저장 값 합계 상한 (JSON 바이트). 로그인할 때마다 GET /state로 전부 내려받으므로
+ * 키 수 상한 × 값 상한(500 × 256KB = 128MB)까지 커지지 않게 한다. 모듈 로컬 입력은 보통 수십 KB다.
+ */
+export const STATE_TOTAL_MAX_BYTES = 8 * 1024 * 1024;
 
 export interface CommentRow {
   id: string;
@@ -123,6 +128,16 @@ export async function loadState(q: Queryable, workspaceId: string): Promise<Reco
 
 export async function getStateRow(q: Queryable, workspaceId: string, key: string): Promise<{ value: unknown; updated_at: Date } | null> {
   return one(q, 'SELECT value, updated_at FROM workspace_state WHERE workspace_id = $1 AND key = $2', [workspaceId, key]);
+}
+
+/** 이 키를 뺀 나머지 값의 합계 크기 (jsonb 텍스트 바이트 — JSON.stringify 크기와 거의 같다) */
+export async function stateBytesExcept(q: Queryable, workspaceId: string, key: string): Promise<number> {
+  const r = await one<{ n: string | number }>(
+    q,
+    'SELECT coalesce(sum(octet_length(value::text)), 0)::bigint AS n FROM workspace_state WHERE workspace_id = $1 AND key <> $2',
+    [workspaceId, key],
+  );
+  return Number(r?.n ?? 0);
 }
 
 export async function countStateKeys(q: Queryable, workspaceId: string): Promise<number> {

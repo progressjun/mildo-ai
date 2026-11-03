@@ -2,7 +2,7 @@
  * 카페24 Admin · Analytics API 응답 픽스처 — 공식 문서 응답 예시의 필드 이름 · 형태 그대로 (테스트 전용).
  *   토큰 { access_token, expires_at, refresh_token, refresh_token_expires_at, client_id, mall_id, user_id, scopes, issued_at, shop_no, token_type }
  *   주문 { orders[{ order_id, paid, canceled, payment_date, actual_order_amount, items[] }] } · 상품 { products[{ …, variants[] }] }
- *   Analytics 행 { date, visit_count } · { product_no, count } · { product_no, add_cart_count } — 감싸는 키 이름은 문서에 없어 임의('view' 등)
+ *   Analytics 행 { date, visit_count } · { product_no, count } · { product_no, add_cart_count } · { ad, order_count, order_amount } — 감싸는 키 이름은 문서에 없어 임의('view' 등)
  */
 import type { Cafe24Order } from './client';
 import type { Handler } from '../naver-commerce/sales-testkit';
@@ -140,6 +140,8 @@ export function cafe24Handler(st: Cafe24FakeState, opts: { orders?: Cafe24Order[
       const d = sp.get('start_date') ?? '';
       if (r.url.pathname === '/visitors/view') return ok({ view: CAFE24_VISITORS.filter((v) => v.date >= d && v.date <= (sp.get('end_date') ?? '')) });
       if (r.url.pathname === '/products/view') return ok({ view: d === '2026-11-02' ? [{ product_no: 11, product_name: '매트리스', count: 3000 }, { product_no: 12, product_name: '토퍼', count: 400 }] : [{ product_no: 11, product_name: '매트리스', count: 2500 }] });
+      // 광고 매체별 매출 (기간 합계) — 11/02는 Analytics 집계가 주문 API 매출(1,190,000)보다 커서 매출로 잘리는 경우
+      if (r.url.pathname === '/visitpaths/adsales') return ok({ adsales: d === '2026-11-02' ? [{ ad: '네이버 파워링크', order_count: 1, order_amount: 800_000, join_count: 0 }, { ad: '구글 애즈', order_count: 1, order_amount: 600_000, join_count: 0 }] : d === '2026-11-01' ? [{ ad: '네이버 파워링크', order_count: 1, order_amount: 940_000, join_count: 0 }] : [] });
       if (r.url.pathname === '/carts/action') return ok({ action: d === '2026-11-02' ? [{ product_no: 11, product_name: '매트리스', count: 3000, add_cart_count: 290, add_cart_rate: 9.7 }] : [{ product_no: 11, product_name: '매트리스', count: 2500, add_cart_count: 240, add_cart_rate: 9.6 }] });
       return null;
     }

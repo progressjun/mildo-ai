@@ -9,8 +9,10 @@ import { getConnInfo, requestReconnect, subscribeConn, type ConnInfo } from './e
 
 /** 연결 상태 → 표시 (순수 — 단위 테스트) */
 export function connLabel(c: ConnInfo): { text: string; tone: 'good' | 'warning' | 'critical' | 'neutral'; title: string } {
-  const last = c.lastEventAt ? new Date(c.lastEventAt) : null;
-  const lastText = last && Number.isFinite(last.getTime()) ? ` · 마지막 이벤트 ${String(last.getHours()).padStart(2, '0')}:${String(last.getMinutes()).padStart(2, '0')}` : '';
+  // 마지막 이벤트 시각은 KST (데이터 기준 시각 · 실행 기록과 같은 시간대 — 브라우저 시간대와 무관)
+  const ms = c.lastEventAt ? Date.parse(c.lastEventAt) : NaN;
+  const k = Number.isFinite(ms) ? new Date(ms + 9 * 3600_000) : null;
+  const lastText = k ? ` · 마지막 이벤트 ${String(k.getUTCHours()).padStart(2, '0')}:${String(k.getUTCMinutes()).padStart(2, '0')} (KST)` : '';
   switch (c.status) {
     case 'live': return { text: '실시간 연결', tone: 'good', title: `다른 사용자의 변경 · 서버 감지 이슈가 바로 반영됩니다${lastText}` };
     case 'connecting': return { text: '연결 중', tone: 'neutral', title: '실시간 이벤트 채널에 연결하고 있습니다' };

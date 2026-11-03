@@ -3,12 +3,12 @@
  * 네트워크 없음: 문서 스키마 모양의 가짜 서버(fixtures.ts)를 ConnectorHttp로 꽂는다.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { connector, credentialsSchema, fetchNaverCommerce } from './index';
+import { connector, credentialsSchema, fetchNaverCommerce, settingsSchema } from './index';
 import { NaverCommerceClient, _resetNaverCommerceTokenCacheForTest, clientSecretSign, describeNaverCommerceError } from './client';
 import { naverOrderLine } from './normalize';
 import { NAVER_CREDS, NAVER_ORDERS, NAVER_TOKEN, naverHandler, po } from './fixtures';
 import { combine, fakeCtx, handlerHttp, type Handler } from './sales-testkit';
-import { SalesApiError, SalesAcc, kstDateOf } from './sales-shared';
+import { SalesApiError, SalesAcc, kstDateOf, safeLanding } from './sales-shared';
 import { setNowForTest } from '../../lib/time';
 
 const NOW = Date.parse('2026-11-03T10:00:00+09:00');
@@ -226,5 +226,31 @@ describe('연결 확인 · 정의', () => {
     expect(connector.apply).toBeUndefined();
     expect(connector.credentialFields.find((f) => f.key === 'clientSecret')?.secret).toBe(true);
     expect(connector.credentialFields.every((f) => /[가-힣]/.test(f.label) && !!f.help)).toBe(true);
+  });
+});
+
+describe('랜딩 주소 검사 (리뷰 보강)', () => {
+  it('상품 URL 템플릿은 https만 — javascript: · data: · http: 템플릿은 설정 저장(400) 단계에서 거부', () => {
+    for (const bad of ['javascript:alert(1)', 'data:text/html,<b>x</b>', 'http://brand.naver.com/mildo/products/{channelProductNo}']) {
+      expect(settingsSchema.safeParse({ productUrlTemplate: bad }).success, bad).toBe(false);
+    }
+    expect(settingsSchema.safeParse({ productUrlTemplate: 'https://brand.naver.com/mildo/products/{channelProductNo}' }).success).toBe(true);
+  });
+
+  it('채널 정보 API의 URL이 https가 아니면 랜딩을 비운다 (화면 링크로 쓰지 않는다)', async () => {
+    const odd: Handler = (r) => (r.url.pathname.endsWith('/seller/channels') ? { data: [{ channelNo: 1, channelType: 'STOREFARM', name: 'x', url: 'javascript:alert(1)' }] } : null);
+    const { ctx } = ctxWith(combine(odd, naverHandler()));
+    const b = await fetchNaverCommerce(ctx, { from: '2026-11-02', to: '2026-11-02' });
+    expect(b.products?.map((p) => p.landing)).toEqual(['', '']);
+    expect(safeLanding('https://brand.naver.com/mildo')).toBe('https://brand.naver.com/mildo');
+    expect(safeLanding('http://brand.naver.com/mildo')).toBe('');
+    expect(safeLanding(' JavaScript:alert(1)')).toBe('');
+  });
+
+  it('광고 경유 매출(추정)은 매출을 넘지 않는다 (SalesAcc 행 단계에서 자름)', () => {
+    const acc = new SalesAcc();
+    acc.add('2026-11-01', 'A', 100, 100);
+    expect(acc.rows('brandstore', { from: '2026-11-01', to: '2026-11-01' }, new Map([['2026-11-01', { adRevenue: 500 }]]))[0]).toMatchObject({ revenue: 100, adAttributedRevenue: 100 });
+    expect(acc.rows('brandstore', { from: '2026-11-01', to: '2026-11-01' })[0]).toMatchObject({ revenue: 100, adAttributedRevenue: 100 });
   });
 });

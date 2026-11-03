@@ -18,7 +18,9 @@ export function DemoBar() {
     return () => clearInterval(t);
   }, []);
   const { startedAt, pausedAt } = state.demo;
-  const elapsed = startedAt ? Math.max(0, ((pausedAt ?? now) - startedAt) / 1000) : 0;
+  // 경과 시간은 그리는 시점의 시각으로 계산한다 (0.5초 타이머 now는 다시 그리기만 맡는다). 최대 0.5초 묵은 now로 계산하면
+  // 구간 시작으로 이동(seek)한 직후 경과 시간이 구간 시작보다 조금 작게 나와, 같은 구간을 다시 눌렀을 때 이전 구간 화면으로 이동해 버린다.
+  const elapsed = startedAt ? Math.max(0, ((pausedAt ?? Math.max(now, Date.now())) - startedAt) / 1000) : 0;
   const idx = Math.max(0, LIVE_DEMO.findIndex((s) => elapsed >= s.sec[0] && elapsed < s.sec[1]));
   const current = elapsed >= TOTAL ? LIVE_DEMO.length - 1 : idx;
   const lastIdx = useRef<number>(-1);

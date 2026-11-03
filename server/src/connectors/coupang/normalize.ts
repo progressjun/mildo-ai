@@ -11,7 +11,7 @@
 import type { Product, Promotion } from '@/core/types';
 import type { CoupangCoupon, CoupangOrderSheet, CoupangProductDetail, CoupangInventory } from './client';
 import { money } from './client';
-import { fillTemplate, isoDate, kstDateOf, krw, num, promotionStatus } from '../naver-commerce/sales-shared';
+import { fillTemplate, isoDate, kstDateOf, krw, num, promotionStatus, safeLanding } from '../naver-commerce/sales-shared';
 
 export interface CoupangLine { date: string; orderId: string; key: string; revenue: number; quantity: number }
 
@@ -58,27 +58,31 @@ export function coupangProduct(detail: CoupangProductDetail['data'], inv: Map<st
   return { id: productEntityId(detail.sellerProductId), name: String(detail.sellerProductName ?? detail.displayProductName ?? detail.sellerProductId), options, landing };
 }
 
+/** 랜딩: 주문의 productSalesPageUrl(https만) → 템플릿(https만). 둘 다 없으면 빈 값 */
 export function landingOf(template: string | undefined, fromOrders: string | undefined, sellerProductId: number | string, productId?: number | string): string {
-  return fromOrders || fillTemplate(template, { sellerProductId, productId: productId ?? '', id: sellerProductId });
+  return safeLanding(fromOrders) || safeLanding(fillTemplate(template, { sellerProductId, productId: productId ?? '', id: sellerProductId }));
 }
 
+export const couponName = (c: CoupangCoupon) => c.promotionName || `즉시할인 쿠폰 ${c.couponId}`;
+
 /**
- * 즉시할인 쿠폰 → 프로모션. 할인율(%): type RATE면 discount 그대로. PRICE · FIXED_WITH_QUANTITY(정액)는 판매가 대비 비율을 정할 수 없어 0으로 두고 이름에 금액을 적는다.
- * 기간: startAt · endAt('yyyy-MM-dd HH:mm:ss')의 날짜 부분. 상태: 쿠폰 APPLIED · STANDBY와 기간으로 판정.
+ * 즉시할인 쿠폰 → 프로모션. 정률(type RATE)만: 할인율(%) = discount (문서: 할인율, 예 30).
+ * PRICE · FIXED_WITH_QUANTITY(정액)는 판매가 대비 %가 정해지지 않아 null — 호출한 쪽이 경고(promotions_skipped)로 남긴다.
+ * 기간: startAt · endAt('yyyy-MM-dd HH:mm:ss', KST)의 날짜 부분. 상태: 대기중(STANDBY)이면 기간이 와도 planned, 그 밖은 기간으로 판정.
  */
 export function coupangPromotion(c: CoupangCoupon, today: string): Promotion | null {
   const start = isoDate(c.startAt);
   const end = isoDate(c.endAt);
-  if (!c.couponId || !start || !end) return null;
-  const isRate = c.type === 'RATE';
-  const name = c.promotionName || `즉시할인 쿠폰 ${c.couponId}`;
+  if (!c.couponId || !start || !end || c.type !== 'RATE') return null;
+  const rate = num(c.discount);
+  if (!(rate > 0 && rate < 100)) return null;
   const byDate = promotionStatus(start, end, today);
   return {
     id: `cpg-coupon-${c.couponId}`,
-    name: isRate ? name : `${name} (정액 ${krw(c.discount).toLocaleString('ko-KR')}원)`,
+    name: couponName(c),
     channel: 'coupang',
     start, end,
-    discountRate: isRate ? num(c.discount) : 0,
+    discountRate: rate,
     status: c.status === 'STANDBY' && byDate === 'live' ? 'planned' : byDate,
   };
 }

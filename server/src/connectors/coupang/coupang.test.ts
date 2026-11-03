@@ -4,9 +4,9 @@
  */
 import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { connector, credentialsSchema, fetchCoupang } from './index';
+import { connector, credentialsSchema, fetchCoupang, settingsSchema } from './index';
 import { CoupangClient, coupangAuthorization, coupangQuery, coupangSignature, coupangSignedDate, describeCoupangError, money } from './client';
-import { coupangLines } from './normalize';
+import { coupangLines, coupangPromotion, landingOf } from './normalize';
 import { COUPANG_CREDS, coupangHandler, sheet, verifyCoupangAuth } from './fixtures';
 import { combine, fakeCtx, handlerHttp, type Handler } from '../naver-commerce/sales-testkit';
 import { setNowForTest } from '../../lib/time';
@@ -42,7 +42,8 @@ describe('HMAC 서명 (문서 규칙)', () => {
     const client = new CoupangClient(fakeCtx(COUPANG_CREDS, {}, http), COUPANG_CREDS, { now: () => NOW });
     const req = client.request('GET', '/v2/providers/openapi/apis/api/v5/vendors/A00012345/ordersheets', { createdAtFrom: '2026-11-01+09:00', createdAtTo: '2026-11-02+09:00', status: 'ACCEPT', maxPerPage: 50 });
     expect(req.query).toBeUndefined();
-    expect(req.url).toBe('https://api-gateway.coupang.com/v2/providers/openapi/apis/api/v5/vendors/A00012345/ordersheets?createdAtFrom=2026-11-01%2B09%3A00&createdAtTo=2026-11-02%2B09%3A00&status=ACCEPT&maxPerPage=50');
+    // 문서 예시 엔드포인트와 같은 형태: createdAtFrom=2025-07-15%2B09:00 ('+'만 %2B, ':'는 그대로)
+    expect(req.url).toBe('https://api-gateway.coupang.com/v2/providers/openapi/apis/api/v5/vendors/A00012345/ordersheets?createdAtFrom=2026-11-01%2B09:00&createdAtTo=2026-11-02%2B09:00&status=ACCEPT&maxPerPage=50');
     const r = { method: 'GET', url: new URL(req.url), headers: { authorization: req.headers!.Authorization } };
     expect(verifyCoupangAuth(r)).toBe(true);
     expect(verifyCoupangAuth(r, 'other-secret')).toBe(false);
@@ -106,11 +107,13 @@ describe('상품 · 재고 · 즉시할인 쿠폰', () => {
         { id: '7003', label: '퀸', price: 290_000, inStock: false },
       ] },
     ]);
+    // 정액(PRICE) 쿠폰은 판매가 대비 %가 없어 프로모션 일정에서 빼고 경고로 남긴다 (0%로 넣으면 Flow 할인율 대조가 거짓 실패)
     expect(b.promotions).toEqual([
       { id: 'cpg-coupon-2246326', name: '쿠팡 11월 매트리스 위크', channel: 'coupang', start: '2026-11-01', end: '2026-11-07', discountRate: 10, status: 'live' },
-      { id: 'cpg-coupon-2245939', name: '즉시할인 쿠폰 2245939 (정액 30,000원)', channel: 'coupang', start: '2026-10-01', end: '2026-10-31', discountRate: 0, status: 'ended' },
       { id: 'cpg-coupon-2300001', name: '블랙프라이데이', channel: 'coupang', start: '2026-11-20', end: '2026-11-30', discountRate: 20, status: 'planned' },
     ]);
+    expect(b.warnings?.find((w) => w.code === 'promotions_skipped')?.message).toMatch(/혜택 1건\(즉시할인 쿠폰 2245939 \(정액 30,000원\)\)/);
+    expect(b.warnings?.find((w) => w.code === 'funnel_unavailable')?.message).toMatch(/방문자 · 상세 조회 · 장바구니 · 광고 경유 매출/);
   });
 
   it('inventoryLimit을 넘는 옵션은 상품 조회의 판매가능수량(maximumBuyCount)으로 판단 + 경고', async () => {
@@ -171,5 +174,29 @@ describe('오류 해석 · 연결 확인', () => {
     expect(connector.docsUrl).toMatch(/^https:\/\/developers\.coupang\.com\//);
     expect(connector.capabilities.writes).toEqual([]);
     expect(connector.credentialFields.filter((f) => f.secret).map((f) => f.key)).toEqual(['accessKey', 'secretKey']);
+  });
+});
+
+describe('리뷰 보강: 쿼리 형식 · 랜딩 · 쿠폰', () => {
+  it('발주서 쿼리는 문서 예시 엔드포인트와 같은 바이트 (createdAtFrom=2025-07-15%2B09:00&createdAtTo=2025-07-25%2B09:00&maxPerPage=50&status=INSTRUCT)', () => {
+    expect(coupangQuery({ createdAtFrom: '2025-07-15+09:00', createdAtTo: '2025-07-25+09:00', maxPerPage: 50, status: 'INSTRUCT' }))
+      .toBe('createdAtFrom=2025-07-15%2B09:00&createdAtTo=2025-07-25%2B09:00&maxPerPage=50&status=INSTRUCT');
+  });
+
+  it('상품 URL 템플릿은 https만, 주문의 productSalesPageUrl도 https가 아니면 쓰지 않는다', () => {
+    expect(settingsSchema.safeParse({ productUrlTemplate: 'javascript:alert(1)' }).success).toBe(false);
+    expect(settingsSchema.safeParse({ productUrlTemplate: 'https://www.coupang.com/vp/products/{productId}' }).success).toBe(true);
+    expect(landingOf(undefined, 'javascript:alert(1)', 1, 2)).toBe('');
+    expect(landingOf('https://www.coupang.com/vp/products/{productId}', 'javascript:alert(1)', 1, 31846051)).toBe('https://www.coupang.com/vp/products/31846051');
+    expect(landingOf(undefined, 'https://www.coupang.com/vp/products/1', 1)).toBe('https://www.coupang.com/vp/products/1');
+  });
+
+  it('쿠폰: 정률(RATE)만 프로모션 — 정액(PRICE · FIXED_WITH_QUANTITY) · 0% · 100% 이상은 넣지 않는다', () => {
+    const base = { couponId: 1, promotionName: 'p', startAt: '2026-11-01 00:00:00', endAt: '2026-11-07 23:59:00', status: 'APPLIED' };
+    expect(coupangPromotion({ ...base, type: 'RATE', discount: 15 }, '2026-11-03')).toMatchObject({ discountRate: 15, status: 'live' });
+    expect(coupangPromotion({ ...base, type: 'PRICE', discount: 3000 }, '2026-11-03')).toBeNull();
+    expect(coupangPromotion({ ...base, type: 'FIXED_WITH_QUANTITY', discount: 3000 }, '2026-11-03')).toBeNull();
+    expect(coupangPromotion({ ...base, type: 'RATE', discount: 0 }, '2026-11-03')).toBeNull();
+    expect(coupangPromotion({ ...base, type: 'RATE', discount: 15, status: 'STANDBY' }, '2026-11-03')).toMatchObject({ status: 'planned' });
   });
 });

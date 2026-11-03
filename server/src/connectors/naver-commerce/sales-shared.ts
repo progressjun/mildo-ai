@@ -290,7 +290,7 @@ export function funnelUnavailable(batch: NormalizedBatch, label: string, metrics
   warn(
     batch,
     'funnel_unavailable',
-    `${label} API는 ${metrics.join(' · ')} 지표를 제공하지 않아 0으로 저장했습니다 — 이 지표가 필요하면 판매 채널 일별 CSV 템플릿(sales_daily)에 같은 날짜 · 채널의 전체 지표(주문 · 매출 포함)를 담아, 우선순위를 이 커넥션보다 높게 둔 CSV 커넥션으로 올려 주세요. Dataset은 날짜 × 채널마다 우선순위가 가장 높은 출처의 행 하나를 씁니다`,
+    `${label}에서는 ${metrics.join(' · ')} 지표를 제공하지 않아 0으로 저장했습니다 — 이 지표가 필요하면 판매 채널 일별 CSV 템플릿(sales_daily)에 같은 날짜 · 채널의 전체 지표(주문 · 매출 포함)를 담아, 우선순위를 이 커넥션보다 높게 둔 CSV 커넥션으로 올려 주세요. Dataset은 날짜 × 채널마다 우선순위가 가장 높은 출처의 행 하나를 씁니다`,
     { metrics },
   );
 }

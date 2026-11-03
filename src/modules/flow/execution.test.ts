@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createElement as h } from 'react';
 import { renderToString } from 'react-dom/server';
 import type { ChangeRequest } from '@/core/types';
-import { attemptLine, executionState, isExecuting, kstStamp, providerLabel, requestPreview, type ServerChangeView } from './execution';
+import { attemptLine, execCsvLabel, executionState, isExecuting, kstStamp, providerLabel, requestPreview, UNVERIFIED_LABEL, type ServerChangeView } from './execution';
 import { ExecBadge, ExecutionPanel } from './ExecutionPanel';
 
 const base: ChangeRequest = {
@@ -35,6 +35,27 @@ describe('실행 상태 라벨', () => {
     const bad = executionState(withEx({ mode: 'live', ok: false, at: '2026-11-02T05:00:00Z', provider: 'meta', error: '권한이 없습니다 (#200)' }))!;
     expect(bad).toMatchObject({ kind: 'live_failed', label: '매체 반영 실패', tone: 'critical' });
     expect(bad.basis).toContain('#200');
+  });
+  it("verifiedLive === false → live 결과 옆 '실계정 연결 전 확인 필요' (성공 · 실패 모두), dry_run은 근거에만, 값이 없거나 true면 표시 안 함", () => {
+    const ok = executionState(withEx({ mode: 'live', ok: true, at: '2026-11-02T05:00:00Z', provider: 'kakao_moment', appliedValue: 770, verifiedLive: false }))!;
+    expect(ok).toMatchObject({ kind: 'live', label: '매체 반영됨', unverified: true });
+    expect(ok.basis).toContain(UNVERIFIED_LABEL);
+    expect(ok.basis).toContain('verifiedLive=false');
+    const bad = executionState(withEx({ mode: 'live', ok: false, at: 'x', error: '400', verifiedLive: false }))!;
+    expect(bad).toMatchObject({ kind: 'live_failed', unverified: true });
+    const dry = executionState(withEx({ mode: 'dry_run', ok: true, at: 'x', verifiedLive: false }))!;
+    expect(dry.unverified).toBe(true);
+    expect(dry.basis).toContain(`요청 형식은 공식 문서 기준이며 ${UNVERIFIED_LABEL}`);
+    for (const v of [true, undefined]) {
+      const st = executionState(withEx({ mode: 'live', ok: true, at: 'x', verifiedLive: v }))!;
+      expect(st.unverified, String(v)).toBe(false);
+      expect(st.basis, String(v)).not.toContain(UNVERIFIED_LABEL);
+    }
+    // CSV 열
+    expect(execCsvLabel(withEx({ mode: 'live', ok: true, at: 'x', verifiedLive: false }))).toBe(`매체 반영됨 · ${UNVERIFIED_LABEL}`);
+    expect(execCsvLabel(withEx({ mode: 'dry_run', ok: true, at: 'x', verifiedLive: false }))).toBe('매체 미반영 (dry-run 기록)');
+    expect(execCsvLabel(withEx({ mode: 'live', ok: true, at: 'x', verifiedLive: true }))).toBe('매체 반영됨');
+    expect(execCsvLabel(base)).toBe('');
   });
   it("none → '기록만' (서버 사유 우선)", () => {
     expect(executionState(withEx({ mode: 'none', ok: true, at: 'x', reason: '알림 기준 변경 — 매체 API 대상 아님' }))).toMatchObject({ kind: 'none', label: '기록만' });
@@ -84,6 +105,21 @@ describe('렌더 (SSR)', () => {
     expect(panel).toContain('보낼 요청 내용 (dry-run · 비밀값 제외)');
     expect(panel).toContain('bidAmt');
     expect(panel).not.toMatch(/\b1\.\s/);
+  });
+  it("실계정 미검증 live 결과: 배지 옆 · 상세 패널에 '실계정 연결 전 확인 필요' (근거 툴팁), dry_run 배지에는 붙이지 않는다", () => {
+    const live = withEx({ mode: 'live', ok: true, at: '2026-11-02T05:07:00Z', provider: 'meta', appliedValue: 300000, verifiedLive: false });
+    const badge = renderToString(h(ExecBadge, { c: live })).replace(/<!-- -->/g, '');
+    expect(badge).toContain('매체 반영됨');
+    expect(badge).toContain(UNVERIFIED_LABEL);
+    expect(badge).toMatch(/title="[^"]*실계정 호출로 검증하지 않았습니다/);
+    const panel = renderToString(h(ExecutionPanel, { c: live })).replace(/<!-- -->/g, '');
+    expect(panel).toContain(UNVERIFIED_LABEL);
+    expect(panel).toContain('Meta · 실계정 연결 전 확인 필요 (공식 문서 기준 구현 · 실계정 호출 미검증)');
+    const verified = renderToString(h(ExecutionPanel, { c: withEx({ mode: 'live', ok: true, at: 'x', provider: 'meta', verifiedLive: true }) })).replace(/<!-- -->/g, '');
+    expect(verified).not.toContain(UNVERIFIED_LABEL);
+    expect(verified).toContain('실계정 호출 검증됨');
+    const dryBadge = renderToString(h(ExecBadge, { c: withEx({ mode: 'dry_run', ok: true, at: 'x', verifiedLive: false }) })).replace(/<!-- -->/g, '');
+    expect(dryBadge).not.toContain(`>${UNVERIFIED_LABEL}<`);
   });
   it('반영 중 패널: 진행 단계 · 시작 시각', () => {
     const panel = renderToString(h(ExecutionPanel, { c: withEx(undefined, { status: 'approved', executing: { phase: 'apply', since: '2026-11-02T05:00:00Z', background: false } }) })).replace(/<!-- -->/g, '');

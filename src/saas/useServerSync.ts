@@ -14,17 +14,25 @@ import { api, ApiError, onApiError, wsPath } from './api';
 import { createServerBridge, createServerDispatch, type ServerBridge } from './bridge';
 import { createRefetchScheduler, emitServerEvent, ServerEvents, setConnInfo, setReconnectHandler } from './events';
 import { installStorageMirror, type StorageMirror } from './storageSync';
-import { apiErrorMessage, isGlobalToastError, RECONNECT_TARGETS, refetchTargetOf, TF_STATE_KEY, type RefetchTarget } from './sync';
+import { apiErrorMessage, configFingerprint, isGlobalToastError, RECONNECT_TARGETS, refetchTargetForEvent, TF_STATE_KEY, type RefetchTarget } from './sync';
 
 export interface ServerSyncConfig {
   ws: string;
   demoRole: AppState['role'];
   /** 쓰기(comment 권한) 가능 여부 — 열람자는 모듈 로컬 입력을 서버로 보내지 않는다 */
   canWrite: boolean;
-  /** 워크스페이스 설정 변경(config 이벤트) → GET /api/w/:ws 다시 */
+  /** 워크스페이스 설정 변경(config 이벤트) → GET /api/w/:ws 다시 (결과: { workspace: { config } }) */
   reloadWorkspace?: () => Promise<unknown>;
   /** 멤버십 변경(member 이벤트) → /auth/me 다시 */
   refreshMe?: () => Promise<unknown>;
+  /** 세션 확인 (/auth/me — 401이면 세션 만료 안내와 함께 로그인 화면으로). 실시간 연결이 계속 끊길 때 · 재연결 때 쓴다 */
+  checkSession?: () => Promise<unknown>;
+  /** 지금 적용 중인 워크스페이스 설정 — 다시 읽은 설정과 같으면(자기 저장 · 재연결) 안내하지 않는다 */
+  config?: Record<string, unknown> | null;
+  /** 워크스페이스 설정의 주말 · 공휴일 당번 체계 강제 (config.offHoursMode === true) — MILDO Alert 화면의 당번 체계를 서버 스캔과 맞춘다 */
+  offHoursMode?: boolean;
+  /** 워크스페이스 상세를 (다시) 불러올 때마다 바뀌는 값 (상세 객체) — 그때마다 offHoursMode를 다시 맞춘다 */
+  detailStamp?: unknown;
 }
 
 export interface ServerSyncHandle {
@@ -81,6 +89,13 @@ export function useServerSync(cfg: ServerSyncConfig | null, state: AppState, raw
     });
   }, [bridge, tracked, toast]);
 
+  // 워크스페이스 설정의 당번 체계 강제(offHoursMode) → 스토어 (상세를 불러오거나 다시 불러올 때마다 — config 이벤트 포함)
+  useEffect(() => {
+    if (!cfg) return;
+    const on = cfg.offHoursMode === true;
+    if (stateRef.current.offHoursMode !== on) tracked({ type: 'offhours/set', on });
+  }, [cfg?.offHoursMode, cfg?.detailStamp, tracked]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // 역할 변경(멤버십 갱신) 반영
   useEffect(() => {
     if (!cfg) return;
@@ -123,12 +138,17 @@ export function useServerSync(cfg: ServerSyncConfig | null, state: AppState, raw
       if (!alive) return;
       if (target === 'state') return loadStateRef.current();
       if (target === 'workspace') {
-        await cfgRef.current?.reloadWorkspace?.().catch(() => undefined);
+        const d = await cfgRef.current?.reloadWorkspace?.().catch(() => undefined);
+        const next = (d as { workspace?: { config?: unknown } } | null | undefined)?.workspace;
+        if (!alive || !next) return;
+        // 응답이 왔을 때 화면이 이미 같은 설정이면(이 사용자의 저장 직후 · 재연결 확인) 안내하지 않는다
+        if (configFingerprint(next.config ?? null) === configFingerprint(cfgRef.current?.config ?? null)) return;
         toast({ tone: 'info', title: '워크스페이스 설정이 바뀌었습니다', body: '목표 · 예산 · SAFETY 기준을 새 설정으로 계산합니다. 일부 화면은 새로고침 후 반영됩니다.' });
         return;
       }
       if (target === 'me') {
-        await cfgRef.current?.refreshMe?.().catch(() => undefined);
+        const c = cfgRef.current;
+        await (c?.checkSession ?? c?.refreshMe)?.().catch(() => undefined);
         return;
       }
       await bridge.load(target);
@@ -139,14 +159,17 @@ export function useServerSync(cfg: ServerSyncConfig | null, state: AppState, raw
       url: wsPath(ws, '/events'),
       onEvent: (e) => {
         emitServerEvent(e);
-        const t = refetchTargetOf(e.type);
+        const t = refetchTargetForEvent(e);
         if (t) scheduler.schedule(t);
       },
       onStatus: (status, info) => setConnInfo({ status, attempt: info.attempt, retryInMs: info.retryInMs, lastEventAt: events.lastEventAt }),
       onReconnected: () => RECONNECT_TARGETS.forEach((t) => scheduler.schedule(t)),
       onError: (attempt) => {
-        // 연결이 계속 끊기면 세션이 끝났는지 확인 (401이면 플랫폼이 로그인 화면으로)
-        if (attempt === 2 || attempt % 5 === 0) void api('/api/auth/me', { silent: true }).catch(() => undefined);
+        // 연결이 계속 끊기면 세션이 끝났는지 확인 — /auth/me는 전역 401 처리를 타지 않으므로 세션 확인 함수로 (401이면 로그인 화면 + 안내)
+        if (attempt === 2 || attempt % 5 === 0) {
+          const check = cfgRef.current?.checkSession;
+          void (check ? check() : api('/api/auth/me', { silent: true })).catch(() => undefined);
+        }
       },
     });
 
