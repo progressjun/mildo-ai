@@ -189,3 +189,18 @@ CI(타입 검사 · 단위 · 서버 테스트(postgres 서비스) · 빌드) ·
 
 프런트 연결 계약: platform이 워크스페이스가 정해지면 `applyWorkspaceConfig(workspace.config)`(settings) · `configureServerAi({ workspaceId })`(ai, src/ai/claude.ts)를 호출한다.
 `config.modules?: string[]`가 있으면 셸은 그 모듈만 메뉴에 보인다. AI 모드 'auto'는 서버 모드에서 'server' 백엔드를 고른다.
+
+## 7. 구현 기준 확장 (§6 계약과 호환되는 추가분)
+
+§6의 경로 · 권한 · 응답 키는 그대로이고, 구현하면서 아래 경로 · 필드가 추가됐다(모두 추가형 — 기존 호출을 깨지 않는다). 전체 목록은 각 도메인 `index.ts` · 라우트 파일의 머리 주석이 기준이다.
+
+| 도메인 | 추가 경로 · 필드 |
+| --- | --- |
+| platform | GET /api/ready (DB · 마이그레이션 · 워커 하트비트 · 스케줄러, 외부 IP는 판정만) · DELETE /api/w/:ws/state/* |
+| team | POST /api/w/:ws/invites/:id/resend · POST /api/auth/password-reset/check `{ token }` (토큰을 URL에 싣지 않음) · DELETE /api/auth/sessions (다른 기기 모두) · GET /api/w/:ws/audit/facets · PATCH /members/:userId는 `{ title?, status? }`도 받고 `{ member, members }` 반환 · 초대 응답 `mail: { sent, reason? }` · 스케줄 `team.cleanup` 04:17 |
+| data | POST /api/w/:ws/connections/:id/oauth/cafe24/start → `{ url }` · GET /api/oauth/cafe24/callback (서명 · 1회용 state) · CSV 전용 제공자(오늘의집) 커넥션 생성은 400 `csv_only` · 카탈로그 `csvOnly` · 판매 채널 일 재수집 14일 |
+| changes | GET /api/w/:ws/changes/:id/executions (시도별 기록) · GET /api/w/:ws/changes/:id/preflight (상태 변경 없는 점검) · 응답 `executing`, `execution.plan/results/verifiedLive` · 409 `approver_changed` · apply에 웨어하우스 대상 정보 `entity` 전달 · live 키워드 등록 롤백(이번에 만든 키워드만 OFF) |
+| alerts | GET /api/w/:ws/alerts/runs (감지 실행 기록) · GET /api/w/:ws/alerts/policy (SLA · 당번 체계) · 이벤트 'notify' · 데모 데이터 이슈 `isTest` · 다른 도메인이 직접 넣은 이슈의 통지(alerts.sla 접수 단계) · fanOutGeneric `body`(메일 전문) |
+| reports-impact | GET /api/w/:ws/reports/schedule · GET /api/w/:ws/impact/ledger.csv · POST /api/w/:ws/impact/measure |
+| settings | GET /api/w/:ws/config/onboarding · POST /api/w/:ws/config/review · `offHoursMode` · `ai` · `billing.monthlyFee`(owner만) · `impact.contributionMargin/hourlyCost` |
+| ai | POST /ai/messages 본문 `tier?` · done 이벤트 `content`(thinking 서명 포함 — 다음 라운드에 그대로 회신) · GET /ai/usage 확장 필드(daily · byUser(configure) · remaining · basis 등) |
