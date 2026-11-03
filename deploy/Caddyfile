@@ -1,0 +1,35 @@
+# Caddy — HTTPS 자동 발급(Let's Encrypt) · app으로 리버스 프록시. docker compose --profile tls up -d
+# APP_DOMAIN의 DNS A/AAAA 레코드가 이 VM을 가리키고 80 · 443 포트가 열려 있어야 한다.
+# app은 X-Forwarded-For 마지막 프록시 1단(TRUST_PROXY_HOPS=1)을 믿는다 — 이 프록시 앞에 로드밸런서를 더 두면 2로 올린다.
+{
+	email {$ACME_EMAIL}
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	# /api/ready: 외부(공인 IP)에는 판정(status)만, 세부 항목은 내부망이나 x-ready-token(READY_TOKEN)에만 나간다.
+	# 판정조차 외부에 보이기 싫으면 아래 두 줄의 주석을 풀어 사내 IP만 허용한다
+	# @readyExternal { path /api/ready; not remote_ip 203.0.113.0/24 }
+	# respond @readyExternal 404
+
+	reverse_proxy app:8080 {
+		# SSE(/api/w/:ws/events · AI 스트리밍)는 버퍼링 없이 바로 흘려보낸다
+		flush_interval -1
+		# 요청 추적 id: 클라이언트가 보낸 값 대신 프록시가 새로 붙인다 (app 응답 헤더 x-request-id와 같다)
+		header_up X-Request-Id {http.request.uuid}
+	}
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				request>headers>X-Csrf-Token delete
+				resp_headers>Set-Cookie delete
+			}
+		}
+	}
+}

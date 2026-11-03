@@ -1,0 +1,24 @@
+# deploy/Dockerfile 전용 무시 목록 (BuildKit: <Dockerfile 이름>.dockerignore). 빌드 컨텍스트 = 저장소 루트.
+**/node_modules
+.git
+.github
+dist
+dist-single
+server/dist
+qa
+coverage
+**/*.log
+**/.DS_Store
+.vscode
+.idea
+*.local
+# 비밀값 · 백업은 이미지에 넣지 않는다 (어느 폴더에 있든)
+.env
+.env.*
+**/.env
+**/.env.*
+deploy/.env
+deploy/backups
+**/*.dump
+deploy/*.crt
+deploy/*.pem

@@ -1,0 +1,23 @@
+/* 팀 · 권한 / 감사 로그 화면 — 색은 tokens.css 변수만 쓴다 */
+.team-page .team-select { min-width: 120px; padding: 4px 8px; font-size: var(--fs-sm); }
+.team-page .team-title-input { min-width: 140px; padding: 4px 8px; font-size: var(--fs-sm); }
+.team-page .team-name { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.team-page .team-name strong { font-weight: 700; }
+.team-page .team-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.team-page .team-confirm .btn { white-space: nowrap; }
+.team-page .team-link {
+  font-family: var(--font-mono); font-size: var(--fs-xs); background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 6px 8px; word-break: break-all; user-select: all;
+}
+.team-page .team-form { display: grid; grid-template-columns: minmax(220px, 2fr) minmax(140px, 1fr) auto; gap: 10px; align-items: end; }
+.team-page .team-pw-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: end; }
+.team-page .team-matrix td.c { font-weight: 700; }
+.team-page .team-matrix .yes { color: var(--good-ink); }
+.team-page .team-matrix .no { color: var(--muted); }
+.team-page .team-rules { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--ink-2); font-size: var(--fs-sm); }
+.team-page .team-kpi-basis { font-size: var(--fs-xs); color: var(--muted); }
+.team-page .team-warn { color: var(--serious-ink); }
+
+@media (max-width: 860px) {
+  .team-page .team-form, .team-page .team-pw-form { grid-template-columns: 1fr; }
+}

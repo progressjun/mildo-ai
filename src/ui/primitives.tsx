@@ -4,7 +4,8 @@ import { Icon } from './Icon';
 import type { Severity, SourceKind } from '@/core/types';
 import { copyText, saveFile } from '@/core/download';
 import { fmt } from '@/core/util';
-import { useActions } from '@/core/store';
+import { useActions, useStoreOptional } from '@/core/store';
+import { dataSourceLabel } from '@/saas/sync';
 
 /* ---------- 버튼 ---------- */
 type BtnVariant = 'default' | 'primary' | 'accent' | 'danger' | 'ghost';
@@ -103,10 +104,20 @@ export function Pill({ tone = 'neutral', children, icon, title }: { tone?: Tone;
 }
 
 const SRC_LABEL: Record<SourceKind, string> = { RFP: 'RFP', PROPOSAL: '제안서', DEMO: 'TEST DATA', AI: 'AI 해석', LIVE: 'LIVE' };
-/** 출처 태그 — 화면마다 실제 작동/테스트 데이터를 구분 표기 (제안서 p.60) */
+/**
+ * 출처 태그 — 화면마다 실제 작동/테스트 데이터를 구분 표기 (제안서 p.60).
+ * kind 'DEMO'(성과 데이터 출처)는 현재 Dataset 메타를 따른다: 메타 없음 · demo → TEST DATA, live → LIVE DATA, mixed → LIVE + TEST
+ * (서버 모드에서 실연동 데이터일 때, 툴팁에 매체별 출처 · 최신 시각).
+ */
 export function Src({ kind, page, title }: { kind: SourceKind; page?: string; title?: string }) {
+  const store = useStoreOptional();
+  if (kind === 'DEMO') {
+    const ds = dataSourceLabel(store?.state.data.meta);
+    const t = ds.tone === 'demo' ? (title ?? ds.title) : ds.title;
+    return <span className={`src ${ds.cls}`} title={t} data-source={ds.tone}>{ds.label}{page ? ` ${page}` : ''}</span>;
+  }
   const cls = { RFP: 'rfp', PROPOSAL: 'proposal', DEMO: 'demo', AI: 'ai', LIVE: 'live' }[kind];
-  const t = title ?? (kind === 'DEMO' ? '시연용 테스트 데이터 · 실제 성과 데이터 아님' : kind === 'PROPOSAL' ? '프로그레스미디어 2027 제안서 기준' : kind === 'RFP' ? '수면밀도 RFP 명시 사항' : undefined);
+  const t = title ?? (kind === 'PROPOSAL' ? '프로그레스미디어 2027 제안서 기준' : kind === 'RFP' ? '수면밀도 RFP 명시 사항' : undefined);
   return <span className={`src ${cls}`} title={t}>{SRC_LABEL[kind]}{page ? ` ${page}` : ''}</span>;
 }
 

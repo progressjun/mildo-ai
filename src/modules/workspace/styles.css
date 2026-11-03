@@ -1,0 +1,62 @@
+/* 워크스페이스 설정 화면 — 색은 tokens.css 변수만 쓴다 */
+.ws-page .ws-uses { color: var(--muted); font-size: var(--fs-xs); }
+.ws-page .ws-basis { font-size: var(--fs-xs); color: var(--muted); }
+.ws-page .ws-warn { color: var(--serious-ink); }
+
+.ws-page .ws-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ws-page .ws-grid.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ws-page .ws-grid.g5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+
+.ws-page .ws-field {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: var(--r-md); background: var(--surface); min-width: 0;
+}
+.ws-page .ws-field.compact { padding: 8px 10px; }
+.ws-page .ws-field.is-override { border-color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 35%, var(--surface)); }
+.ws-page .ws-field.has-error { border-color: var(--critical); }
+.ws-page .ws-field-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ws-page .ws-field-label { font-weight: 700; font-size: var(--fs-sm); }
+.ws-page .ws-field-input { min-width: 0; }
+.ws-page .ws-field-foot { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: var(--fs-xs); color: var(--muted); }
+.ws-page .ws-field-foot strong { color: var(--ink-2); font-weight: 600; }
+.ws-page .ws-field-error { color: var(--critical-ink); font-size: var(--fs-xs); font-weight: 600; }
+.ws-page .ws-value { font-size: var(--fs-md); font-weight: 600; }
+.ws-page .ws-list { width: 100%; min-height: 72px; font-size: var(--fs-sm); }
+.ws-page .ws-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.ws-page .ws-select { min-width: 140px; padding: 4px 8px; font-size: var(--fs-sm); }
+.ws-page .ws-sla-col { border: 1px dashed var(--line); border-radius: var(--r-md); padding: 8px; }
+
+.ws-page .ws-alloc td { vertical-align: middle; }
+.ws-page .ws-alloc .input { max-width: 110px; }
+
+.ws-page .ws-modules { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ws-page .ws-module { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.ws-page .ws-module.on { border-color: var(--line-strong); }
+
+.ws-page .ws-savebar {
+  position: sticky; top: 0; z-index: 3; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface);
+}
+.ws-page .ws-savebar.dirty { border-color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface)); }
+
+.ws-page .ws-onboarding { border: 1px solid var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.ws-page .ws-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ws-page .ws-step { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line); color: var(--ink); }
+.ws-page .ws-step.done { border-color: var(--good); }
+.ws-page .ws-step-body { display: flex; flex-direction: column; gap: 2px; }
+.ws-page .ws-step-act { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
+.ws-page .ws-step-act a.btn { text-decoration: none; }
+
+.ws-page .ws-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.ws-page .ws-history > li { display: flex; flex-direction: column; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.ws-page .ws-history > li:last-child { border-bottom: 0; }
+.ws-page .ws-history-changes { margin: 0; padding-left: 18px; font-size: var(--fs-sm); color: var(--ink-2); display: flex; flex-direction: column; gap: 2px; }
+.ws-page .ws-issues { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+
+@media (max-width: 1100px) {
+  .ws-page .ws-grid.g5 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ws-page .ws-steps, .ws-page .ws-modules { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .ws-page .ws-grid, .ws-page .ws-grid.g3, .ws-page .ws-grid.g5, .ws-page .ws-steps, .ws-page .ws-modules { grid-template-columns: 1fr; }
+}

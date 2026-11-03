@@ -1,0 +1,15 @@
+/* 감사 로그 화면 — 색은 tokens.css 변수만 쓴다 */
+.audit-page .audit-filters { display: grid; grid-template-columns: minmax(160px, 1.4fr) minmax(160px, 1.2fr) minmax(130px, 1fr) minmax(130px, 1fr) auto; gap: 10px; align-items: end; }
+.audit-page .audit-action code, .audit-page .audit-code { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--muted); }
+.audit-page .audit-json {
+  font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.5; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 10px 12px; white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; margin: 0;
+}
+.audit-page .audit-kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; font-size: var(--fs-sm); }
+.audit-page .audit-kv dt { color: var(--muted); }
+.audit-page .audit-kv dd { margin: 0; word-break: break-all; }
+.audit-page .audit-sensitive { color: var(--serious-ink); }
+
+@media (max-width: 860px) {
+  .audit-page .audit-filters { grid-template-columns: 1fr; }
+}

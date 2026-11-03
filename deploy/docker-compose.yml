@@ -1,0 +1,174 @@
+# MILDO OS Cloud — 단일 VM 배포 (docs/OPERATIONS.md '첫 배포')
+#
+#   cd deploy && cp .env.example .env && (값 채우기)
+#   docker compose up -d --build                      # db · migrate · app · worker · backup
+#   docker compose --profile tls up -d                # + Caddy(HTTPS 자동 발급, APP_DOMAIN 필요)
+#   관리형 PostgreSQL: docker compose -f docker-compose.yml -f docker-compose.managed-db.yml up -d
+#
+# 이 파일과 같은 폴더의 .env가 변수 치환과 env_file 양쪽에 쓰인다. Docker Compose v2.24 이상.
+
+name: mildo
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-app-env: &app-env
+  # 비밀값 · 설정은 .env(env_file)에서. 아래는 compose가 정하는 값.
+  DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-mildo}:${POSTGRES_PASSWORD:-}@db:5432/${POSTGRES_DB:-mildo}}
+  # 마이그레이션은 migrate 서비스가 한 번만 실행한다 (app · worker 동시 실행 경쟁 방지)
+  MIGRATE_ON_START: "false"
+
+# migrate · app · worker는 같은 이미지 하나를 쓴다 (빌드 정의를 공유해야 compose가 레지스트리에서 받으려 하지 않는다)
+x-build: &build
+  context: ..
+  dockerfile: deploy/Dockerfile
+  args:
+    SKIP_TYPECHECK: ${SKIP_TYPECHECK:-false}
+  # 사내 SSL 검사 프록시 CA (기본은 빈 파일 tools/no-extra-ca.pem — 영향 없음)
+  secrets:
+    - extra_ca
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mildo}
+      POSTGRES_USER: ${POSTGRES_USER:-mildo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+      TZ: Asia/Seoul
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    shm_size: 256mb
+    stop_grace_period: 60s
+    logging: *logging
+    # 포트를 밖으로 열지 않는다 (app · worker · backup만 내부 네트워크로 접속)
+
+  migrate:
+    image: ${MILDO_IMAGE:-mildo-os-cloud:latest}
+    build: *build
+    env_file: .env
+    environment: *app-env
+    command: ["node", "server/dist/cli.mjs", "migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    <<: *hardening
+    logging: *logging
+
+  app:
+    image: ${MILDO_IMAGE:-mildo-os-cloud:latest}
+    build: *build
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment: *app-env
+    ports:
+      # 기본은 VM 안에서만 접속(127.0.0.1) — 앞단 Caddy(--profile tls)나 호스트의 nginx가 HTTPS로 받는다
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 30s
+    <<: *hardening
+    logging: *logging
+
+  worker:
+    image: ${MILDO_IMAGE:-mildo-os-cloud:latest}
+    build: *build
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment: *app-env
+    # WORKER_ID 기본값을 컨테이너 이름으로 (여러 대로 늘려도 하트비트가 구분된다: --scale worker=2)
+    command: ["sh", "-c", "WORKER_ID=$${WORKER_ID:-worker-$$(hostname)} exec node server/dist/worker.mjs"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # 워커는 HTTP를 열지 않는다 — 생존 확인은 app의 /api/ready (워커 하트비트)
+    healthcheck:
+      disable: true
+    # 진행 중인 잡을 마치고 종료할 시간
+    stop_grace_period: 90s
+    <<: *hardening
+    logging: *logging
+
+  backup:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-mildo}
+      PGUSER: ${POSTGRES_USER:-mildo}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-}
+      TZ: Asia/Seoul
+      BACKUP_TIME: ${BACKUP_TIME:-03:30}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      RETENTION_ENABLED: ${RETENTION_ENABLED:-false}
+    entrypoint: ["bash", "/scripts/backup.sh"]
+    volumes:
+      - ./backup:/scripts:ro
+      - ./tools/retention.sql:/tools/retention.sql:ro
+      - backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # 최근 26시간 안의 정상 덤프가 있어야 healthy (시작 시 24시간 안 덤프가 없으면 바로 한 번 뜬다)
+      test: ["CMD-SHELL", "find /backups -maxdepth 1 -name 'mildo-*.dump' -mmin -1560 | grep -q ."]
+      interval: 10m
+      timeout: 10s
+      start_period: 10m
+      retries: 1
+    logging: *logging
+
+  proxy:
+    image: caddy:2
+    profiles: ["tls"]
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    logging: *logging
+
+secrets:
+  extra_ca:
+    file: ${EXTRA_CA_FILE:-./tools/no-extra-ca.pem}
+
+volumes:
+  pgdata:
+  backups:
+  caddy_data:
+  caddy_config:

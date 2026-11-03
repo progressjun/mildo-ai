@@ -18,7 +18,7 @@ export function useAi() {
   }, [state.ai, epoch]);
   return {
     backend,
-    connected: backend === 'artifact' || backend === 'anthropic',
+    connected: backend === 'artifact' || backend === 'anthropic' || backend === 'server',
     ask: (input: string | Turn[], opts?: AskOptions) => ask(state.ai, input, opts),
     askJson: <T,>(prompt: string, opts?: Omit<AskOptions, 'tools'>) => askJson<T>(state.ai, prompt, opts),
   };

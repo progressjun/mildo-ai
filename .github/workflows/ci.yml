@@ -1,0 +1,212 @@
+# MILDO OS Cloud CI — 타입 검사 · 프런트 단위 테스트 · 서버 테스트(PostgreSQL 16) · 빌드 · 통합 스모크 · 브라우저 E2E · 이미지/compose 기동
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  npm_config_fund: "false"
+  npm_config_audit: "false"
+  npm_config_update_notifier: "false"
+
+jobs:
+  check:
+    name: 타입 검사 · 프런트 테스트 · 빌드
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 타입 검사 (tsc --noEmit)
+        run: npm run typecheck
+      - name: 프런트 단위 테스트 (vitest)
+        run: npm test
+      - name: 프런트 빌드 (vite → dist)
+        run: npx vite build
+      - name: 단일 파일 빌드 (claude.ai 아티팩트 → dist-single)
+        run: npm run build:single
+      - name: 서버 번들 (esbuild → server/dist)
+        run: npm run server:build
+      - name: 운영 스크립트 문법 검사
+        run: |
+          bash -n scripts/smoke-cloud.sh
+          bash -n deploy/backup/backup.sh
+          node --check deploy/tools/rotate-encryption-key.mjs
+      - name: 런타임 의존성 취약점 점검 (참고용 — 실패해도 빌드는 계속)
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+          path: |
+            dist
+            dist-single/index.html
+            server/dist
+          retention-days: 7
+
+  server:
+    name: 서버 테스트 (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mildo
+          POSTGRES_PASSWORD: mildo
+          POSTGRES_DB: mildo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mildo -d mildo_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://mildo:mildo@localhost:5432/mildo_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 서버 테스트 (실제 PostgreSQL, 파일마다 임시 스키마)
+        run: npm run test:server
+
+  smoke:
+    name: 통합 스모크 (마이그레이션 · 시드 · 서버 · 워커 · 로그인 · Dataset)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mildo
+          POSTGRES_PASSWORD: mildo
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mildo -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 서버 번들
+        run: npm run server:build
+      - name: 스모크 (번들로 실행)
+        env:
+          SMOKE_ADMIN_URL: postgres://mildo:mildo@localhost:5432/postgres
+          SMOKE_RUNTIME: dist
+        run: bash scripts/smoke-cloud.sh
+
+  e2e:
+    name: 브라우저 기능 점검 (데모 모드 E2E)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Playwright · Chromium 설치 (qa/run-e2e.sh는 전역 설치를 NODE_PATH로 찾는다)
+        run: |
+          npm install -g playwright@1.63.0
+          npx --yes playwright@1.63.0 install --with-deps chromium
+      - name: E2E (단일 파일 빌드 + 6개 점검 묶음)
+        run: npm run e2e
+      - name: 점검 로그 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ github.sha }}
+          path: qa/logs
+          if-no-files-found: ignore
+          retention-days: 14
+
+  docker:
+    name: 이미지 빌드 · compose 기동 점검
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: 이미지 빌드 (deploy/Dockerfile, 타입 검사 포함)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          load: true
+          push: false
+          tags: mildo-os-cloud:ci
+          build-args: |
+            APP_VERSION=ci
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: compose 기동 (db · migrate · app · worker · backup)
+        working-directory: deploy
+        run: |
+          # 저장소 루트 .gitignore의 '.env.*' 규칙에 '!.env.example' 예외가 없으면 이 파일이 커밋되지 않는다
+          [ -f .env.example ] || { echo "::error::deploy/.env.example가 저장소에 없습니다 — .gitignore에 '!.env.example' 예외를 넣고 커밋하세요"; exit 1; }
+          cp .env.example .env
+          sed -i \
+            -e "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$(openssl rand -base64 32)|" \
+            -e "s|^SESSION_SECRET=.*|SESSION_SECRET=$(openssl rand -base64 48 | tr -d '\n')|" \
+            -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(openssl rand -hex 24)|" \
+            -e "s|^SEED_OWNER_PASSWORD=.*|SEED_OWNER_PASSWORD=CiOwner#2027|" \
+            -e "s|^APP_URL=.*|APP_URL=http://127.0.0.1:8080|" \
+            -e "s|^SECURE_COOKIES=.*|SECURE_COOKIES=false|" \
+            -e "s|^MILDO_IMAGE=.*|MILDO_IMAGE=mildo-os-cloud:ci|" \
+            .env
+          docker compose up -d --no-build
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/api/health && break
+            [ "$i" = 60 ] && { docker compose ps; docker compose logs; exit 1; }
+            sleep 2
+          done
+      - name: 시드 · 레디니스 · 보안 헤더
+        working-directory: deploy
+        run: |
+          docker compose run --rm --no-deps -e SEED_DEMO_DATA=true app node server/dist/cli.mjs seed
+          for i in $(seq 1 60); do
+            s=$(curl -s http://127.0.0.1:8080/api/ready | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).status)}catch{console.log("")}})')
+            [ "$s" = "ready" ] && break
+            [ "$i" = 60 ] && { curl -s http://127.0.0.1:8080/api/ready; docker compose logs worker; exit 1; }
+            sleep 2
+          done
+          curl -fsS -D - -o /dev/null http://127.0.0.1:8080/ | tee /tmp/h.txt
+          grep -qi "^content-security-policy: default-src 'self'" /tmp/h.txt
+          grep -qi "^x-frame-options: DENY" /tmp/h.txt
+          docker compose run --rm --no-deps --entrypoint id app | grep -q "uid=10001"
+      - name: 종료
+        if: always()
+        working-directory: deploy
+        run: |
+          docker compose ps
+          docker compose logs --tail=50
+          docker compose down -v

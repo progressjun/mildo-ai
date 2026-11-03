@@ -1,0 +1,20 @@
+/* 데이터 연결 화면 — 색은 토큰(CSS 변수)만 쓴다 */
+.conn-page .conn-card { gap: 14px; }
+.conn-title { font-size: var(--fs-lg); }
+.conn-verdict { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; max-width: 360px; text-align: right; }
+.conn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px 16px; }
+.conn-kv { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.conn-creds { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 10px; background: var(--surface-2); border-radius: var(--r-sm); }
+.conn-creds code { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-2); }
+.conn-write { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line); }
+.conn-actions { gap: 6px; }
+.conn-cat { gap: 10px; }
+.conn-issues { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.conn-issue { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.conn-issue:last-child { border-bottom: 0; }
+.conn-issue code { font-family: var(--font-mono); }
+.conn-rules { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.conn-csv { font-family: var(--font-mono); font-size: var(--fs-sm); min-height: 140px; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+@media (max-width: 720px) {
+  .conn-verdict { align-items: flex-start; text-align: left; }
+}

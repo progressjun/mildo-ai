@@ -13,7 +13,9 @@ import { SettingsDialog } from './SettingsDialog';
 import { DemoBar } from './DemoBar';
 import { Toasts } from './Toasts';
 import { ModuleErrorBoundary } from './ErrorBoundary';
-import { fmtDate } from '@/core/util';
+import { useSaas } from '@/saas/context';
+import { dataTimeLabel, visibleModuleIds } from '@/saas/sync';
+import { ConnectionPill, UserMenu, WorkspaceSwitcher } from '@/saas/TopbarParts';
 
 const ICON: Record<string, string> = {
   home: 'home', agent: 'bot', board: 'board', adpilot: 'pilot', reports: 'report', watch: 'watch', lab: 'lab', geo: 'search', growth: 'trend', flow: 'flow', alert: 'bell', ops: 'users',
@@ -25,14 +27,23 @@ export function Shell() {
   const { state, dispatch } = useStore();
   const actions = useActions();
   const ai = useAi();
+  const saas = useSaas();
+  // 서버 모드: 서버가 원본 — 클라이언트 쪽 이상 감지 · 시연 이력 적재 · 대량 변경 감지는 서버(alerts · changes 도메인)가 한다
+  const serverMode = saas.mode === 'server' && !!saas.me;
   const [settings, setSettings] = useState(false);
-  const mod: ModuleDef = MODULE_BY_ID[route] ?? MODULE_BY_ID.home;
+  // 워크스페이스 설정의 사용 모듈 (config.modules) — 없으면 전부
+  const visible = useMemo(() => (serverMode ? visibleModuleIds(MODULES.map((m) => m.id), saas.config, { canConfigure: saas.can('configure') }) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [serverMode, saas.config, saas.role]);
+  const routed = MODULE_BY_ID[route];
+  const mod: ModuleDef = routed && (!visible || visible.has(routed.id)) ? routed : MODULE_BY_ID.home;
   const contentRef = useRef<HTMLDivElement>(null);
 
   // 앱 시작 시(그리고 '시연 상태 초기화' 직후) MILDO Alert 스캔 → 이슈 적재 + MILDO Flow 시연 이력 적재 (테스트 데이터 기반)
   const scanned = useRef(false);
   const emptyState = state.incidents.length === 0 && state.changes.length === 0;
   useEffect(() => {
+    if (serverMode) return;
     if (scanned.current && !emptyState) return;
     scanned.current = true;
     const found = detectIncidents(state.data);
@@ -49,6 +60,7 @@ export function Shell() {
   // 대량 변경 실수 감지 (p.45) — 어느 화면에서 변경을 요청 · 반영해도 MILDO Alert 이슈로 적재
   const seenBulk = useRef(new Set<string>());
   useEffect(() => {
+    if (serverMode) return;
     const bulk = detectBulkChange(state.changes, { today: state.data.today, config: activeConfig(state.changes) });
     const fresh = bulk.filter((b) => !state.incidents.some((i) => i.id === b.id) && !seenBulk.current.has(b.id));
     fresh.forEach((b) => { seenBulk.current.add(b.id); actions.addIncident(b); });
@@ -68,16 +80,16 @@ export function Shell() {
   const stubIds = useMemo(() => new Set(MODULES.filter(isStubModule).map((m) => m.id)), []);
   const groups = useMemo(() => {
     const g: Record<string, ModuleDef[]> = {};
-    for (const m of MODULES) (g[m.group] ??= []).push(m);
+    for (const m of MODULES) if (!visible || visible.has(m.id)) (g[m.group] ??= []).push(m);
     return g;
-  }, []);
+  }, [visible]);
 
   return (
     <div className="shell">
       <nav className="sidebar" aria-label="MILDO OS 메뉴">
         <div className="brand">
           <div className="brand-mark">MILDO <span className="os">OS</span></div>
-          <div className="brand-sub">수면밀도 전용 운영 프로그램 · Progress Media</div>
+          <div className="brand-sub">{serverMode && saas.workspace ? `${saas.workspace.brand_name} · MILDO OS Cloud` : '수면밀도 전용 운영 프로그램 · Progress Media'}</div>
         </div>
         {Object.entries(groups).map(([g, list]) => (
           <div className="nav-group" key={g}>
@@ -100,20 +112,28 @@ export function Shell() {
         <header className="topbar">
           <div className="row" style={{ gap: 8 }}>
             <Src kind="DEMO" />
-            <span className="small ink2 num">데이터 기준 {fmtDate(state.data.today)} {String(state.data.currentHour).padStart(2, '0')}:30</span>
+            <span className="small ink2 num">데이터 기준 {dataTimeLabel(state.data)}</span>
+            {serverMode ? <ConnectionPill /> : null}
           </div>
           <div className="topbar-spacer" />
           <Pill tone={ai.connected ? 'good' : 'neutral'} icon={ai.connected ? 'check' : 'zap'}>
-            {ai.backend === 'checking' ? 'AI 연결 확인 중' : BACKEND_LABEL[ai.backend]}
+            {ai.backend === 'checking' ? 'AI 연결 확인 중' : (BACKEND_LABEL as Record<string, string>)[ai.backend] ?? ai.backend}
           </Pill>
-          <label className="row small" htmlFor="role-select" style={{ gap: 6 }}>
-            <span className="muted">역할</span>
-            <select id="role-select" className="select" style={{ width: 'auto', padding: '4px 8px' }} value={state.role} onChange={(e) => dispatch({ type: 'role/set', role: e.target.value as typeof state.role })}>
-              <option value="담당 AE">담당 AE</option>
-              <option value="PM">PM</option>
-              <option value="수면밀도">수면밀도 담당자</option>
-            </select>
-          </label>
+          {serverMode ? (
+            <>
+              <WorkspaceSwitcher />
+              <UserMenu />
+            </>
+          ) : (
+            <label className="row small" htmlFor="role-select" style={{ gap: 6 }}>
+              <span className="muted">역할</span>
+              <select id="role-select" className="select" style={{ width: 'auto', padding: '4px 8px' }} value={state.role} onChange={(e) => dispatch({ type: 'role/set', role: e.target.value as typeof state.role })}>
+                <option value="담당 AE">담당 AE</option>
+                <option value="PM">PM</option>
+                <option value="수면밀도">수면밀도 담당자</option>
+              </select>
+            </label>
+          )}
           {!state.demo.running ? (
             <Button size="sm" variant="accent" icon="play" onClick={() => { dispatch({ type: 'demo/start' }); navigate('board'); }}>라이브 데모 15분</Button>
           ) : null}

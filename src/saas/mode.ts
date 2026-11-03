@@ -6,14 +6,28 @@ export type AppMode = 'demo' | 'server';
 
 let cached: Promise<AppMode> | null = null;
 
+/**
+ * 서버 확인 없이 바로 알 수 있는 경우 — claude.ai 아티팩트 · file: · window 없음 → 'demo'. 나머지는 null(/api/health 확인 필요).
+ * 앱 첫 렌더에서 데모 모드를 기다림 없이 그대로 보여 주는 데 쓴다.
+ */
+export function quickMode(): AppMode | null {
+  try {
+    if (typeof window === 'undefined') return 'demo';
+    const w = window as unknown as { claude?: unknown };
+    if (w.claude) return 'demo';
+    if (typeof location === 'undefined' || location.protocol === 'file:' || location.protocol === 'about:' || location.protocol === 'data:' || location.protocol === 'blob:') return 'demo';
+    return null;
+  } catch {
+    return 'demo';
+  }
+}
+
 export function detectMode(): Promise<AppMode> {
   if (cached) return cached;
   cached = (async () => {
     try {
-      if (typeof window === 'undefined') return 'demo';
-      const w = window as unknown as { claude?: unknown };
-      if (w.claude) return 'demo';
-      if (location.protocol === 'file:' || location.protocol === 'about:') return 'demo';
+      const quick = quickMode();
+      if (quick) return quick;
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), 1500);
       const res = await fetch('/api/health', { signal: ctl.signal, credentials: 'same-origin' }).finally(() => clearTimeout(timer));

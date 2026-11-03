@@ -1,0 +1,23 @@
+# 관리형 PostgreSQL(예: AWS RDS · Google Cloud SQL · NCP Cloud DB for PostgreSQL 16) 사용 시 덮어쓰기 파일.
+#   docker compose -f docker-compose.yml -f docker-compose.managed-db.yml up -d --build
+# .env에 DATABASE_URL(예: postgres://mildo:<비밀번호>@<호스트>:5432/mildo?sslmode=require)을 반드시 넣는다.
+# 로컬 db · backup 컨테이너는 띄우지 않는다(백업은 관리형 서비스의 자동 백업 · PITR을 쓴다 — docs/OPERATIONS.md).
+
+services:
+  db:
+    profiles: ["local-db"]
+  backup:
+    profiles: ["local-db"]
+  migrate:
+    depends_on: !reset {}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?관리형 DB 모드에서는 .env에 DATABASE_URL이 필요합니다}
+      MIGRATE_ON_START: "false"
+  app:
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?관리형 DB 모드에서는 .env에 DATABASE_URL이 필요합니다}
+      MIGRATE_ON_START: "false"
+  worker:
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?관리형 DB 모드에서는 .env에 DATABASE_URL이 필요합니다}
+      MIGRATE_ON_START: "false"
