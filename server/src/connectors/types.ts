@@ -100,5 +100,13 @@ export interface ConnectorDef<C = any, S = any> {
   test(ctx: ConnectorContext<C, S>): Promise<{ ok: boolean; message: string; account?: string }>;
   fetch(ctx: ConnectorContext<C, S>, range: DateRange, opts?: { intradayDate?: string }): Promise<NormalizedBatch>;
   /** 매체 반영 (writes에 있는 kind만) */
-  apply?(ctx: ConnectorContext<C, S>, change: ChangeRequest): Promise<ApplyResult>;
+  apply?(ctx: ConnectorContext<C, S>, change: ApplyChange): Promise<ApplyResult>;
 }
+
+/**
+ * apply에 넘어오는 변경 — ChangeRequest + 변경 실행기가 웨어하우스(wh_entities.doc)에서 읽어 붙인 대상 정보(허용 필드만).
+ * 커넥터는 entity를 사전 확인 값으로만 쓴다: live에서는 매체에서 다시 읽어 다르면 중단한다.
+ */
+export type ApplyChange = ChangeRequest & {
+  entity?: { type: 'keyword' | 'campaign' | 'account'; externalId: string; name?: string; text?: string; media?: string; campaignId?: string; adgroupId?: string };
+};

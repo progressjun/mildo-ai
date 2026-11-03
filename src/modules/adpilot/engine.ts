@@ -1666,12 +1666,15 @@ export function gfaOverview(data: Dataset, changes: readonly ChangeRequest[] = [
   const demo = gfaDemoCampaigns(data);
   const created = gfaNewCampaigns(data, changes);
   const all = effectiveCampaigns(data, changes, [...demo, ...created]).filter((c) => c.media === 'naver_gfa');
-  const accountOf = (id: string) => demo.find((d) => d.id === id)?.accountId ?? created.find((d) => d.id === id)?.accountId ?? GFA_MAIN_ACCOUNT_ID;
+  // 실연동 GFA 계정 id는 'gfa-<광고계정 번호>' — 데모 계정이 아닌 첫 계정을 기본 계정으로 쓴다 (없으면 데모 기본 계정)
+  const bases = gfaAccountsBase(data);
+  const mainId = bases.find((b) => !b.demo)?.account.id ?? GFA_MAIN_ACCOUNT_ID;
+  const accountOf = (id: string) => demo.find((d) => d.id === id)?.accountId ?? created.find((d) => d.id === id)?.accountId ?? mainId;
   const paces = paceCampaigns(data, all, cfg);
   const guard = mediaGuards(data, cfg).naver_gfa;
   const cum = hourlyCostCurve(data, 'naver_gfa');
   const H = clamp(Math.round(safeNum(data.currentHour)), 0, 23);
-  return gfaAccountsBase(data).map(({ account: baseAccount, demo: isDemo }) => {
+  return bases.map(({ account: baseAccount, demo: isDemo }) => {
     const toppedUp = appliedTopup(changes, baseAccount);
     const account: AdAccount = toppedUp > 0 && baseAccount.balance >= 0 ? { ...baseAccount, balance: baseAccount.balance + toppedUp } : baseAccount;
     const cs = all.filter((c) => accountOf(c.id) === account.id);

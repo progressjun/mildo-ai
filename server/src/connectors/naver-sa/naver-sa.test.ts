@@ -264,6 +264,22 @@ describe('반영 (apply)', () => {
     expect(put.headers?.['X-Signature']).toBe(signNaver(CREDS.secretKey, put.headers!['X-Timestamp'], 'PUT', `/ncc/keywords/${KW_GENERIC}`));
   });
 
+  it('변경 실행기가 붙인 entity.adgroupId: dry_run 요청에 그대로 싣고, live에서 매체 값과 다르면 PUT 없이 멈춘다', async () => {
+    const withEntity = (adgroupId: string) => ({ ...change({}), entity: { type: 'keyword' as const, externalId: KW_GENERIC, adgroupId } });
+    const dry = await connector.apply!(fakeCtx(CREDS, {}, fakeHttp([]), { dryRun: true }), withEntity(GRP_GENERIC));
+    const steps = (dry.request as { steps: { body?: unknown }[] }).steps;
+    expect(steps[1].body).toMatchObject({ nccAdgroupId: GRP_GENERIC });
+    // 형식이 아닌 값은 쓰지 않는다
+    const bad = await connector.apply!(fakeCtx(CREDS, {}, fakeHttp([]), { dryRun: true }), withEntity('../../etc'));
+    expect((bad.request as { steps: { body?: { nccAdgroupId?: string } }[] }).steps[1].body?.nccAdgroupId).toBe('(사전 확인 결과)');
+
+    const http = fakeHttp([{ method: 'GET', match: `/ncc/keywords/${KW_GENERIC}`, reply: { data: { nccKeywordId: KW_GENERIC, nccAdgroupId: GRP_GENERIC, bidAmt: 900, useGroupBidAmt: false } } }]);
+    const r = await connector.apply!(fakeCtx(CREDS, {}, http), withEntity('grp-a001-01-000000000099999'));
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/광고그룹.*다릅니다/);
+    expect(http.calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+  });
+
   it('현재 값이 요청 시점과 다르면 PUT 없이 멈춘다 · 범위 밖 입찰가는 호출 전 거절', async () => {
     const http = fakeHttp([{ method: 'GET', match: '/ncc/keywords/', reply: { data: { nccKeywordId: KW_GENERIC, nccAdgroupId: GRP_GENERIC, bidAmt: 1500 } } }]);
     const r = await connector.apply!(fakeCtx(CREDS, {}, http), change({}));
@@ -350,6 +366,8 @@ describe('반영 (apply)', () => {
       const dup = fakeHttp([{ method: 'GET', match: '/ncc/keywords', reply: { data: [{ nccKeywordId: 'nkw-a001-01-000000000000777', nccAdgroupId: GRP_TEST, keyword: '퀸매트리스 추천' }] } }]);
       const d = await connector.apply!(fakeCtx(CREDS, { testAdgroups: { generic: GRP_TEST } }, dup), add());
       expect(d).toMatchObject({ ok: true, appliedValue: 'nkw-a001-01-000000000000777' });
+      // 응답 표식: 원래 있던 키워드 → existing (롤백 대상 아님)
+      expect(d.response).toMatchObject({ existing: { nccKeywordId: 'nkw-a001-01-000000000000777' } });
       expect(dup.calls.filter((c) => c.method === 'POST')).toHaveLength(0);
 
       const http = fakeHttp([
@@ -358,6 +376,7 @@ describe('반영 (apply)', () => {
       ]);
       const r = await connector.apply!(fakeCtx(CREDS, { testAdgroups: { generic: GRP_TEST } }, http), add());
       expect(r).toMatchObject({ ok: true, appliedValue: 'nkw-a001-01-000000000000888' });
+      expect(r.response).toMatchObject({ created: [{ nccKeywordId: 'nkw-a001-01-000000000000888' }] });
       const post = http.calls.find((c) => c.method === 'POST')!;
       expect(post.query).toEqual({ nccAdgroupId: GRP_TEST });
       expect(post.headers?.['X-Signature']).toBe(signNaver(CREDS.secretKey, post.headers!['X-Timestamp'], 'POST', '/ncc/keywords'));

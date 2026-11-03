@@ -31,7 +31,7 @@
  *   현재 값이 요청 시점 값(before)과 다르면 덮어쓰지 않고 멈춘다(설정 allowDrift로 끌 수 있음).
  */
 import { z } from 'zod';
-import type { ApplyResult, ConnectorContext, ConnectorDef, DateRange, NormalizedBatch } from '../types';
+import type { ApplyChange, ApplyResult, ConnectorContext, ConnectorDef, DateRange, NormalizedBatch } from '../types';
 import type { AdAccount, ChangeRequest, IntentId } from '@/core/types';
 import { addDaysStr, dateRange, kstHour, kstToday, nowMs } from '../../lib/time';
 import {
@@ -306,15 +306,29 @@ async function applyKeywordAdd(ctx: ConnectorContext, client: NaverSaClient, s: 
     ],
     live: async () => {
       const existing = (await client.keywords(grp)).find((k) => !isDeleted(k) && normKw(k.keyword) === normKw(term));
-      if (existing) return { response: existing, appliedValue: existing.nccKeywordId, notes: [`이미 등록된 키워드(${existing.nccKeywordId}) — 다시 만들지 않았습니다`] };
+      // 응답 표식: existing = 원래 있던 키워드(롤백 시 건드리면 안 됨) · created = 이번에 만든 키워드(롤백 시 OFF 대상)
+      if (existing) return { response: { existing }, appliedValue: existing.nccKeywordId, notes: [`이미 등록된 키워드(${existing.nccKeywordId}) — 다시 만들지 않았습니다`] };
       const res = await client.call<NaverKeyword[]>('POST', '/ncc/keywords', '키워드 등록', query, body);
-      const created = Array.isArray(res.data) ? res.data[0] : undefined;
-      return { response: res.data, appliedValue: created?.nccKeywordId ?? bid, notes: created?.nccKeywordId ? [`등록 키워드 ${created.nccKeywordId} · 입찰 ${num(created.bidAmt) || bid}원`] : [] };
+      const createdList = Array.isArray(res.data) ? res.data : [];
+      const created = createdList[0];
+      return { response: { created: createdList }, appliedValue: created?.nccKeywordId ?? bid, notes: created?.nccKeywordId ? [`등록 키워드 ${created.nccKeywordId} · 입찰 ${num(created.bidAmt) || bid}원`] : [] };
     },
   });
 }
 
-export async function applyNaverSa(ctx: ConnectorContext, change: ChangeRequest): Promise<ApplyResult> {
+/** 변경 실행기가 웨어하우스에서 붙인 광고그룹 id (있으면 dry_run 요청에 그대로 싣고, live는 매체 값과 다르면 중단) */
+function knownAdgroup(change: ApplyChange): string | null {
+  const g = change.entity?.adgroupId;
+  return typeof g === 'string' && /^grp-[A-Za-z0-9-]{1,80}$/.test(g) ? g : null;
+}
+
+function assertSameAdgroup(known: string | null, actual: string | undefined): void {
+  if (known && actual && known !== actual) {
+    throw new Error(`웨어하우스의 광고그룹(${known})과 매체의 광고그룹(${actual})이 다릅니다 — 데이터를 다시 수집한 뒤 반영하세요 (보내지 않았습니다)`);
+  }
+}
+
+export async function applyNaverSa(ctx: ConnectorContext, change: ApplyChange): Promise<ApplyResult> {
   const s = parseSettings(ctx);
   let client: NaverSaClient;
   try {
@@ -332,7 +346,8 @@ export async function applyNaverSa(ctx: ConnectorContext, change: ChangeRequest)
     if (after === null) return { ok: false, request: { targetId: t.id }, error: '입찰가 값이 올바르지 않습니다' };
     if (after < NAVER_BID_MIN || after > NAVER_BID_MAX) return { ok: false, request: { targetId: t.id, bidAmt: after }, error: `네이버 키워드 입찰가는 ${NAVER_BID_MIN}~${NAVER_BID_MAX.toLocaleString('ko-KR')}원입니다 (요청 ${after.toLocaleString('ko-KR')}원)` };
     const path = `/ncc/keywords/${t.id}`;
-    const planned = { nccKeywordId: t.id, nccAdgroupId: '(사전 확인 결과)', bidAmt: after, useGroupBidAmt: false };
+    const known = knownAdgroup(change);
+    const planned = { nccKeywordId: t.id, nccAdgroupId: known ?? '(사전 확인 결과)', bidAmt: after, useGroupBidAmt: false };
     return executePlan(ctx, {
       label: NAVER_SA_LABEL, what: '키워드 입찰가 변경', intended: after,
       steps: [
@@ -341,6 +356,7 @@ export async function applyNaverSa(ctx: ConnectorContext, change: ChangeRequest)
       ],
       live: async () => {
         const kw = await client.keyword(t.id);
+        assertSameAdgroup(known, kw.nccAdgroupId);
         const notes: string[] = [];
         if (kw.useGroupBidAmt) notes.push('광고그룹 기본 입찰가를 쓰던 키워드 — 키워드 입찰가로 전환');
         else assertNoDrift('키워드 입찰가', change.before, num(kw.bidAmt), after, s.allowDrift);
@@ -382,14 +398,16 @@ export async function applyNaverSa(ctx: ConnectorContext, change: ChangeRequest)
     const userLock = onoff === 'off';
     if (t.type === 'keyword') {
       const path = `/ncc/keywords/${t.id}`;
+      const known = knownAdgroup(change);
       return executePlan(ctx, {
         label: NAVER_SA_LABEL, what: `키워드 ${onoff === 'on' ? 'ON' : 'OFF'}`, intended: onoff,
         steps: [
           step(client.request('GET', path), '광고그룹 ID 확인'),
-          step(client.request('PUT', path, { fields: 'userLock' }, { nccKeywordId: t.id, nccAdgroupId: '(사전 확인 결과)', userLock })),
+          step(client.request('PUT', path, { fields: 'userLock' }, { nccKeywordId: t.id, nccAdgroupId: known ?? '(사전 확인 결과)', userLock })),
         ],
         live: async () => {
           const kw = await client.keyword(t.id);
+          assertSameAdgroup(known, kw.nccAdgroupId);
           const res = await client.call<NaverKeyword>('PUT', path, '키워드 ON/OFF', { fields: 'userLock' }, { nccKeywordId: t.id, nccAdgroupId: kw.nccAdgroupId, userLock });
           return { response: res.data, appliedValue: res.data?.userLock === undefined ? onoff : res.data.userLock ? 'off' : 'on' };
         },

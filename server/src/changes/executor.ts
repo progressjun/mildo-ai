@@ -414,14 +414,21 @@ export async function resolveRollbackPlan(rc: ResolveCtx, ws: string, c: ChangeR
   if (!applyExec || applyExec.mode === 'none' || !prev?.ops?.length) {
     return { kind: 'record', reason: '반영 시 매체에 보내지 않은 건(기록만) — 되돌릴 매체 값이 없어 기록만' };
   }
+  // 되돌릴 작업: 절대값 설정은 after → before, live로 새로 등록한 키워드는 그 키워드만 OFF (원래 있던 키워드는 건드리지 않는다)
+  let undoOps: ExecOp[];
   if (prev.ops.some((o) => !o.idempotent)) {
     if (applyExec.mode === 'dry_run') return { kind: 'record', reason: 'dry_run으로 기록된 신규 생성 · 키워드 추가 — 되돌릴 매체 값이 없어 기록만' };
-    return { kind: 'blocked', reason: '신규 생성 · 키워드 추가는 자동 롤백을 지원하지 않습니다 — 매체 화면에서 OFF · 삭제 후 이력에 남겨 주세요' };
+    const undo = keywordAddUndo(prev.ops, applyExec.results ?? []);
+    if (undo === null) return { kind: 'blocked', reason: '신규 생성은 자동 롤백을 지원하지 않습니다 (키워드 추가는 커넥터가 새로 만든 키워드 id를 돌려줄 때만) — 매체 화면에서 OFF · 삭제 후 이력에 남겨 주세요' };
+    if (!undo.length) return { kind: 'record', reason: '등록하려던 키워드가 원래 매체에 있던 키워드였습니다 — 이 변경이 만든 것이 없어 매체 값은 그대로 두고 기록만' };
+    undoOps = undo;
+  } else {
+    undoOps = [...prev.ops].reverse().map((o) => ({ ...o, before: o.after, after: o.before, target: `${o.target} (롤백)` }));
   }
   const cache = new Map<string, ConnectorBinding | null>();
   const bindings = new Map<string, ConnectorBinding>();
   const conns: ConnectionRow[] = [];
-  for (const op of prev.ops) {
+  for (const op of undoOps) {
     if (bindings.has(op.connectionId)) continue;
     const conn = await getConnection(rc.db, ws, op.connectionId);
     if (!conn) return { kind: 'blocked', reason: `반영에 쓴 커넥션(${op.connectionId})이 삭제되어 롤백할 수 없습니다` };
@@ -437,8 +444,39 @@ export async function resolveRollbackPlan(rc: ResolveCtx, ws: string, c: ChangeR
   }
   // dry_run 반영 건은 live 커넥션이어도 dry_run으로만 되돌린다 (매체에 보낸 적 없는 값을 live로 덮지 않는다)
   const mode = applyExec.mode === 'dry_run' ? 'dry_run' : m.mode;
-  const ops: ExecOp[] = [...prev.ops].reverse().map((o) => ({ ...o, before: o.after, after: o.before, target: `${o.target} (롤백)` }));
-  return { kind: 'plan', plan: { mode, ops }, bindings, notes: m.notes };
+  return { kind: 'plan', plan: { mode, ops: undoOps }, bindings, notes: m.notes };
+}
+
+const CREATED_ID = /^[A-Za-z0-9_:.\-]{1,128}$/;
+
+/**
+ * live 키워드 추가의 되돌림 — 커넥터 응답 표식 { created: [{ nccKeywordId | id }] } · { existing } 기준.
+ * 반환: 되돌릴 작업(키워드 OFF) 목록 · 빈 배열(만든 것 없음) · null(되돌릴 근거 없음 → 수동).
+ */
+export function keywordAddUndo(ops: readonly ExecOp[], results: readonly OpResult[]): ExecOp[] | null {
+  const out: ExecOp[] = [];
+  for (let i = ops.length - 1; i >= 0; i--) {
+    const op = ops[i];
+    if (op.idempotent) {
+      out.push({ ...op, before: op.after, after: op.before, target: `${op.target} (롤백)` });
+      continue;
+    }
+    if (op.kind !== 'keyword_add') return null;
+    const r = results[i];
+    if (!r || !r.ok || r.externalId !== op.externalId) return null;
+    const resp = (r.response ?? {}) as { created?: unknown; existing?: unknown };
+    if (resp.existing && !resp.created) continue;
+    if (!Array.isArray(resp.created) || !resp.created.length) return null;
+    for (const k of resp.created) {
+      const id = (k as { nccKeywordId?: unknown; id?: unknown })?.nccKeywordId ?? (k as { id?: unknown })?.id;
+      if (typeof id !== 'string' || !CREATED_ID.test(id)) return null;
+      out.push({
+        externalId: id, entityType: 'keyword', kind: 'status', target: `${op.target} (롤백: 등록한 키워드 OFF)`,
+        before: 'on', after: 'off', role: 'primary', connectionId: op.connectionId, provider: op.provider, idempotent: true,
+      });
+    }
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ */

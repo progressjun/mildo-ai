@@ -559,6 +559,38 @@ describe('매체 반영 (커넥터 apply)', () => {
 /* ---------- 롤백 ---------- */
 
 describe('롤백', () => {
+  it('live 키워드 추가: 커넥터가 새로 만든 키워드만 OFF로 되돌리고, 원래 있던 키워드였으면 기록만, 근거가 없으면 보류', async () => {
+    await addConnection('naver_sa', 'naver_sa', 'live', 'SA live');
+    const kwAdd = (term: string) => approved({ module: 'lab', kind: 'keyword_add', target: `${term} 등록`, targetId: `term:${term}`, before: '미등록', after: 'GENERIC_TEST · 입찰 500원', changePct: undefined });
+
+    behavior = async (c) => c.change.kind === 'keyword_add'
+      ? { ok: true, request: {}, response: { created: [{ nccKeywordId: 'nkw-new-0001' }] }, appliedValue: 'nkw-new-0001' }
+      : { ok: true, request: {}, response: {}, appliedValue: c.change.after };
+    const a = await kwAdd('허리 매트리스');
+    expect((await to(u.ae, a.id, 'applied')).json.change.status).toBe('applied');
+    const ra = await to(u.ae, a.id, 'rolled_back');
+    expect(ra.json.change.status).toBe('rolled_back');
+    expect(calls[1]).toMatchObject({ dryRun: false, change: { kind: 'status', targetId: 'nkw-new-0001', before: 'on', after: 'off' } });
+
+    calls = [];
+    behavior = async () => ({ ok: true, request: {}, response: { existing: { nccKeywordId: 'nkw-old-0002' } }, appliedValue: 'nkw-old-0002' });
+    const b = await kwAdd('경도 매트리스');
+    await to(u.ae, b.id, 'applied');
+    const rb = await to(u.ae, b.id, 'rolled_back');
+    expect(rb.json.change.status).toBe('rolled_back');
+    expect(calls).toHaveLength(1); // 원래 있던 키워드는 건드리지 않는다
+    expect(JSON.stringify(rb.json.change.execution)).toMatch(/원래 매체에 있던 키워드/);
+
+    calls = [];
+    behavior = async () => ({ ok: true, request: {}, response: { something: 'else' }, appliedValue: 'x' });
+    const c = await kwAdd('토퍼 추천');
+    await to(u.ae, c.id, 'applied');
+    const rc = await to(u.ae, c.id, 'rolled_back');
+    expect(rc.json.change.status).toBe('applied');
+    expect(last(rc.json.change.history)).toMatchObject({ action: '롤백 보류' });
+    expect(calls).toHaveLength(1);
+  });
+
   it('직전 값으로 되돌리는 요청(after → before)을 같은 경로로 보낸다', async () => {
     await saWithKeyword('live');
     const c = await approved();
