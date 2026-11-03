@@ -62,7 +62,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
           from: process.env.SMTP_FROM ?? 'MILDO OS <no-reply@localhost>',
         }
       : null,
-    workerId: process.env.WORKER_ID ?? `worker-${process.pid}`,
+    // '#'은 잡 잠금 표기(<워커>#<레인>) 구분자라 워커 id에 쓰지 않는다 (하트비트가 두 줄로 갈라짐)
+    workerId: (process.env.WORKER_ID ?? `worker-${process.pid}`).replace(/#/g, '_'),
     logLevel: (process.env.LOG_LEVEL as AppConfig['logLevel']) ?? (env === 'test' ? 'silent' : 'info'),
     ...overrides,
   };

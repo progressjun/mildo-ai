@@ -28,6 +28,9 @@ import { ON_DUTY_POOL as ALERT_DUTY_POOL } from '@/modules/alert/data';
 import { ON_DUTY_POOL as OPS_DUTY_POOL } from '@/modules/ops/data';
 import { PROPOSAL_SHARES as GROWTH_PLAN_SHARES } from '@/modules/growth/engine';
 
+// zod 4의 JIT 감지(new Function)는 앱 CSP(script-src 'self')에서 위반 보고를 남긴다 — 결과는 같으므로 JIT를 끈다
+z.config({ jitless: true });
+
 /* ============================== 식별자 ============================== */
 
 export const MEDIA_ID_LIST = ['naver_sa', 'naver_gfa', 'google', 'meta', 'kakao', 'vertical'] as const satisfies readonly MediaId[];

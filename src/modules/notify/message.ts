@@ -31,7 +31,8 @@ export interface MessageInput {
   incident?: NotifyIncident;
   stage?: EscStage;
   /** report · channel_test 등 이슈가 아닌 알림 */
-  generic?: { title: string; text: string; link?: string; severity?: Severity };
+  /** body = 메일 본문 전문 (리포트 마크다운 등 · 없으면 text) — Slack · 웹훅은 text만 쓴다 */
+  generic?: { title: string; text: string; body?: string; link?: string; severity?: Severity };
   /** 발송 시각 (ms) — 웹훅 sentAt */
   sentAtMs?: number;
 }
@@ -135,7 +136,7 @@ export function buildMessage(m: MessageInput): Message {
   if (!i) {
     const g = m.generic ?? { title: 'MILDO OS 알림', text: '' };
     const glink = g.link ?? m.appUrl;
-    const text = [`${g.title}`, '', g.text, '', `열기: ${glink}`, '', `워크스페이스 ${brand} · MILDO OS Cloud 자동 발송`].join('\n');
+    const text = [`${g.title}`, '', g.body || g.text, '', `열기: ${glink}`, '', `워크스페이스 ${brand} · MILDO OS Cloud 자동 발송`].join('\n');
     return {
       subject: clip(`[MILDO OS] ${g.title}`, 200),
       text,

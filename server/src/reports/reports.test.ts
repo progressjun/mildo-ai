@@ -317,13 +317,20 @@ describe('POST /reports/:id/deliver — 채널 발송 (fanOutGeneric → notify.
     await runJobs(['notify.send']);
     expect(posts.map((p) => p.url).sort()).toEqual([HOOK, SLACK].sort());
     expect(JSON.parse(posts.find((p) => p.url === HOOK)!.body)).toMatchObject({ event: 'report' });
-    // 메일 = 요약 + 보관함 링크 (notify.send 메시지 형식)
+    // 메일 = 마크다운 전문 + 보관함 링크 (payload.body는 메일 채널 잡에만 실린다) · Slack · 웹훅 = 메신저형 요약
+    const md = (await t.db.query<{ markdown: string }>('SELECT markdown FROM reports WHERE id = $1', [id])).rows[0].markdown;
+    const bodyOf = (chId: string) => (jobs.find((j) => j.payload.channelId === chId)!.payload.payload as { body?: string }).body;
+    expect(bodyOf(mail)).toBe(md);
+    expect(bodyOf(slack)).toBeUndefined();
+    expect(bodyOf(hook)).toBeUndefined();
     const out = getTestOutbox();
     expect(out).toHaveLength(1);
     expect(out[0].to).toEqual(['brand@client.test']);
     expect(out[0].subject).toContain('일간 리포트');
-    expect(out[0].text).toContain('[MILDO 일간]');
+    expect(out[0].text).toContain(md);
+    expect(out[0].text).not.toContain('[MILDO 일간]');
     expect(out[0].text).toContain('https://os.mildo.test/#impact');
+    expect(JSON.parse(posts.find((p) => p.url === SLACK)!.body).blocks[1].text.text).toContain('[MILDO 일간]');
     const after = await viewer.get(W(`/reports/${id}`));
     const st = Object.fromEntries(after.json.report.delivered.map((x: { channelId: string; status: string }) => [x.channelId, x.status]));
     expect(st).toEqual({ [slack]: 'sent', [mail]: 'sent', [hook]: 'sent' });

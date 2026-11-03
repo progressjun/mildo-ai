@@ -58,7 +58,7 @@
 | `impact.measure` | 매일 06:00 | 성과 증명 장부 측정 |
 | `team.cleanup` | 매일 04:17 | 만료 세션 · 비밀번호 재설정 토큰 정리 |
 
-  워커를 여러 대 두면 같은 스케줄이 여러 번 돌지만 잡마다 dedupe 키가 있어 한 번만 만들어진다. `/api/ready`는 워커 하트비트와 함께 예약 감지 잡(`alerts.scan`)이 실제로 생기는지도 본다(아래 '모니터링').
+  워커를 여러 대 두면 같은 스케줄이 워커마다 돈다. 잡을 만드는 스케줄은 dedupe 키(예: 워크스페이스 · 날짜 · 10분 칸)로 같은 잡을 한 번만 만들고, 정리 · 점검 스케줄(`team.cleanup` · `changes.sweep`)은 여러 번 돌아도 결과가 같다. `/api/ready`는 워커 하트비트와 함께 예약 감지 잡(`alerts.scan`)이 실제로 생기는지도 본다(아래 '모니터링').
 
 ---
 
@@ -153,6 +153,7 @@ docker compose -f docker-compose.yml -f docker-compose.managed-db.yml --profile 
 | `SCHEDULER` | - | on | off면 이 워커는 스케줄을 돌리지 않는다 |
 | `ANTHROPIC_API_KEY` | - | 없음 | 서버 AI 호출 키(조직 키). **서버 환경변수에만** 둔다 — 브라우저 · API 응답 · 로그로 내려가지 않는다. 비우면 AI 기능은 '서버 AI 미설정'으로 꺼진다(503 `ai_not_configured`) |
 | `ANTHROPIC_MODEL` | - | `claude-opus-5-5` | 서버 AI 모델. 서버가 adaptive thinking으로 호출하므로 **adaptive thinking을 지원하는 모델**이어야 한다(지원하지 않는 모델로 바꾸면 호출이 오류로 끝난다) |
+| `ANTHROPIC_BASE_URL` | - | 없음 (공식 엔드포인트) | 공식 SDK가 읽는 API 주소. **운영자만** 정한다 — Anthropic 또는 신뢰하는 게이트웨이만 가리켜야 한다(조직 키가 그 주소로 전송된다) |
 | `SMTP_HOST` · `SMTP_PORT` · `SMTP_SECURE` · `SMTP_USER` · `SMTP_PASS` · `SMTP_FROM` | - | 없음 · 587 · false | 메일. `SMTP_HOST`가 비면 메일을 보내지 않는다 |
 | `SEED_OWNER_EMAIL` · `SEED_OWNER_PASSWORD` · `SEED_OWNER_NAME` | 시드 시 O | - | 첫 owner 계정 |
 | `SEED_DEMO_DATA` | - | true(CLI) · false(.env.example) | 데모 커넥션 + TEST DATA 120일 백필 |
@@ -173,6 +174,11 @@ docker compose -f docker-compose.yml -f docker-compose.managed-db.yml --profile 
 | `BACKUP_TIME` · `BACKUP_KEEP_DAYS` · `RETENTION_ENABLED` | - | 03:30 · 14 · false | 야간 백업 · 보관 정리 |
 
 `.env`를 바꾼 뒤에는 `docker compose up -d`로 컨테이너를 다시 만든다(`restart`만으로는 env_file이 다시 읽히지 않는다).
+
+
+### AI 호출 운영 메모
+
+서버 측 폴백(거절 시 기본 폴백 모델로 재시도)은 `ANTHROPIC_MODEL`이 claude-fable-5-1 · claude-mythos-5-1 · claude-fable-5 · claude-opus-5-5 · claude-opus-5 · claude-sonnet-5-5 · claude-haiku-5-5 중 하나일 때만 요청에 실린다. 그 밖의 모델은 폴백 없이 호출된다. 사용자가 중간에 취소한 호출과 스트림이 끊긴 호출은 끊기기 전까지 받은 사용량만 기록되므로 출력 토큰이 실제보다 적게 잡힐 수 있다(월 한도 판정도 같은 값을 쓴다). 월 한도는 호출 직전에 확인하는 방식이라 동시에 시작한 요청이 한도를 요청 1건 분량만큼 넘길 수 있다.
 
 ---
 
@@ -514,7 +520,7 @@ mpsql -c "DELETE FROM workspaces WHERE slug = '<슬러그>'"                    
 - 네트워크: 밖으로 여는 포트는 80 · 443(Caddy)뿐이다. app은 127.0.0.1:8080, db는 내부 네트워크에만 있다.
 - 컨테이너: 비root(uid 10001), 읽기 전용 루트 파일시스템(/tmp만 tmpfs), `no-new-privileges`, 커널 권한 전부 제거. 코드 파일은 root 소유라 앱이 스스로 바꿀 수 없다.
 - 헤더(`server/src/http/security.ts`): 스트림 응답(SSE · AI, `reply.hijack()`으로 직접 쓰는 응답)에도 같은 헤더와 `x-request-id`가 붙는다. 화면 응답 CSP `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`, API 응답 CSP `default-src 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`(카메라 · 마이크 · 위치 · 결제 등 차단), `Cross-Origin-Opener-Policy` · `Cross-Origin-Resource-Policy: same-origin`, API 응답 `Cache-Control: no-store`, `SECURE_COOKIES=true`일 때 HSTS 1년. 정적 파일은 index.html(304 재검증 응답 포함) no-cache, 해시가 붙은 `/assets/*`만 1년 immutable.
-- CSP 점검 결과(2026-11-02, 서버 모드 · Chromium · 로그인 뒤 주요 화면 순회): 차단으로 깨지는 기능은 없고, 위반 보고 1건이 남아 있다 — zod 4가 설정 검사(`src/data/config.ts`, 워크스페이스 설정 적용) 때 JIT 가능 여부를 `new Function("")`으로 시험하면서 `script-src` eval 보고를 낸다. 예외는 zod가 삼키고 일반 검사로 돌아가므로 동작은 같다. 프런트에서 `z.config({ jitless: true })`를 켜면 사라진다(해당 도메인에 요청함). CSP에 `'unsafe-eval'`을 더하지 않는다.
+- CSP 점검 결과(2026-11-03, 서버 모드 · Chromium · owner와 client 두 역할로 로그인 뒤 18개 화면 순회): 페이지 오류 · 실패한 요청 · 5xx는 없고, 차단으로 깨지는 기능도 없다. 위반 보고 1건이 남아 있다 — zod 4가 설정 검사(`src/data/config.ts`, 워크스페이스 설정 적용) 때 JIT 가능 여부를 `new Function("")`으로 시험하면서 `script-src` eval 보고를 낸다. 예외는 zod가 삼키고 일반 검사로 돌아가므로 동작은 같다. 프런트에서 `z.config({ jitless: true })`를 켜면 사라진다(settings 도메인에 요청함). CSP에 `'unsafe-eval'`을 더하지 않는다. 콘솔의 401 한 건은 로그인 전 세션 확인(`GET /api/auth/me`)이라 정상이다.
 - 경로 판정: 속도 제한 · 로그인 잠금 · API 헤더는 원시 URL 문자열이 아니라 라우터가 고른 라우트(`/api/auth/login`, `/api/w/:ws/events` 등)로 판정한다. `/%61pi/…`처럼 인코딩하거나 `#…`을 붙여 같은 라우트를 불러도 같은 제한을 받는다.
 - CSP 때문에 브라우저에서 외부 API를 직접 부르는 기능(예: AI 설정의 '브라우저에서 Anthropic 직접 호출')은 서버 모드에서 막힌다. 서버 모드 AI는 서버 키로 호출하므로 필요 없다. 꼭 써야 하면 `CSP_CONNECT_SRC_EXTRA=https://api.anthropic.com`.
 - 인증: 세션 쿠키 httpOnly · SameSite=Lax · Secure, 쓰기 요청 CSRF 토큰, 비밀번호 scrypt, 로그인 IP당 분당 10회(라우트) + 로그인 계열(로그인 · 재설정 요청 · 재설정 토큰 확인 · 재설정 · 초대 수락) IP당 분당 20회 + 같은 이메일 15분 10회 실패 잠금(재설정 뒤 초기화, 최근 성공 IP는 그 IP 실패만). 감사 로그에 로그인 성공 · 실패 · 잠금이 남는다.
@@ -532,5 +538,5 @@ mpsql -c "DELETE FROM workspaces WHERE slug = '<슬러그>'"                    
 ## 로컬 점검 · CI
 
 - 서버 테스트(실제 PostgreSQL): `npm run pg:dev && npm run test:server`. 보안 · 레디니스 · 키 회전 도구: `npx vitest run --config vitest.server.config.ts server/test/security.test.ts`.
-- 통합 스모크: `bash scripts/smoke-cloud.sh` — 새 DB → 마이그레이션 · 시드 → 서버 · 워커 → 데모 백필 → `/api/ready` → curl 로그인(쿠키 · CSRF) → Dataset 날짜 수 → 보안 헤더 → 로그아웃 → 우아한 종료 → DB 삭제. 실패하면 멈춘 단계와 로그 끝부분을 보여 준다. 번들로 돌리려면 `npm run server:build && SMOKE_RUNTIME=dist bash scripts/smoke-cloud.sh`.
+- 통합 스모크: `npm run smoke:cloud` (= `bash scripts/smoke-cloud.sh`) — 새 DB → 마이그레이션 · 시드(데모 역할 계정 포함) → 서버 · 워커 → 데모 백필 → `/api/ready`(워커 자체 하트비트 확인) → curl 로그인(쿠키 · CSRF) → CSRF 거부 → Dataset 날짜 수(120) → SSE hello · 헤더 → 두 역할 권한(client는 감사 로그 403 · owner는 200) → API · 화면 보안 헤더(CSP · 캐시) → 로그아웃 → 우아한 종료 → DB 삭제(15단계). 실패하면 멈춘 단계와 로그 끝부분을 보여 주고 0이 아닌 코드로 끝난다. 번들로 돌리려면 `npm run server:build && SMOKE_RUNTIME=dist bash scripts/smoke-cloud.sh`, 화면 헤더까지 보려면 먼저 `npx vite build`(또는 `STATIC_DIR=<빌드 폴더>`). 포트 · DB 이름은 `SMOKE_PORT` · `SMOKE_DB`.
 - CI(`.github/workflows/ci.yml`): 타입 검사 · 프런트 테스트 · 빌드(vite · 단일 파일 · 서버 번들), 서버 테스트(postgres:16 서비스), 통합 스모크, 브라우저 E2E(데모 모드), 이미지 빌드 + compose 기동 점검을 push · PR마다 돌린다.

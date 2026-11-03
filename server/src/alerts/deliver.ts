@@ -153,18 +153,34 @@ export async function fanOutIncident(q: Queryable, wsId: string, o: { event: 'in
 }
 
 /** 이슈가 아닌 알림(리포트 등)을 해당 이벤트를 켠 채널로 보낸다 — reports 도메인 등에서 쓴다 */
-export async function fanOutGeneric(q: Queryable, wsId: string, o: { event: string; refId?: string; title: string; text: string; link?: string; severity?: Severity }): Promise<number> {
+/** 메일 본문 전문 상한 (리포트 마크다운) — Slack · 웹훅은 text(2,900자)만 쓴다 */
+export const EMAIL_BODY_MAX = 100_000;
+
+/**
+ * 이슈가 아닌 알림(리포트 등)을 채널별 notify.send 잡으로 만든다.
+ * 반환값은 새로 만든 잡 수(기존 호출 호환). 채널별 잡 id가 필요하면 o.onEnqueued로 받는다.
+ * o.body: 메일 채널에만 쓰는 본문 전문 (없으면 text).
+ */
+export async function fanOutGeneric(
+  q: Queryable,
+  wsId: string,
+  o: { event: string; refId?: string; title: string; text: string; body?: string; link?: string; severity?: Severity; onEnqueued?: (e: { channelId: string; jobId: string }) => void },
+): Promise<number> {
   const chans = (await q.query<ChannelPick>(`SELECT id, type, min_severity, events, enabled FROM notification_channels WHERE workspace_id = $1 AND enabled ORDER BY created_at`, [wsId])).rows;
   let n = 0;
   for (const ch of chans) {
     if (!ch.events.includes(o.event)) continue;
     if (o.severity && !severityAllowed(ch.min_severity, o.severity)) continue;
+    const body = ch.type === 'email' && o.body ? o.body.slice(0, EMAIL_BODY_MAX) : undefined;
     const id = await enqueue(q, {
       type: 'notify.send', workspaceId: wsId, maxAttempts: NOTIFY_MAX_ATTEMPTS,
-      payload: { channelId: ch.id, event: o.event, refId: o.refId ?? null, payload: { title: o.title, text: o.text, link: o.link, severity: o.severity } },
+      payload: { channelId: ch.id, event: o.event, refId: o.refId ?? null, payload: { title: o.title, text: o.text, ...(body ? { body } : {}), link: o.link, severity: o.severity } },
       dedupeKey: o.refId ? `notify:${ch.id}:${o.event}:${o.refId}` : undefined,
     });
-    if (id) n++;
+    if (id) {
+      n++;
+      o.onEnqueued?.({ channelId: ch.id, jobId: String(id) });
+    }
   }
   return n;
 }
@@ -215,7 +231,7 @@ export async function notifySendJob(ctx: JobContext): Promise<SendOutcome & { ch
   } else {
     const g = p.payload ?? {};
     severity = (g.severity as Severity | undefined) ?? null;
-    input = { event: 'report', workspace: ws, appUrl: config.appUrl, generic: { title: String(g.title ?? 'MILDO OS 알림').slice(0, 200), text: String(g.text ?? '').slice(0, 2900), link: typeof g.link === 'string' ? g.link : undefined, severity: severity ?? undefined } };
+    input = { event: 'report', workspace: ws, appUrl: config.appUrl, generic: { title: String(g.title ?? 'MILDO OS 알림').slice(0, 200), text: String(g.text ?? '').slice(0, 2900), body: ch.type === 'email' && typeof g.body === 'string' ? g.body.slice(0, EMAIL_BODY_MAX) : undefined, link: typeof g.link === 'string' ? g.link : undefined, severity: severity ?? undefined } };
   }
 
   let cfg: ChannelConfig;

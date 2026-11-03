@@ -30,7 +30,7 @@ import {
 
 /**
  * 회수 배수 입력 — workspaces.config 원본에서 읽는다: billing.monthlyFee(settings 스키마) · impact.contributionMargin · impact.hourlyCost.
- * settings의 loadWorkspaceConfig는 스키마 밖 키(impact.*)를 걸러 내므로 원본을 직접 읽고 엔진(impactConfig)이 범위를 검증한다.
+ * billing.monthlyFee · impact.contributionMargin · impact.hourlyCost는 settings 스키마에 있다(구독료는 소유자만 수정). 원본을 직접 읽고 엔진(impactConfig)이 범위를 다시 검증한다.
  */
 export async function loadImpactConfig(q: Queryable, wsId: string) {
   const r = await one<{ config: unknown }>(q, 'SELECT config FROM workspaces WHERE id = $1', [wsId]);

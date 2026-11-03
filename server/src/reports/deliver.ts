@@ -4,7 +4,7 @@
  *  기본 경로: alerts 도메인의 fanOutGeneric(server/src/alerts/deliver.ts)으로 채널마다 notify.send 잡을 만든다 — 채널 선택(켜짐 · 'report' 이벤트) ·
  *            중복 방지 키(notify:<채널>:report:<리포트 id>) · 재시도 · 웹훅 서명 · SSRF 차단 · 발송 이력을 알림 발송과 같은 규칙으로 쓴다.
  *            잡 계약 (docs/SAAS_SPEC.md §6): notify.send { channelId, event: 'report', refId: <리포트 id>, payload: { title, text, link } }.
- *            본문 = 메신저형 요약 + 보관함 링크 (notify.send는 본문을 2,900자로 자른다 — 전문은 보관함 링크에서 본다. 메일 전문 발송은 sharedChangeRequest로 요청).
+ *            본문 = Slack · 웹훅은 메신저형 요약 + 보관함 링크(2,900자), 메일은 마크다운 전문(payload.body, 최대 100,000자).
  *  대체 경로: notify.send 잡이 등록되지 않은 프로세스(alerts 도메인 미등록)면 같은 메시지 형식으로 바로 보낸다(deps.directSender · 메일은 마크다운 전문).
  * 비밀값(웹훅 URL · 수신자)은 가린 표시만 기록한다.
  */
@@ -78,7 +78,8 @@ export async function deliverReport(q: Queryable, config: AppConfig, wsId: strin
     const keys = chans.map((ch) => dedupeKeyOf(ch.id, r.id));
     const before = await activeJobs(q, keys);
     const mark = Number((await one<{ id: string | number }>(q, `SELECT COALESCE(max(id), 0) AS id FROM jobs`))?.id ?? 0);
-    await deps.fanOut(q, wsId, { event: 'report', refId: r.id, title, text, link });
+    // 메일 채널은 마크다운 전문(body), Slack · 웹훅은 요약(text)
+    await deps.fanOut(q, wsId, { event: 'report', refId: r.id, title, text, body: r.markdown || undefined, link });
     // 이번 호출이 만든 잡 = 호출 전 최대 id보다 큰 같은 키 잡 (워커가 바로 끝냈어도 잡힌다)
     const created = new Map((await q.query<{ id: string | number; dedupe_key: string }>(
       `SELECT id, dedupe_key FROM jobs WHERE type = 'notify.send' AND dedupe_key = ANY($1::text[]) AND id > $2 ORDER BY id`, [keys, mark],
