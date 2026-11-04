@@ -20,6 +20,9 @@ import { resetLab, useLab } from './store';
 export function useClickGuard(ms = 500) {
   const last = useRef(0);
   return <A extends unknown[]>(fn: (...a: A) => unknown) => (...a: A) => {
+    // 더블클릭의 두 번째 클릭은 무시 — 요청을 만든 뒤 같은 자리에 새로 나타난 '승인' 버튼(새 컴포넌트라 시간 가드가 비어 있음)을 누르지 않게
+    const ev = a[0] as { detail?: unknown } | undefined;
+    if (ev && typeof ev === 'object' && typeof ev.detail === 'number' && ev.detail > 1) return;
     if (Date.now() - last.current < ms) return;
     if (fn(...a) !== false) last.current = Date.now();
   };
