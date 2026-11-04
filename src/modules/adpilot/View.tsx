@@ -76,7 +76,7 @@ export default function View() {
       <PageHeader
         eyebrow="02 RESOURCE SAVING & DATA AUTOMATION · AD PILOT"
         title="AD Pilot · GFA Control v1"
-        sub="목표 KPI에 맞춘 규칙으로 입찰과 예산을 조정하고, 모든 변경은 승인 · 기록 · 롤백이 가능합니다. 입찰 조정안 생성부터 GFA 변경 승인까지 한 화면에서 처리합니다."
+        sub="규칙 기반 입찰 · 예산 조정안과 GFA 변경 — 모든 변경은 승인 후 반영, 기록 · 롤백 가능"
         sources={<>
           <Src kind="PROPOSAL" page="p.14–16" /><Src kind="DEMO" />
           <span className="xs muted">데이터 기준 {fmtDate(ap.data.today)} {String(ap.data.currentHour).padStart(2, '0')}:30 · 현재 역할 {ap.roleLabel} · 공식 기준 목표 ROAS {fmt.roas(ap.official.targetRoas)}{ap.dirty.length ? ` (화면은 미승인 기준 ${ap.dirty.length}건 시뮬레이션 중)` : ''}</span>

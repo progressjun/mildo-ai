@@ -7,11 +7,11 @@
   display: flex; flex-direction: column; gap: 4px; text-align: left; background: transparent; color: inherit; cursor: pointer; min-width: 0;
 }
 .growth-pillar:hover { border-color: var(--accent); }
-.growth-pillar-title { font-size: var(--fs-lg); font-weight: 900; letter-spacing: -0.02em; display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+.growth-pillar-title { font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.02em; display: flex; justify-content: space-between; gap: 6px; align-items: center; }
 .growth-pillar-detail { font-size: var(--fs-xs); color: var(--panel-muted); }
-.growth-pillar-value { font-size: var(--fs-2xl); font-weight: 900; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1.15; }
+.growth-pillar-value { font-size: var(--fs-2xl); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1.15; }
 .growth-pillar-foot { font-size: var(--fs-xs); color: var(--panel-muted); line-height: 1.45; }
-.growth-plus { align-self: center; color: var(--panel-muted); font-weight: 900; }
+.growth-plus { align-self: center; color: var(--panel-muted); font-weight: 600; }
 
 /* ---------- 성장 과제 신호 ---------- */
 .growth-signals { display: flex; flex-direction: column; gap: 0; }
@@ -26,8 +26,8 @@
 
 /* ---------- 판정 배지 + 기준 ---------- */
 .growth-verdict { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.growth-chip { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 8px; line-height: 20px; color: var(--ink-2); white-space: nowrap; }
-.card.dark .growth-chip { border-color: color-mix(in srgb, var(--panel-ink) 22%, transparent); color: var(--panel-ink); }
+.growth-chip { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); border: 1px solid var(--line-strong); border-radius: 3px; padding: 0 8px; line-height: 20px; color: var(--ink-2); white-space: nowrap; }
+.card.dark .growth-chip { border-color: color-mix(in srgb, var(--ink) 22%, transparent); color: var(--ink); }
 
 /* ---------- 슬라이더 ---------- */
 .growth-range { width: 100%; min-width: 120px; accent-color: var(--accent); margin: 0; }
@@ -42,7 +42,7 @@
 
 /* ---------- p.40 경로 ---------- */
 .growth-path { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.growth-path-node { border: 1px solid color-mix(in srgb, var(--panel-ink) 20%, transparent); border-radius: 999px; padding: 4px 12px; font-weight: 700; font-size: var(--fs-sm); }
+.growth-path-node { border: 1px solid color-mix(in srgb, var(--panel-ink) 20%, transparent); border-radius: 3px; padding: 4px 12px; font-weight: 700; font-size: var(--fs-sm); }
 .growth-path-arrow { color: var(--panel-muted); }
 .growth-methods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .growth-method { border: 1px solid color-mix(in srgb, var(--panel-ink) 16%, transparent); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
@@ -51,14 +51,14 @@
 
 /* ---------- 타겟 그룹 · 코프로모션 · 캘린더 ---------- */
 .growth-group { border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; display: flex; flex-direction: column; gap: 6px; background: var(--surface); min-width: 0; }
-.growth-group-id { width: 26px; height: 26px; border-radius: 8px; background: var(--panel); color: var(--panel-ink); display: inline-flex; align-items: center; justify-content: center; font-weight: 900; flex: none; }
+.growth-group-id { width: 26px; height: 26px; border-radius: 8px; background: var(--panel); color: var(--panel-ink); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; flex: none; }
 .growth-kv { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-sm); }
 .growth-kv > span:last-child { font-variant-numeric: tabular-nums; font-weight: 700; text-align: right; }
 .growth-cal { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .growth-cal-col { border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--surface); min-width: 0; }
 .growth-cal-col.next { border-color: var(--accent); }
 .growth-cal-q { font-size: var(--fs-xs); letter-spacing: 0.08em; color: var(--muted); font-weight: 700; display: flex; justify-content: space-between; }
-.growth-cal-theme { font-size: var(--fs-lg); font-weight: 900; letter-spacing: -0.02em; }
+.growth-cal-theme { font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.02em; }
 .growth-cal-row { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); }
 .growth-cal-row > span:first-child { font-size: var(--fs-xs); color: var(--muted); }
 .growth-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
@@ -69,7 +69,7 @@
 .growth-party strong { display: block; font-size: var(--fs-lg); }
 .growth-sku { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 12px; align-items: start; }
 .growth-sku ul { margin: 0; padding-left: 16px; font-size: var(--fs-sm); }
-.growth-big { font-size: var(--fs-3xl); font-weight: 900; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.growth-big { font-size: var(--fs-3xl); font-weight: 600; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; }
 .growth-linkbtn { border: 0; background: none; color: var(--accent-ink); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
 .card.dark .growth-linkbtn { color: var(--accent); }
 

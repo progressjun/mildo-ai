@@ -73,7 +73,7 @@ export function FaqTab({ d, onItems, reviewed, cov, vis }: {
           {cov.topics.map((t) => (
             <div key={t.id} className="geo-topic">
               <span className="small"><strong>{t.label}</strong>{t.core ? '' : <span className="muted"> · 보조</span>}</span>
-              <span className="num" style={{ fontSize: 'var(--fs-xl)', fontWeight: 900 }}>{t.publishable}<span className="muted small"> / {t.total}</span></span>
+              <span className="num" style={{ fontSize: 'var(--fs-xl)', fontWeight: 500 }}>{t.publishable}<span className="muted small"> / {t.total}</span></span>
               <span className="geo-basis">게시 가능 / 초안</span>
             </div>
           ))}

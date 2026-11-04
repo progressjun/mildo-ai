@@ -20,7 +20,7 @@
 .board-node.out { border-color: color-mix(in srgb, var(--panel-ink) 45%, transparent); }
 .board-node-title { font-size: var(--fs-sm); font-weight: 700; display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .board-node-sub { font-size: var(--fs-xs); color: var(--panel-muted); line-height: 1.4; }
-.board-node-big { font-size: var(--fs-2xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.board-node-big { font-size: var(--fs-2xl); font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .board-arrow { align-self: center; color: var(--panel-muted); display: inline-flex; }
 .board-steps { display: flex; flex-direction: column; gap: 6px; justify-content: center; height: 100%; }
 .board-step { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); }
@@ -57,7 +57,7 @@
 .board-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .board-chip {
   display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-strong); background: var(--surface);
-  border-radius: 999px; padding: 3px 10px; font-size: var(--fs-xs); cursor: pointer; color: var(--ink-2); white-space: nowrap;
+  border-radius: 3px; padding: 3px 10px; font-size: var(--fs-xs); cursor: pointer; color: var(--ink-2); white-space: nowrap;
 }
 .board-chip:hover { border-color: var(--ink-2); }
 .board-chip[aria-pressed='true'] { background: var(--ink); color: var(--paper); border-color: var(--ink); }

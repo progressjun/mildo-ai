@@ -50,7 +50,7 @@ export default function View() {
       <PageHeader
         eyebrow="COMMAND CENTER · 수면밀도 전용 운영 프로그램"
         title="오늘의 운영"
-        sub="MILDO OS가 밤사이 수집 · 검증한 데이터와 감지된 이슈, 승인 대기 중인 조정안을 한 화면에 모았습니다. 반복 업무는 시스템이, 판단과 승인은 사람이 맡습니다."
+        sub="밤사이 수집 · 검증한 데이터, 감지된 이슈, 승인 대기 중인 조정안"
         sources={<><Src kind="DEMO" /><Src kind="PROPOSAL" page="p.3–5 · p.22" /><span className="xs muted">기준 {fmtDate(d.today)} {String(d.currentHour).padStart(2, '0')}:30 · {s.off.off ? `${s.off.label} — 주말 · 공휴일 체계` : '평일 체계'}</span></>}
         actions={<Button variant="accent" icon="play" onClick={() => { navigate('board'); }}>MILDO Board 열기</Button>}
       />
@@ -194,7 +194,7 @@ function MildoOsMap() {
         {OS_MODULES.map((m) => (
           <a key={m.id} href={`#${m.route}`} className={`card${m.hot ? ' accent' : ''}`} style={{ textDecoration: 'none', color: m.hot ? '#fff' : 'inherit', gap: 6 }}>
             <span className="xs bold" style={{ color: m.hot ? '#fff' : 'var(--accent-ink)' }}>{m.group}</span>
-            <strong style={{ fontSize: 'var(--fs-2xl)', fontWeight: 900 }}>{m.label}</strong>
+            <strong style={{ fontSize: 'var(--fs-2xl)', fontWeight: 600 }}>{m.label}</strong>
             <span className="small bold">{m.kind}</span>
             <hr className="divider" style={{ background: m.hot ? 'rgba(255,255,255,.5)' : undefined }} />
             {m.items.map((it) => <span key={it} className="small">{it}</span>)}

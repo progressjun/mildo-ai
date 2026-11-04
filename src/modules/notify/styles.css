@@ -2,7 +2,7 @@
 .notify-page .notify-err { color: var(--critical-ink); font-size: var(--fs-xs); margin-top: 2px; }
 .notify-events { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 16px; }
 .notify-slack { border: 1px solid var(--line); border-left: 4px solid var(--critical); border-radius: var(--r-md); padding: 12px 14px; background: var(--surface); display: flex; flex-direction: column; gap: 10px; font-size: var(--fs-sm); max-width: 720px; }
-.notify-slack-head { font-weight: 800; font-size: var(--fs-md); color: var(--ink); }
+.notify-slack-head { font-weight: 600; font-size: var(--fs-md); color: var(--ink); }
 .notify-slack-sec { color: var(--ink-2); line-height: 1.5; }
 .notify-slack-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
 .notify-slack-btn { display: inline-block; border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 4px 12px; font-weight: 700; color: var(--ink); background: var(--surface-2); }

@@ -5,20 +5,20 @@
 .alert-strip-cell { position: relative; padding: 4px 16px 4px 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0; background: none; border: 0; border-left: 1px solid color-mix(in srgb, var(--panel-ink) 14%, transparent); color: inherit; text-align: left; cursor: pointer; font: inherit; border-radius: 0; }
 .alert-strip-cell:hover .alert-strip-step { color: var(--accent); }
 .alert-strip-cell:first-child { border-left: 0; padding-left: 0; }
-.alert-strip-step { font-size: var(--fs-lg); font-weight: 900; letter-spacing: -0.02em; display: flex; align-items: center; gap: 6px; }
+.alert-strip-step { font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.02em; display: flex; align-items: center; gap: 6px; }
 .alert-strip-step .alert-strip-arrow { color: var(--accent); font-weight: 400; }
 .alert-strip-detail { font-size: var(--fs-xs); color: var(--panel-muted); }
 .alert-strip-live { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
-.alert-strip-live strong { font-size: var(--fs-xl); font-weight: 900; margin-right: 4px; }
+.alert-strip-live strong { font-size: var(--fs-xl); font-weight: 600; margin-right: 4px; }
 .alert-strip-cell.hot .alert-strip-live strong { color: var(--accent); }
 
 /* SLA 타이머 */
-.alert-sla { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); white-space: nowrap; border-radius: 999px; padding: 1px 8px; line-height: 20px; background: var(--surface-2); color: var(--ink-2); }
+.alert-sla { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); white-space: nowrap; border-radius: 3px; padding: 1px 8px; line-height: 20px; background: var(--surface-2); color: var(--ink-2); }
 .alert-sla strong { font-weight: 700; }
 .alert-sla.critical { background: var(--critical-soft); color: var(--critical-ink); }
 .alert-sla.warning { background: var(--warning-soft); color: var(--warning-ink); }
 .alert-sla.good { background: var(--good-soft); color: var(--good-ink); }
-.alert-sla-big { font-size: var(--fs-2xl); font-weight: 900; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.alert-sla-big { font-size: var(--fs-2xl); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
 
 /* 큐 */
 .alert-title { font-weight: 700; line-height: 1.35; }
@@ -31,8 +31,8 @@
 
 /* 원인 후보 막대 */
 .alert-cause { display: flex; flex-direction: column; gap: 3px; }
-.alert-cause-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
-.alert-cause-bar > span { display: block; height: 100%; background: var(--ink); border-radius: 999px; }
+.alert-cause-bar { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.alert-cause-bar > span { display: block; height: 100%; background: var(--ink); border-radius: 3px; }
 
 /* 처리 단계 */
 .alert-steps { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
@@ -47,7 +47,7 @@
 .alert-phone { background: var(--panel); color: var(--panel-ink); border-radius: 22px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .alert-phone-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-xs); color: var(--panel-muted); padding: 0 4px; }
 .alert-bot { display: flex; gap: 8px; align-items: flex-start; }
-.alert-bot-avatar { flex: none; width: 30px; height: 30px; border-radius: 9px; background: var(--accent); color: var(--panel-ink); display: inline-flex; align-items: center; justify-content: center; font-weight: 900; font-size: 12px; }
+.alert-bot-avatar { flex: none; width: 30px; height: 30px; border-radius: 9px; background: var(--accent); color: var(--panel-ink); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 12px; }
 .alert-bubble { background: var(--surface); color: var(--ink); border-radius: 4px 14px 14px 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; border-left: 4px solid var(--line-strong); min-width: 0; flex: 1; font-size: var(--fs-sm); }
 .alert-bubble.P1 { border-left-color: var(--critical); }
 .alert-bubble.P2 { border-left-color: var(--serious); }

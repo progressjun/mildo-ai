@@ -2,7 +2,7 @@
 
 /* ---------- 헤더 역할 전환 ---------- */
 .flow-role { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.flow-role-fixed { padding: 2px 10px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-2); color: var(--ink); }
+.flow-role-fixed { padding: 2px 10px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--surface-2); color: var(--ink); }
 
 /* ---------- 요약 스트립 (블랙 패널) ---------- */
 .flow-hero { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; padding: 14px; }
@@ -13,11 +13,11 @@
 .flow-hero-item:hover { border-color: color-mix(in srgb, var(--panel-ink) 40%, transparent); }
 .flow-hero-item.main { border-color: var(--accent); }
 .flow-hero-label { font-size: var(--fs-xs); color: var(--panel-muted); }
-.flow-hero-value { font-size: var(--fs-2xl); font-weight: 900; letter-spacing: -0.02em; line-height: 1.1; }
+.flow-hero-value { font-size: var(--fs-2xl); font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
 .flow-hero-value.accent-text { color: var(--accent); }
 .flow-hero-foot { font-size: var(--fs-xs); color: var(--panel-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; line-height: 1.4; }
 .flow-hero-meta { grid-column: 1 / -1; color: var(--panel-muted); display: flex; gap: 8px; align-items: center; }
-.flow-tab-badge { margin-left: 2px; font-size: 11px; background: var(--surface-3); color: var(--ink); border-radius: 999px; padding: 0 7px; line-height: 18px; }
+.flow-tab-badge { margin-left: 2px; font-size: 11px; background: var(--surface-3); color: var(--ink); border-radius: 3px; padding: 0 7px; line-height: 18px; }
 .flow-tab-badge.crit { background: var(--critical-soft); color: var(--critical-ink); }
 
 /* ---------- 내가 처리할 것 ---------- */
@@ -75,7 +75,7 @@
 .flow-pipe { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 .flow-pipe-step { position: relative; border: 1px solid color-mix(in srgb, var(--panel-ink) 16%, transparent); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; }
 .flow-pipe-step.done { border-color: color-mix(in srgb, var(--good) 60%, transparent); }
-.flow-pipe-n { font-size: var(--fs-2xl); font-weight: 900; line-height: 1; }
+.flow-pipe-n { font-size: var(--fs-2xl); font-weight: 600; line-height: 1; }
 .flow-pipe-arrow { position: absolute; right: -14px; top: 50%; transform: translateY(-50%); color: var(--panel-muted); z-index: 1; }
 .flow-case { gap: 10px; border-left: 4px solid var(--line-strong); }
 .flow-case.sev-P1 { border-left-color: var(--critical); }
@@ -120,7 +120,7 @@
 /* ---------- 리포트 · 요청 ---------- */
 .flow-next { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; }
 .flow-basis { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--panel-ink); }
-.flow-big-approver { font-size: var(--fs-2xl); font-weight: 900; color: var(--accent); letter-spacing: -0.02em; }
+.flow-big-approver { font-size: var(--fs-2xl); font-weight: 600; color: var(--accent); letter-spacing: -0.02em; }
 .flow-preview { display: flex; flex-direction: column; gap: 2px; border-top: 1px solid color-mix(in srgb, var(--panel-ink) 16%, transparent); padding-top: 8px; }
 
 /* ---------- 의사결정 체계 ---------- */
